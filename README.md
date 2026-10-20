@@ -30,6 +30,13 @@ repository, and adds the first nightly end-to-end scenario. See
 [`docs/DESIGN.md`](./docs/DESIGN.md) for the design and the milestones,
 and [`docs/decisions.md`](./docs/decisions.md) for the decisions so far.
 
+## Environments
+
+Everything here is generic. A deployment's own values (project, hostnames,
+registry paths, sizing) live in a private overlay that builds on this
+repository at a pinned commit. The agent-substrate demo cluster's overlay
+is `go-steer/shipmind-agent-substrate`.
+
 ## Try it
 
 ```bash
