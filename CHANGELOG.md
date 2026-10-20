@@ -10,6 +10,8 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Fixed
 
+- The nightly runs the e2e-runner build with the sweep fix (1238fb2).
+
 - `shipmind scenario run`'s leftover sweep deleted lookout's watchboard
   task on agent-substrate: it took any lookout task whose session
   mentioned an earlier run's workload, and the watchboard hears about
