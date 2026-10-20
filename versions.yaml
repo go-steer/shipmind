@@ -25,9 +25,8 @@
 # - Images built from the forks and from go-steer sources (Substrate,
 #   ax-server, substrate-scope) live only in a private Artifact Registry,
 #   so they are pinned here by source commit until they are published.
-# - The agent image (mast plus the ax runner plus the gke-triage
-#   bundles) and the token refresher are built from files that have not
-#   moved into this repository yet.
+# - The token refresher image is built in this repository but not
+#   published or pinned yet.
 # - switchboard, mast-web and core-agent are not part of the substrate
 #   profile yet; they arrive with the standalone profile and with
 #   switchboard starting ax agents.
@@ -82,6 +81,19 @@ components:
       main after the ax upstreaming (#528-#531: injected Google auth,
       POST /sessions, --instructions, examples/deploy/ax). Built into the
       agent image; no release covers it yet.
+
+  - name: agent-mast
+    source: github.com/go-steer/shipmind
+    version: aa9729e195a18f3074f80d1c6957cc4d5d0de55c
+    profiles: [substrate]
+    images:
+      - name: agent-mast
+        ref: ghcr.io/go-steer/shipmind/agent-mast:aa9729e195a18f3074f80d1c6957cc4d5d0de55c@sha256:82128f81c9f09b69360a7aed63649d291ccc97e9aa7f9e0e0bb79e6ad4ef9402
+    note: >-
+      The agent image, built by this repository (images/agent-mast) at the
+      commit in version: the mast and ax-runner pins above plus
+      agents/sre-triage. CI publishes a new build from every main commit
+      that touches those inputs; move this pin to one deliberately.
 
   - name: k8s-lookout
     source: github.com/go-steer/k8s-lookout
