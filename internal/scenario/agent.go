@@ -260,23 +260,56 @@ func (t *Transcript) Mentions(s string) bool {
 // runNameSuffix matches what RunName appends: -MMDD-HHMMSS.
 var runNameSuffix = regexp.MustCompile(`^-?\d{4}-\d{6}`)
 
-// MentionsRun reports whether any event's text names a run workload of
-// a scenario, given prefix "<scenario>-": the prefix followed by a run
-// timestamp.
-func (t *Transcript) MentionsRun(prefix string) bool {
-	for _, e := range t.Events {
-		for _, text := range e.Texts {
-			for rest := text; ; {
-				i := strings.Index(rest, prefix)
-				if i < 0 {
-					break
-				}
-				rest = rest[i+len(prefix):]
-				if runNameSuffix.MatchString(rest) {
-					return true
-				}
-			}
+// mentionsRun reports whether text names a run workload of a scenario,
+// given prefix "<scenario>-": the prefix followed by a run timestamp.
+func mentionsRun(text, prefix string) bool {
+	for rest := text; ; {
+		i := strings.Index(rest, prefix)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+len(prefix):]
+		if runNameSuffix.MatchString(rest) {
+			return true
 		}
 	}
-	return false
+}
+
+// FirstMessage returns the first message sent to the agent: for a
+// lookout incident task, the incident itself.
+func (t *Transcript) FirstMessage() string {
+	for _, e := range t.Events {
+		if isUser(e) {
+			return strings.Join(e.Texts, "\n")
+		}
+	}
+	return ""
+}
+
+// Incident is the identity of the incident lookout opened a task for,
+// read from the task's first message (lookout's inject payload).
+type Incident struct {
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+}
+
+// FirstIncident parses the task's first message as a lookout incident.
+// ok is false when it isn't one; a storm (kind "storm") never is: a
+// storm task is keyed on a shared ancestor (a Node, a namespace, the
+// cluster), lives across storms and lists many members, so it is never
+// a scenario run's own task.
+func (t *Transcript) FirstIncident() (Incident, bool) {
+	var in Incident
+	if err := json.Unmarshal([]byte(t.FirstMessage()), &in); err != nil || in.Name == "" || in.Kind == "" || in.Kind == "storm" {
+		return Incident{}, false
+	}
+	return in, true
+}
+
+// About reports whether the incident is about the scenario workload
+// workload in namespace ns: the object it names is the workload or one
+// of its pods ("<workload>-<replicaset hash>-<pod hash>").
+func (in Incident) About(ns, workload string) bool {
+	return in.Namespace == ns && (in.Name == workload || strings.HasPrefix(in.Name, workload+"-"))
 }
