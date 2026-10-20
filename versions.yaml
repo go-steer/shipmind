@@ -1,0 +1,98 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The platform's bill of materials: every component a shipmind release
+# runs, pinned. `shipmind check` (and the verify-versions presubmit)
+# enforces the rules: a version is a release tag (vX.Y.Z) or a full commit
+# SHA, never a branch or an abbreviated SHA, and every image is pinned by
+# digest.
+#
+# This first set is what the agent-substrate demo cluster runs as of
+# 2026-10-20, read from the cluster. Three gaps, each a Milestone 1 issue
+# (docs/DESIGN.md):
+#
+# - Images built from the forks and from go-steer sources (Substrate,
+#   ax-server, substrate-scope) live only in a private Artifact Registry,
+#   so they are pinned here by source commit until they are published.
+# - The agent image (mast plus the ax runner plus the gke-triage
+#   bundles) and the token refresher are built from files that have not
+#   moved into this repository yet.
+# - switchboard, mast-web and core-agent are not part of the substrate
+#   profile yet; they arrive with the standalone profile and with
+#   switchboard starting ax agents.
+
+components:
+  - name: substrate
+    source: github.com/mastersingh24/substrate
+    version: b52296feb32525869befb16c7128ccafbb79cfe2
+    profiles: [substrate]
+    images:
+      - name: postgres
+        ref: docker.io/library/postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+      - name: envoy
+        ref: docker.io/envoyproxy/envoy:v1.39.4@sha256:74bd4eb5629708d3fadca1a5e6b85d208f338d7bb54e06b69565905c5294cc01
+    note: >-
+      Upstream v0.5.0 plus the agent-substrate cluster patches on fork
+      branch agent-substrate-cluster-v0.5.0 (node selectors, router parked
+      request budget, atelet pinned to worker nodes, C4-first worker
+      ComputeClass).
+
+  - name: ax
+    source: github.com/mastersingh24/ax
+    version: 685b160d614122daea13d9fa56de1781a9d210f7
+    profiles: [substrate]
+    images:
+      - name: redis
+        ref: docker.io/library/redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    note: >-
+      ax-server, deploy tag deployed/substrate-v0.5-685b160. Fork of
+      google/ax: upstream main 8888435 plus the fork's patch stack
+      (Substrate v0.5, task egress credentials, HTTP pass-through, idle
+      suspend, Redis persistence). google/ax does not take PRs, so the
+      fork is the source.
+
+  - name: ax-runner
+    source: github.com/mastersingh24/ax
+    version: e8bc98d87d9e3dcdee4aafa899bc802186d67dcb
+    profiles: [substrate]
+    note: >-
+      The task runner baked into the agent image. ax-server moved on to
+      685b160 without changing the runner, so the agent image was not
+      rebuilt.
+
+  - name: mast
+    source: github.com/go-steer/mast
+    version: 922e5491ba10562ddd68285e318c3efddf074d59
+    profiles: [substrate]
+    note: >-
+      main after the ax upstreaming (#528-#531: injected Google auth,
+      POST /sessions, --instructions, examples/deploy/ax). Built into the
+      agent image; no release covers it yet.
+
+  - name: k8s-lookout
+    source: github.com/go-steer/k8s-lookout
+    version: v0.36.0
+    profiles: [substrate]
+    images:
+      - name: lookout
+        ref: ghcr.io/go-steer/lookout:v0.36.0-gke@sha256:5b950c8fad9f5c2a61a532f99bf9a0b3da2a0c33cb0e52129f59cf93d9321cd8
+    note: Runs with the ax sink, opening one ax task per incident.
+
+  - name: substrate-scope
+    source: github.com/go-steer/substrate-scope
+    version: c2e8f508caade95cfec42e4d54966ade5e7f222f
+    profiles: [substrate]
+    images:
+      - name: nginx
+        ref: docker.io/nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
