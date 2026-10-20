@@ -40,6 +40,17 @@ release is a tested set of component versions (see "Cutting a release" in
   sink, its store on a volume, and lookout's own watcher ClusterRole at
   v0.36.0 (vendored). The live role predates v0.36.0 and lacks its
   `list volumeattachments` rule; applying the profile adds it.
+- `shipmind status | up | down <env-dir>`: an environment is an overlay
+  directory with a `shipmind.yaml` (kube context, the agent's ax
+  settings, expected changes). `status` compares the whole environment
+  with its cluster, read only (Kubernetes objects by `kubectl diff`, the
+  agent's task template Secret and ax Workspace by value), and exits 3 on
+  drift. `up` applies it, adopting or generating the agent's tokens once
+  and never rotating them; `-dry-run` writes nothing. Both require the
+  checkout to be at the overlay's pinned commit. Against agent-substrate:
+  no drift.
+- `agents/sre-triage/ax/`: the ax task template and Workspace templates,
+  reproducing what agent-substrate runs.
 - Profile invariant tests: every rendered image is pinned in
   `versions.yaml` (or a `ko://` placeholder for the overlay), no remote
   bases, ax's Redis keeps its volume and append-only log, and lookout's

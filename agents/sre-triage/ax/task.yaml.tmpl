@@ -1,0 +1,64 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The ax task every incident runs as: lookout's ax sink stamps a copy of
+# this per incident, named lookout-<hash of the incident fingerprint>.
+# `shipmind up` renders it with the environment's values and the agent's
+# tokens into Secret lookout-ax/lookout-ax-agent; the tokens are why it is
+# a Secret (ax has no secret references for env).
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  atespace: {{ printf "%q" .Atespace }}
+spec:
+  image: {{ printf "%q" .Image }}
+  command:
+    - mast
+    - --workload=/opt/mast/workloads/gke-triage-f
+    - --provider=vertex
+    - --model=gemini-3.8-flash
+    - --listen=127.0.0.1:7777
+    # Session API (what switchboard and lookout's sink speak), reached
+    # through the runner's spec.http.port pass-through.
+    - --attach-listen=127.0.0.1:8484
+    - --session-db=/workspace/.mast/sessions.db
+    # The Workspace's AGENTS.md: known clusters and the repeat rule.
+    - --instructions=/workspace/repo
+  env:
+    # Google calls carry a placeholder; the egress gateway injects the
+    # token refresher's access token.
+    - name: MAST_GOOGLE_AUTH
+      value: injected
+    - name: GOOGLE_CLOUD_PROJECT
+      value: {{ printf "%q" .Project }}
+    - name: MAST_INJECT_TOKEN
+      value: {{ printf "%q" .InjectToken }}
+    - name: MAST_ATTACH_TOKEN
+      value: {{ printf "%q" .AttachToken }}
+  egress:
+    - hosts: [aiplatform.googleapis.com, container.googleapis.com]
+      credentials:
+        - header: Authorization
+          prefix: "Bearer "
+          credentialUri: ate-secret://k8s.io/default/ate-credentials/google-token/token
+  http:
+    port: 8484
+  # Suspended after 10 minutes without requests; the router wakes it on
+  # the next follow-up.
+  idle:
+    suspendAfter: 10m
+  workspaces:
+    - name: {{ printf "%q" .Workspace }}
+      path: /workspace/repo
+  debug: true

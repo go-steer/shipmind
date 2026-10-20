@@ -19,10 +19,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/go-steer/shipmind/internal/cluster"
 	"github.com/go-steer/shipmind/internal/manifests"
 )
 
@@ -157,4 +160,132 @@ func TestVendorAndCheck(t *testing.T) {
 	runFail("no manifests to vendor", "vendor", "-f", path, "mast")
 	fetcher = fakeFetcher{err: errors.New("network down")}
 	runFail("network down", "vendor", "-f", path, "ax")
+}
+
+// deployFake is a cluster with one drifted object and nothing else.
+type deployFake struct{ failDiff bool }
+
+func (f deployFake) Diff(context.Context, []byte) ([]string, error) {
+	if f.failDiff {
+		return nil, errors.New("diff failed")
+	}
+	return []string{"v1.ConfigMap.demo.base"}, nil
+}
+func (deployFake) Apply(context.Context, []byte, bool) (string, error) { return "applied\n", nil }
+func (deployFake) Delete(context.Context, []byte) (string, error)      { return "deleted\n", nil }
+func (deployFake) Secret(context.Context, string, string) (map[string][]byte, bool, error) {
+	return nil, false, nil
+}
+func (deployFake) RolloutStatus(context.Context, string, string) error  { return nil }
+func (deployFake) RolloutRestart(context.Context, string, string) error { return nil }
+func (deployFake) ApplySecret(context.Context, []byte, bool) error      { return nil }
+func (deployFake) SecretUpdated(context.Context, string, string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+func (deployFake) PodStarts(context.Context, string, string) ([]time.Time, error) { return nil, nil }
+func (deployFake) AxWorkspace(context.Context, string, string) ([]byte, bool, error) {
+	return nil, false, nil
+}
+func (deployFake) AxApply(context.Context, string, []byte) error { return nil }
+
+// deployRoot makes a committed shipmind checkout with one profile and the
+// real agent templates, and an environment that pins it.
+func deployRoot(t *testing.T) (root, envDir string) {
+	t.Helper()
+	root = t.TempDir()
+	put := func(p, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(filepath.Join(root, "deploy/profiles/p/kustomization.yaml"), "resources:\n  - cm.yaml\n")
+	put(filepath.Join(root, "deploy/profiles/p/cm.yaml"), "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: base\n  namespace: demo\n")
+	for _, name := range []string{"AGENTS.md.tmpl", "task.yaml.tmpl", "workspace.yaml.tmpl"} {
+		b, err := os.ReadFile(filepath.Join("../../agents/sre-triage/ax", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		put(filepath.Join(root, "agents/sre-triage/ax", name), string(b))
+	}
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "-b", "main")
+	git("add", ".")
+	git("commit", "-q", "-m", "init")
+	head := git("rev-parse", "HEAD")
+
+	envDir = t.TempDir()
+	put(filepath.Join(envDir, "kustomization.yaml"), "resources:\n  - https://github.com/go-steer/shipmind//deploy/profiles/p?ref="+head+"\n")
+	put(filepath.Join(envDir, "shipmind.yaml"), `context: demo
+agent:
+  atespace: agents
+  project: example-project
+  workspace: demo-ws
+  image: registry.example.com/agent@sha256:`+strings.Repeat("0", 64)+`
+  clusters:
+    - name: demo
+      path: projects/example-project/locations/us-central1/clusters/demo
+`)
+	return root, envDir
+}
+
+func TestDeployCommands(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	old := newCluster
+	t.Cleanup(func() { newCluster = old })
+	fake := deployFake{}
+	newCluster = func(string) cluster.Cluster { return fake }
+	root, envDir := deployRoot(t)
+
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		code   int
+		stdout string
+		stderr string
+	}{
+		{"status drift", []string{"status", "-root", root, envDir}, exitDrift, "DRIFT     v1.ConfigMap.demo.base", ""},
+		{"up dry run", []string{"up", "-root", root, "-dry-run", envDir}, 0, "workspace agents/demo-ws would be applied (dry run)", ""},
+		{"up", []string{"up", "-root", root, envDir}, 0, "workspace agents/demo-ws applied", ""},
+		{"down", []string{"down", "-root", root, "-yes", envDir}, 0, "deleted", ""},
+		{"down without yes", []string{"down", "-root", root, envDir}, 2, "", "pass -yes"},
+		{"any-ref on up", []string{"up", "-root", root, "-any-ref", envDir}, 2, "", "status only"},
+		{"no env dir", []string{"status", "-root", root}, 2, "", "want one environment directory"},
+		{"bad flag", []string{"status", "-bogus", envDir}, 2, "", "flag provided but not defined"},
+		{"help", []string{"up", "-h"}, 0, "", "-dry-run"},
+		{"no env file", []string{"status", "-root", root, t.TempDir()}, 1, "", "shipmind.yaml"},
+		{"wrong root", []string{"status", "-root", t.TempDir(), envDir}, 1, "", "is not a kustomization"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			if code := run(tc.args, &out, &errOut); code != tc.code {
+				t.Errorf("exit %d, want %d\nstdout %s\nstderr %s", code, tc.code, out.String(), errOut.String())
+			}
+			if !strings.Contains(out.String(), tc.stdout) || !strings.Contains(errOut.String(), tc.stderr) {
+				t.Errorf("stdout %q (want %q)\nstderr %q (want %q)", out.String(), tc.stdout, errOut.String(), tc.stderr)
+			}
+		})
+	}
+
+	fake.failDiff = true
+	newCluster = func(string) cluster.Cluster { return fake }
+	var out, errOut bytes.Buffer
+	if code := run([]string{"status", "-root", root, envDir}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "diff failed") {
+		t.Errorf("status with a failing cluster: exit %d, stderr %q", code, errOut.String())
+	}
 }

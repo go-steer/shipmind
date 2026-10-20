@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ns
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: ns
+spec:
+  template:
+    spec:
+      containers:
+        - name: redis
+          image: redis:7
