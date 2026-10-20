@@ -4,6 +4,27 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-10-20: Vendor plain manifests, one kustomize base each
+
+Components' manifests are vendored as files at their pinned version, one
+kustomize base per manifest, verified offline against a lock
+(`VENDOR.yaml`). Profiles and overlays compose them with kustomize.
+Substrate is the exception: it installs through its own installer
+(`ate-setup`), run at the pinned fork commit.
+
+**Why:** plain files make every pin bump a reviewable manifest diff and
+let `kubectl diff -k` and `apply -k` work without plugins or flags. One
+base per manifest is forced by kustomize: two manifests declaring the
+same Namespace (ax's both do) cannot share a base, and a kustomization
+cannot load files outside its directory. `ate-setup` has no render mode
+and does more than apply (rollout waits, credential provider wiring), so
+re-implementing it as manifests would fork its logic.
+
+**Rejected:** Helm as the composition layer (only some components ship
+charts); vendoring rendered Helm output now (no component needs it yet;
+revisit when one ships only a chart); one base per component (breaks on
+duplicate Namespaces); rendering Substrate's manifests ourselves.
+
 ## 2026-10-20: Substrate profile first
 
 Milestone 1 makes the agent-substrate demo cluster deployable from

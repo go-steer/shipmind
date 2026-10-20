@@ -183,6 +183,11 @@ func TestCheck(t *testing.T) {
 		{"short digest", "components:\n  - {name: a, source: github.com/a/b, version: v1.0.0, profiles: [substrate],\n" +
 			"     images: [{name: x, ref: 'x@sha256:abc'}]}\n",
 			[]string{"pinned by digest"}},
+		{"manifest problems", "components:\n  - {name: a, source: github.com/a/b, version: v1.0.0, profiles: [substrate],\n" +
+			"     manifests: [/abs.yaml, ../up.yaml, a/../b.yaml, '', x.json, k/kustomization.yaml, d.yaml, d.yml, e.yaml, e.yaml]}\n",
+			[]string{`manifest "/abs.yaml" is not a clean`, `manifest "../up.yaml" is not a clean`, `manifest "a/../b.yaml" is not a clean`,
+				`manifest "" is not a clean`, `manifest "x.json" is not a .yaml`, `"k/kustomization.yaml" would collide`,
+				`manifest "d.yml" listed twice`, `manifest "e.yaml" listed twice`}},
 		{"image problems", "components:\n  - {name: a, source: github.com/a/b, version: v1.0.0, profiles: [substrate],\n" +
 			"     images: [{ref: 'x@" + digest + "'}, {name: y, ref: 'y@" + digest + "'}, {name: y, ref: 'y@" + digest + "'}]}\n",
 			[]string{"images[0]: no name", `image "y" listed twice`}},

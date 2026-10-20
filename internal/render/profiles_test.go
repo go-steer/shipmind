@@ -1,0 +1,246 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package render
+
+// The invariants every profile in deploy/profiles must hold. They run
+// against the real profiles, so a change to a manifest, a patch or a
+// pin that breaks one fails `go test ./...`.
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"sigs.k8s.io/kustomize/kyaml/yaml"
+
+	"github.com/go-steer/shipmind/internal/bom"
+)
+
+const profilesDir = "../../deploy/profiles"
+
+// profileParts returns every profile (deploy/profiles/<profile>) and
+// every part directly under one (deploy/profiles/<profile>/<part>).
+func profileParts(t *testing.T) []string {
+	t.Helper()
+	var dirs []string
+	for _, pattern := range []string{"*", filepath.Join("*", "*")} {
+		matches, err := filepath.Glob(filepath.Join(profilesDir, pattern, "kustomization.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range matches {
+			dirs = append(dirs, filepath.Dir(m))
+		}
+	}
+	if len(dirs) == 0 {
+		t.Fatal("no profiles found")
+	}
+	return dirs
+}
+
+// A profile's root includes every one of its parts, so an overlay that
+// references the profile gets all of it.
+func TestProfileRootsIncludeEveryPart(t *testing.T) {
+	roots, err := filepath.Glob(filepath.Join(profilesDir, "*", "kustomization.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range roots {
+		b, err := os.ReadFile(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var k struct {
+			Resources []string `yaml:"resources"`
+		}
+		if err := yaml.Unmarshal(b, &k); err != nil {
+			t.Fatalf("%s: %v", root, err)
+		}
+		parts, err := filepath.Glob(filepath.Join(filepath.Dir(root), "*", "kustomization.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, part := range parts {
+			name := filepath.Base(filepath.Dir(part))
+			if !slices.Contains(k.Resources, name) {
+				t.Errorf("%s does not include its part %s", root, name)
+			}
+		}
+	}
+}
+
+func build(t *testing.T, dir string) Objects {
+	t.Helper()
+	objs, err := Build(dir)
+	if err != nil {
+		t.Fatalf("Build(%s): %v", dir, err)
+	}
+	return objs
+}
+
+// An image is either pinned in versions.yaml, exactly, or a ko://
+// placeholder that an environment overlay must replace. Nothing else
+// gets through: no tag-only images, no digest that versions.yaml
+// doesn't know.
+func TestProfileImagesArePinned(t *testing.T) {
+	f, err := bom.Load("../../versions.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := map[string]bool{}
+	for _, c := range f.Components {
+		for _, img := range c.Images {
+			pinned[img.Ref] = true
+		}
+	}
+	for _, dir := range profileParts(t) {
+		imgs, err := build(t, dir).Images()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, img := range imgs {
+			if strings.HasPrefix(img.Ref, "ko://") || pinned[img.Ref] {
+				continue
+			}
+			t.Errorf("%s: %s container %s runs %q, which versions.yaml does not pin", dir, img.Object, img.Container, img.Ref)
+		}
+	}
+}
+
+// ax keeps every task and workspace record in Redis. Without a volume
+// and an append-only log, a Redis restart erases them all (the
+// 2026-10-19 outage).
+func TestSubstrateAxRedisPersists(t *testing.T) {
+	objs := build(t, filepath.Join(profilesDir, "substrate", "ax"))
+
+	if _, ok := objs.Find("PersistentVolumeClaim", "ax-system", "ax-redis-data"); !ok {
+		t.Error("no PersistentVolumeClaim ax-system/ax-redis-data")
+	}
+	d, ok := objs.Find("Deployment", "ax-system", "ax-redis")
+	if !ok {
+		t.Fatal("no Deployment ax-system/ax-redis")
+	}
+	spec, err := d.Pipe(yaml.Lookup("spec", "template", "spec"))
+	if err != nil || spec == nil {
+		t.Fatalf("pod spec: %v", err)
+	}
+
+	claim, err := spec.Pipe(yaml.Lookup("volumes", "[name=data]", "persistentVolumeClaim", "claimName"))
+	if err != nil || claim == nil || yaml.GetValue(claim) != "ax-redis-data" {
+		t.Errorf("volume data is not the ax-redis-data claim (%v)", err)
+	}
+	mount, err := spec.Pipe(yaml.Lookup("containers", "[name=redis]", "volumeMounts", "[name=data]", "mountPath"))
+	if err != nil || mount == nil || yaml.GetValue(mount) != "/data" {
+		t.Errorf("volume data is not mounted at /data (%v)", err)
+	}
+	argsNode, err := spec.Pipe(yaml.Lookup("containers", "[name=redis]", "args"))
+	if err != nil || argsNode == nil {
+		t.Fatalf("redis args: %v", err)
+	}
+	elems, err := argsNode.Elements()
+	if err != nil {
+		t.Fatalf("redis args: %v", err)
+	}
+	var args []string
+	for _, e := range elems {
+		args = append(args, yaml.GetValue(e))
+	}
+	joined := " " + strings.Join(args, " ") + " "
+	for _, want := range []string{" --appendonly yes ", " --dir /data "} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("redis args %v lack %q", args, strings.TrimSpace(want))
+		}
+	}
+}
+
+// A profile's kustomizations reference only what is in this repository:
+// no remote bases or components and no Helm charts, so a render is
+// reproducible from a checkout and never touches the network. Every
+// kustomization is named kustomization.yaml, so nothing hides from this
+// check (or from profileParts) under another name kustomize accepts.
+func TestProfilesHaveNoRemoteResources(t *testing.T) {
+	err := filepath.WalkDir(profilesDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		switch d.Name() {
+		case "kustomization.yml", "Kustomization":
+			t.Errorf("%s: name kustomizations kustomization.yaml", p)
+			return nil
+		case "kustomization.yaml":
+		default:
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		var k struct {
+			Resources  []string `yaml:"resources"`
+			Bases      []string `yaml:"bases"`
+			Components []string `yaml:"components"`
+			HelmCharts []any    `yaml:"helmCharts"`
+		}
+		if err := yaml.Unmarshal(b, &k); err != nil {
+			t.Errorf("%s: %v", p, err)
+			return nil
+		}
+		if len(k.HelmCharts) > 0 {
+			t.Errorf("%s: helmCharts fetch at render time; vendor the rendered chart instead", p)
+		}
+		for _, r := range slices.Concat(k.Resources, k.Bases, k.Components) {
+			if isRemote(filepath.Dir(p), r) {
+				t.Errorf("%s: remote reference %q", p, r)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// isRemote reports whether a kustomize reference, relative to dir, names
+// something outside the checkout: a URL, an scp-style git address, or a
+// host-qualified path such as github.com/org/repo//dir that doesn't
+// exist locally.
+func isRemote(dir, r string) bool {
+	if strings.Contains(r, "://") || strings.HasPrefix(r, "git@") {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(dir, r)); err == nil {
+		return false
+	}
+	first, rest, found := strings.Cut(r, "/")
+	return found && rest != "" && strings.Contains(first, ".") && first != "." && first != ".."
+}
+
+func TestIsRemote(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "patches.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for r, want := range map[string]bool{
+		"ax": false, "../../../vendor/ax/deploy/redis": false, "./redis": false, "redis.yaml": false, "patches.d": false,
+		"https://github.com/a/b//c?ref=v1": true, "github.com/a/b//c?ref=v1": true, "git@github.com:a/b.git": true,
+		"ssh://git@github.com/a/b": true,
+	} {
+		if got := isRemote(dir, r); got != want {
+			t.Errorf("isRemote(%q) = %v, want %v", r, got, want)
+		}
+	}
+}

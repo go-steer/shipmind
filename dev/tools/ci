@@ -56,6 +56,9 @@ STEPS=(
   # versions.yaml: every component pinned to a tag or commit, every image
   # to a digest.
   "versions  dev/tools/verify-versions"
+  # Re-vendors from the network and diffs: catches what the offline
+  # lock check can't (a file edited with its lock entry, a moved tag).
+  "vendor    dev/tools/verify-vendor-fresh"
   "test      dev/tools/test-unit"
   # Immediately after `test`, which wrote the profile it reads. Run alone it
   # would generate its own; here it never has to.

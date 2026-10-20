@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: demo
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: init
+          image: busybox:1
+      containers:
+        - name: web
+          image: nginx:1
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly
+  namespace: demo
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: run
+              image: runner:2
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bare
+  namespace: demo
+spec: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: demo
+---
+apiVersion: v1
+kind: ReplicationController
+metadata:
+  name: legacy
+  namespace: demo
+spec:
+  template:
+    spec:
+      containers:
+        - name: old
+          image: legacy:3
+---
+apiVersion: example.com/v1
+kind: Widget
+metadata:
+  name: custom
+  namespace: demo
+spec:
+  podTemplate:
+    spec:
+      containers:
+        - name: w
+          image: widget:4
+      volumes:
+        - name: containers

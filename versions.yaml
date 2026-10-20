@@ -55,6 +55,9 @@ components:
     images:
       - name: redis
         ref: docker.io/library/redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    manifests:
+      - deploy/ax-server.yaml
+      - deploy/redis.yaml
     note: >-
       ax-server, deploy tag deployed/substrate-v0.5-685b160. Fork of
       google/ax: upstream main 8888435 plus the fork's patch stack

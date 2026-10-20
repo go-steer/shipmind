@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -64,6 +65,10 @@ type Component struct {
 	// by digest. Third-party images a component deploys (its database,
 	// its proxy) are listed under that component.
 	Images []Image `yaml:"images,omitempty"`
+	// Manifests are paths in Source, at Version, that `shipmind vendor`
+	// copies into deploy/vendor/<name>/. Slash-separated, relative, and
+	// YAML.
+	Manifests []string `yaml:"manifests,omitempty"`
 	// Note says why the pin is what it is, when that isn't obvious.
 	Note string `yaml:"note,omitempty"`
 }
@@ -175,6 +180,21 @@ func (f *File) Check() error {
 			if !slices.Contains(Profiles, p) {
 				fail("unknown profile %q (want one of %s)", p, strings.Join(Profiles, ", "))
 			}
+		}
+
+		manifests := map[string]bool{}
+		for _, m := range c.Manifests {
+			switch {
+			case m == "" || path.IsAbs(m) || path.Clean(m) != m || m == ".." || strings.HasPrefix(m, "../") || strings.Contains(m, "\\"):
+				fail("manifest %q is not a clean relative path", m)
+			case path.Ext(m) != ".yaml" && path.Ext(m) != ".yml":
+				fail("manifest %q is not a .yaml or .yml file", m)
+			case path.Base(strings.TrimSuffix(m, path.Ext(m))) == "kustomization":
+				fail("manifest %q would collide with the generated kustomization.yaml", m)
+			case manifests[strings.TrimSuffix(m, path.Ext(m))]:
+				fail("manifest %q listed twice (or as both .yaml and .yml)", m)
+			}
+			manifests[strings.TrimSuffix(m, path.Ext(m))] = true
 		}
 
 		images := map[string]bool{}

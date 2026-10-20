@@ -34,6 +34,12 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # kustomize v0.21.3 needs a kube-openapi that requires Go 1.27,
+      # which the pinned golangci-lint (built with Go 1.26) can't load.
+      # Lift this when golangci-lint is bumped to a Go 1.27 build.
+      - dependency-name: sigs.k8s.io/kustomize/*
+      - dependency-name: k8s.io/kube-openapi
     groups:
       go-minor-patch:
         applies-to: version-updates

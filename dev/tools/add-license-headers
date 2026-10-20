@@ -26,13 +26,13 @@ current canonical form.
 
 Scope:
 - Every .go file in the repo (vendor/, testdata/ and dot-directories
-  excluded). Deliberately not a hardcoded package list: this is a
-  library whose package set grows, and a list would silently stop
-  covering new directories.
-- Shell scripts under dev/tools/, dev/ci/presubmits/ and examples/local/
-- YAML: .github/workflows/*.yml, dev/tools/.golangci.yml, and every
-  manifest under examples/ (recursively — the example tree grows a
-  directory per deployment target)
+  excluded). Deliberately not a hardcoded package list: the package set
+  grows, and a list would silently stop covering new directories.
+- Shell scripts under dev/tools/ and dev/ci/presubmits/
+- YAML: .github/*.yml, .github/workflows/*.yml, dev/tools/.golangci.yml,
+  versions.yaml, and every file under deploy/ and agents/ (recursively),
+  except deploy/vendor/, which is generated and carries its upstream's
+  own headers
 - Python: dev/tools/add-license-headers (this file)
 
 For Go files, golangci-lint's `goheader` linter enforces the full
@@ -164,7 +164,7 @@ def main() -> None:
 
     # Shell: dev/tools + dev/ci/presubmits + the example runners.
     # Skip helper data files.
-    for d in (REPO_ROOT / "dev/tools", REPO_ROOT / "dev/ci/presubmits", REPO_ROOT / "examples/local"):
+    for d in (REPO_ROOT / "dev/tools", REPO_ROOT / "dev/ci/presubmits"):
         if not d.exists():
             continue
         for path in d.iterdir():
@@ -179,18 +179,26 @@ def main() -> None:
                     counts["sh"] += 1
                     print(f"sh:   {path.relative_to(REPO_ROOT)}")
 
-    # YAML: workflows, golangci-lint config, and the example manifests.
-    # The example tree is globbed rather than listed: it grows a
-    # directory per deployment target, and a list would silently stop
-    # covering the new one.
+    # YAML: GitHub config, golangci-lint config, the bill of materials,
+    # and everything under deploy/ and agents/. Those trees are globbed
+    # rather than listed: they grow a directory per component, and a list
+    # would silently stop covering the new one. deploy/vendor/ is skipped
+    # (SKIP_DIRS): it is generated, and `shipmind check` would reject an
+    # edited file there.
     yaml_files = [
+        *sorted((REPO_ROOT / ".github").glob("*.yml")),
         *sorted((REPO_ROOT / ".github/workflows").glob("*.yml")),
         REPO_ROOT / "dev/tools/.golangci.yml",
-        *sorted((REPO_ROOT / "examples").rglob("*.yaml")),
-        *sorted((REPO_ROOT / "examples").rglob("*.yml")),
+        REPO_ROOT / "versions.yaml",
     ]
+    for tree in ("deploy", "agents"):
+        for pattern in ("*.yaml", "*.yml"):
+            yaml_files += sorted((REPO_ROOT / tree).rglob(pattern))
     for path in yaml_files:
         if not path.exists():
+            continue
+        rel = path.relative_to(REPO_ROOT)
+        if any(part in SKIP_DIRS or part.startswith(".") for part in rel.parts):
             continue
         if apply_header(path, HASH_HEADER, "# ", has_shebang=False):
             counts["yaml"] += 1

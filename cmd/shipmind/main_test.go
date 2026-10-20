@@ -16,10 +16,14 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-steer/shipmind/internal/manifests"
 )
 
 func write(t *testing.T, doc string) string {
@@ -83,4 +87,74 @@ func TestRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+type fakeFetcher struct{ err error }
+
+func (f fakeFetcher) Fetch(_ context.Context, _, _ string, paths []string) (map[string][]byte, string, error) {
+	if f.err != nil {
+		return nil, "", f.err
+	}
+	files := map[string][]byte{}
+	for _, p := range paths {
+		files[p] = []byte("kind: " + p + "\n")
+	}
+	return files, "0123456789abcdef0123456789abcdef01234567", nil
+}
+
+func TestVendorAndCheck(t *testing.T) {
+	old := fetcher
+	t.Cleanup(func() { fetcher = old })
+	fetcher = fakeFetcher{}
+
+	doc := good + `  - name: ax
+    source: github.com/example/ax
+    version: v1.0.0
+    profiles: [substrate]
+    manifests: [deploy/ax.yaml]
+`
+	path := write(t, doc)
+	root := filepath.Dir(path)
+	runOK := func(args ...string) string {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != 0 {
+			t.Fatalf("run %v: exit %d: %s", args, code, errOut.String())
+		}
+		return out.String()
+	}
+	runFail := func(want string, args ...string) {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), want) {
+			t.Errorf("run %v: exit %d, stderr %q, want exit 1 and %q", args, code, errOut.String(), want)
+		}
+	}
+
+	runFail("ax: not vendored", "check", "-f", path)
+	if out := runOK("vendor", "-f", path); out != "vendored ax@v1.0.0: 1 files\n" {
+		t.Errorf("vendor output %q", out)
+	}
+	if out := runOK("check", "-f", path); !strings.Contains(out, "2 components, all pinned; 1 vendored, all unedited") {
+		t.Errorf("check output %q", out)
+	}
+	if out := runOK("vendor", "-f", path, "ax"); !strings.Contains(out, "vendored ax") {
+		t.Errorf("vendor ax output %q", out)
+	}
+
+	edited := filepath.Join(root, manifests.Dir, "ax", "deploy", "ax", "ax.yaml")
+	if err := os.WriteFile(edited, []byte("kind: Edited\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runFail("deploy/ax/ax.yaml was edited after vendoring", "check", "-f", path)
+
+	if err := os.MkdirAll(filepath.Join(root, manifests.Dir, "gone"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runFail(`no component "gone"`, "check", "-f", path)
+
+	runFail(`no component "nope"`, "vendor", "-f", path, "nope")
+	runFail("no manifests to vendor", "vendor", "-f", path, "mast")
+	fetcher = fakeFetcher{err: errors.New("network down")}
+	runFail("network down", "vendor", "-f", path, "ax")
 }
