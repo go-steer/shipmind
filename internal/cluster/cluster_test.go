@@ -345,3 +345,33 @@ func TestWorkloads(t *testing.T) {
 		t.Error("bad JSON accepted")
 	}
 }
+
+func TestInClusterKubeconfig(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	if _, err := InClusterKubeconfig(t.TempDir()); err == nil {
+		t.Error("InClusterKubeconfig outside a cluster succeeded")
+	}
+	for host, want := range map[string]string{"10.0.0.1": "https://10.0.0.1:443", "fd00::1": "https://[fd00::1]:443"} {
+		t.Setenv("KUBERNETES_SERVICE_HOST", host)
+		t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+		p, err := InClusterKubeconfig(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(p)
+		if !strings.Contains(string(b), "server: "+want) || !strings.Contains(string(b), "current-context: "+InClusterContext) ||
+			!strings.Contains(string(b), "tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token") {
+			t.Errorf("kubeconfig for %s:\n%s", host, b)
+		}
+	}
+}
+
+func TestDeleteLabeled(t *testing.T) {
+	k, dir := fake(t)
+	if _, err := k.DeleteLabeled(context.Background(), "lab", "deployments,configmaps", "app=x"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastArgs(t, dir); got != "--context demo delete deployments,configmaps -n lab -l app=x --ignore-not-found" {
+		t.Errorf("args %q", got)
+	}
+}

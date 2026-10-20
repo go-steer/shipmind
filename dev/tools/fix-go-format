@@ -22,5 +22,7 @@ ensure_tool goimports golang.org/x/tools/cmd/goimports@latest
 
 # gofmt is part of the toolchain; goimports adds import grouping.
 # Both are idempotent.
-gofmt -s -w .
-goimports -w -local github.com/go-steer/shipmind .
+# The files verify-go-format checks.
+mapfile -t files < <(git ls-files --cached --others --exclude-standard '*.go' | while read -r f; do [[ -f "$f" ]] && printf '%s\n' "$f"; done)
+gofmt -s -w "${files[@]}"
+goimports -w -local github.com/go-steer/shipmind "${files[@]}"

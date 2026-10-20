@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -320,6 +321,13 @@ func (k Kube) RolloutRestart(ctx context.Context, namespace, name string) error 
 	return err
 }
 
+// DeleteLabeled deletes the objects of the given kinds (comma-separated,
+// as kubectl takes them) in a namespace that match a label selector.
+func (k Kube) DeleteLabeled(ctx context.Context, namespace, kinds, selector string) (string, error) {
+	out, _, err := k.run(ctx, k.kubectl(), nil, "delete", kinds, "-n", namespace, "-l", selector, "--ignore-not-found")
+	return string(out), err
+}
+
 // Delete implements Cluster.
 func (k Kube) Delete(ctx context.Context, manifests []byte) (string, error) {
 	out, _, err := k.run(ctx, k.kubectl(), manifests, "delete", "--ignore-not-found", "-f", "-")
@@ -396,4 +404,43 @@ func SecretManifest(namespace, name string, data map[string][]byte) []byte {
 		fmt.Fprintf(&b, "  %s: %s\n", key, base64.StdEncoding.EncodeToString(data[key]))
 	}
 	return []byte(b.String())
+}
+
+// InClusterContext is the context name InClusterKubeconfig writes.
+const InClusterContext = "in-cluster"
+
+// InClusterKubeconfig writes a kubeconfig for the pod's own service
+// account into dir and returns its path, so kubectl, which shipmind
+// always gives an explicit --context, works inside the cluster too.
+func InClusterKubeconfig(dir string) (string, error) {
+	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
+	if host == "" || port == "" {
+		return "", errors.New("not running in a cluster: KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT are unset")
+	}
+	const sa = "/var/run/secrets/kubernetes.io/serviceaccount"
+	server := "https://" + host + ":" + port
+	if strings.Contains(host, ":") {
+		server = "https://[" + host + "]:" + port
+	}
+	kubeconfig := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+  - name: %[1]s
+    cluster:
+      server: %[2]s
+      certificate-authority: %[3]s/ca.crt
+users:
+  - name: %[1]s
+    user:
+      tokenFile: %[3]s/token
+contexts:
+  - name: %[1]s
+    context:
+      cluster: %[1]s
+      user: %[1]s
+      namespace: default
+current-context: %[1]s
+`, InClusterContext, server, sa)
+	p := filepath.Join(dir, "shipmind-in-cluster.kubeconfig")
+	return p, os.WriteFile(p, []byte(kubeconfig), 0o600) //nolint:gosec // a fixed file name in the caller's temp directory
 }

@@ -20,6 +20,8 @@
 //	shipmind status   [-root .] [-any-ref] <env-dir>    compare an environment with its cluster (read only)
 //	shipmind up       [-root .] [-dry-run] <env-dir>    bring the cluster to the environment
 //	shipmind down     [-root .] -yes [-all] <env-dir>   delete the environment's rendered objects
+//	shipmind scenario run -atespace A (-context C -router URL | -in-cluster) <scenario-dir>
+//	                                                    run an end-to-end scenario against a deployment
 //
 // An environment directory is an overlay: a kustomization.yaml that pins
 // a shipmind profile, and a shipmind.yaml (internal/env). The deploy
@@ -60,6 +62,7 @@ commands:
   status    compare an environment (an overlay directory) with its cluster, read only
   up        bring the cluster to an environment (-dry-run validates without writing)
   down      delete an environment's rendered objects (-yes; keeps namespaces and volumes unless -all)
+  scenario  run an end-to-end scenario (scenario run -h)
 `
 
 func main() {
@@ -76,6 +79,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "check", "versions", "vendor":
 	case "status", "up", "down":
 		return runDeploy(cmd, args, stdout, stderr)
+	case "scenario":
+		return runScenario(args, stdout, stderr)
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
