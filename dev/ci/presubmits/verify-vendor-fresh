@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 # CI delegator: re-vendors and diffs via dev/tools/verify-vendor-fresh.
 set -euo pipefail
 exec "$(dirname "$0")/../../tools/verify-vendor-fresh" "$@"

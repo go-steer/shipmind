@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 # Re-vendor every component from its source repository (network) and
 # fail if deploy/vendor changes. `shipmind check` verifies the vendored
 # files against VENDOR.yaml offline, but a file edited together with its

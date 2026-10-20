@@ -31,6 +31,11 @@ release is a tested set of component versions (see "Cutting a release" in
   manifests at c2e8f50, its image left as a placeholder for the overlay.
   The architecture page's nginx pin moved out of `versions.yaml`: that
   page is the demo cluster's, not the platform's.
+- `deploy/profiles/substrate/credentials`: the token refresher
+  (`images/token-refresher`), which keeps a Workload Identity access token
+  in a Secret for Substrate's egress gateway to inject, so agents never
+  hold a Google credential. `setup/workload-identity.sh` (from
+  core-agent's gke-troubleshoot recipe) grants its IAM.
 - Profile invariant tests: every rendered image is pinned in
   `versions.yaml` (or a `ko://` placeholder for the overlay), no remote
   bases, and ax's Redis keeps its volume and append-only log.

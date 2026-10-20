@@ -28,7 +28,8 @@ Scope:
 - Every .go file in the repo (vendor/, testdata/ and dot-directories
   excluded). Deliberately not a hardcoded package list: the package set
   grows, and a list would silently stop covering new directories.
-- Shell scripts under dev/tools/ and dev/ci/presubmits/
+- Shell scripts under dev/tools/, dev/ci/presubmits/, setup/ and images/*/,
+  and Dockerfiles under images/*/
 - YAML: .github/*.yml, .github/workflows/*.yml, dev/tools/.golangci.yml,
   versions.yaml, and every file under deploy/ and agents/ (recursively),
   except deploy/vendor/, which is generated and carries its upstream's
@@ -164,7 +165,8 @@ def main() -> None:
 
     # Shell: dev/tools + dev/ci/presubmits + the example runners.
     # Skip helper data files.
-    for d in (REPO_ROOT / "dev/tools", REPO_ROOT / "dev/ci/presubmits"):
+    for d in (REPO_ROOT / "dev/tools", REPO_ROOT / "dev/ci/presubmits", REPO_ROOT / "setup",
+              *sorted(p for p in (REPO_ROOT / "images").glob("*") if p.is_dir())):
         if not d.exists():
             continue
         for path in d.iterdir():
@@ -174,7 +176,7 @@ def main() -> None:
                 continue
             if path.suffix == ".py":
                 continue
-            if path.name == "common.sh" or is_executable_or_sh(path):
+            if path.name in ("common.sh", "Dockerfile") or is_executable_or_sh(path):
                 if apply_header(path, HASH_HEADER, "# ", has_shebang=True):
                     counts["sh"] += 1
                     print(f"sh:   {path.relative_to(REPO_ROOT)}")
