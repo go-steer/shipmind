@@ -55,6 +55,9 @@ type Plan struct {
 	Root    string
 	Objects render.Objects
 	Ref     string
+	// SubstrateExtra are the third-party images versions.yaml pins for
+	// Substrate (its database, its proxy), which run beside its own.
+	SubstrateExtra []string
 }
 
 // Change is one difference between the environment and the cluster.
@@ -203,6 +206,10 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		}
 	}
 
+	if err := substrateStatus(ctx, p, c, add); err != nil {
+		return nil, err
+	}
+
 	wsWhat := fmt.Sprintf("workspace %s/%s", p.Env.Agent.Atespace, p.Env.Agent.Workspace)
 	want, err := agent.Workspace(p.Root, p.Env)
 	if err != nil {
@@ -225,6 +232,67 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		}
 	}
 	return r, nil
+}
+
+// substrateStatus checks Substrate's workloads: every image is either
+// Substrate's own, from the environment's repository at its tag, or a
+// third-party image versions.yaml pins for Substrate.
+func substrateStatus(ctx context.Context, p *Plan, c cluster.Cluster, add func(what, detail string)) error {
+	sub := p.Env.Substrate
+	if sub == nil {
+		return nil
+	}
+	prefix := strings.TrimSuffix(sub.Images, "/") + "/"
+	for _, ns := range sub.Namespaces {
+		images, err := c.WorkloadImages(ctx, ns)
+		if err != nil {
+			return err
+		}
+		if len(images) == 0 {
+			add("substrate "+ns, "no workloads (is Substrate installed?)")
+			continue
+		}
+		ids := make([]string, 0, len(images))
+		for id := range images {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		for _, id := range ids {
+			for _, img := range images[id] {
+				if ownImage(img, prefix, sub.Tag) || slices.ContainsFunc(p.SubstrateExtra, func(x string) bool { return normalize(x) == normalize(img) }) {
+					continue
+				}
+				add("substrate "+id, fmt.Sprintf("runs %s, not %s*:%s or an image versions.yaml pins for Substrate", img, prefix, sub.Tag))
+			}
+		}
+	}
+	return nil
+}
+
+// normalize spells a Docker Hub reference in full, as the registry
+// resolves it: redis:7 is docker.io/library/redis:7, and bitnami/redis:7
+// is docker.io/bitnami/redis:7.
+func normalize(ref string) string {
+	first, _, hasSlash := strings.Cut(ref, "/")
+	switch {
+	case !hasSlash:
+		return "docker.io/library/" + ref
+	case !strings.ContainsAny(first, ".:") && first != "localhost":
+		return "docker.io/" + ref
+	}
+	return ref
+}
+
+// ownImage reports whether img is <prefix><name>:<tag>, optionally with
+// a digest.
+func ownImage(img, prefix, tag string) bool {
+	rest, ok := strings.CutPrefix(img, prefix)
+	if !ok {
+		return false
+	}
+	rest, _, _ = strings.Cut(rest, "@")
+	name, t, ok := strings.Cut(rest, ":")
+	return ok && name != "" && !strings.Contains(name, ":") && t == tag
 }
 
 // lookoutStale reports whether a running lookout pod started before the

@@ -46,12 +46,16 @@ type Env struct {
 	Context string `yaml:"context"`
 	// Agent configures the ax task template and Workspace.
 	Agent Agent `yaml:"agent"`
+	// Substrate, when set, says which Substrate build the cluster should
+	// run; status checks its workloads against it.
+	Substrate *Substrate `yaml:"substrate,omitempty"`
 	// Expect lists changes `shipmind status` reports as expected rather
 	// than as drift, each with the reason: Kubernetes objects by the ID
 	// kubectl diff gives them ("apps.v1.Deployment.ax-system.ax-redis"),
 	// and the agent's objects as status names them ("secret
 	// lookout-ax/lookout-ax-agent", "workspace <atespace>/<name>",
-	// "deployment lookout-ax/lookout-ax").
+	// "deployment lookout-ax/lookout-ax", "substrate
+	// DaemonSet/ate-system/atelet").
 	Expect []Expected `yaml:"expect,omitempty"`
 
 	// Dir is the overlay directory the file was read from.
@@ -73,6 +77,16 @@ type Agent struct {
 	Clusters []Cluster `yaml:"clusters"`
 }
 
+// Substrate describes the installed Substrate build.
+type Substrate struct {
+	// Images is the repository Substrate's own images come from, and Tag
+	// the tag they all carry (Substrate's installer installs one tag).
+	Images string `yaml:"images"`
+	Tag    string `yaml:"tag"`
+	// Namespaces are where its workloads run.
+	Namespaces []string `yaml:"namespaces"`
+}
+
 // Cluster maps a bare cluster name to its full GKE resource name.
 type Cluster struct {
 	Name string `yaml:"name"`
@@ -91,7 +105,7 @@ var (
 	clusterPath = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/clusters/[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 	digestRef   = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 	kubectlID   = regexp.MustCompile(`^[A-Za-z0-9.-]+\.[A-Za-z0-9]+\.[A-Za-z0-9-.]*\.[a-z0-9.-]+$`)
-	agentID     = regexp.MustCompile(`^(secret|workspace|deployment) [a-z0-9-]+/[a-z0-9.-]+$`)
+	agentID     = regexp.MustCompile(`^((secret|workspace|deployment) [a-z0-9-]+/[a-z0-9.-]+|substrate [a-z0-9-]+|substrate [A-Za-z]+/[a-z0-9-]+/[a-z0-9.-]+)$`)
 )
 
 // Load reads dir/shipmind.yaml and checks it.
@@ -163,6 +177,22 @@ func (e *Env) check() error {
 		seen[c.Name] = true
 		if !clusterPath.MatchString(c.Path) || !strings.HasSuffix(c.Path, "/clusters/"+c.Name) {
 			fail("agent.clusters[%d].path %q: want projects/<project>/locations/<location>/clusters/%s", i, c.Path, c.Name)
+		}
+	}
+	if sub := e.Substrate; sub != nil {
+		if sub.Images == "" || strings.ContainsAny(sub.Images, "@: \t") {
+			fail("substrate.images %q: want an image repository with no tag or digest", sub.Images)
+		}
+		if sub.Tag == "" || strings.ContainsAny(sub.Tag, "@/: \t") {
+			fail("substrate.tag %q: want an image tag", sub.Tag)
+		}
+		if len(sub.Namespaces) == 0 {
+			fail("substrate.namespaces: want at least one namespace")
+		}
+		for i, ns := range sub.Namespaces {
+			if !dnsLabel.MatchString(ns) {
+				fail("substrate.namespaces[%d] %q: want a namespace name", i, ns)
+			}
 		}
 	}
 	objs := map[string]bool{}

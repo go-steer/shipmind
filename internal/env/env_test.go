@@ -48,7 +48,7 @@ func TestParseGood(t *testing.T) {
 	if r, ok := e.Expected("apps.v1.Deployment.ns.name"); !ok || r != "image moves to a digest" {
 		t.Errorf("Expected = %q, %v", r, ok)
 	}
-	for _, id := range []string{"secret lookout-ax/lookout-ax-agent", "workspace agents/demo-ws", "rbac.authorization.k8s.io.v1.ClusterRole..lookout-ax-watch", "v1.Namespace..demo"} {
+	for _, id := range []string{"secret lookout-ax/lookout-ax-agent", "workspace agents/demo-ws", "substrate DaemonSet/ate-system/atelet", "substrate ate-system", "rbac.authorization.k8s.io.v1.ClusterRole..lookout-ax-watch", "v1.Namespace..demo"} {
 		doc := good + "  - object: " + id + "\n    reason: test\n"
 		if _, err := Parse(strings.NewReader(doc)); err != nil {
 			t.Errorf("expect %q rejected: %v", id, err)
@@ -80,6 +80,10 @@ func TestParseErrors(t *testing.T) {
 		{"expect object", strings.Replace(good, "object: apps.v1.Deployment.ns.name", "object: apps/v1 Deployment", 1), "expect[0].object"},
 		{"expect reason", strings.Replace(good, "reason: image moves to a digest", "reason: ''", 1), "say why"},
 		{"expect agent id", strings.Replace(good, "object: apps.v1.Deployment.ns.name", "object: secret lookout-ax", 1), "expect[0].object"},
+		{"substrate images", strings.Replace(good, "expect:", "substrate:\n  images: r.example.com/s:v1\n  tag: v1\n  namespaces: [ate-system]\nexpect:", 1), "substrate.images"},
+		{"substrate tag", strings.Replace(good, "expect:", "substrate:\n  images: r.example.com/s\n  tag: a/b\n  namespaces: [ate-system]\nexpect:", 1), "substrate.tag"},
+		{"substrate namespaces", strings.Replace(good, "expect:", "substrate:\n  images: r.example.com/s\n  tag: v1\nexpect:", 1), "substrate.namespaces"},
+		{"substrate namespace", strings.Replace(good, "expect:", "substrate:\n  images: r.example.com/s\n  tag: v1\n  namespaces: [Ate]\nexpect:", 1), "substrate.namespaces[0]"},
 		{"duplicate expect", good + "  - object: apps.v1.Deployment.ns.name\n    reason: again\n", `"apps.v1.Deployment.ns.name" listed twice`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -88,6 +92,14 @@ func TestParseErrors(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseSubstrate(t *testing.T) {
+	doc := strings.Replace(good, "expect:", "substrate:\n  images: r.example.com/s\n  tag: v0.5.0\n  namespaces: [ate-system]\nexpect:", 1)
+	e, err := Parse(strings.NewReader(doc))
+	if err != nil || e.Substrate == nil || e.Substrate.Tag != "v0.5.0" {
+		t.Fatalf("Parse = %+v, %v", e, err)
 	}
 }
 

@@ -26,7 +26,7 @@ github.com/go-steer/shipmind/internal/bom      100.0
 # The CLI. The uncovered statements are main itself and error branches
 # between steps a test can't separate (a render that succeeds, then a
 # cluster that fails differently per command).
-github.com/go-steer/shipmind/cmd/shipmind       93.0  # 94.3
+github.com/go-steer/shipmind/cmd/shipmind       93.0  # 94.6
 
 # The environment file. Pure validation: every branch is reachable.
 github.com/go-steer/shipmind/internal/env      100.0
@@ -40,7 +40,7 @@ github.com/go-steer/shipmind/internal/cluster   97.0  # 97.5
 
 # Status, Up and Down against a fake cluster. Uncovered: rendering
 # failures after a successful render, and YAML encoding errors.
-github.com/go-steer/shipmind/internal/deploy    90.0  # 91.3
+github.com/go-steer/shipmind/internal/deploy    91.0  # 92.6
 
 # Overlay rendering against a temporary git checkout. Uncovered:
 # filesystem failures in the temp copy and YAML re-encoding errors.

@@ -298,3 +298,38 @@ func TestSubstrateLookoutStorePersists(t *testing.T) {
 		t.Errorf("lookout --store values %v, want exactly /var/lib/lookout/lookout.db", stores)
 	}
 }
+
+// A WorkerPool's workerImage is not a container field, so
+// TestProfileImagesArePinned doesn't see it: hold it to the same rule.
+func TestProfileWorkerImagesArePinned(t *testing.T) {
+	f, err := bom.Load("../../versions.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := map[string]bool{}
+	for _, c := range f.Components {
+		for _, img := range c.Images {
+			pinned[img.Ref] = true
+		}
+	}
+	seen := 0
+	for _, dir := range profileParts(t) {
+		for _, o := range build(t, dir) {
+			if o.Kind() != "WorkerPool" {
+				continue
+			}
+			seen++
+			ref, err := o.Pipe(yaml.Lookup("spec", "workerImage"))
+			if err != nil || ref == nil {
+				t.Errorf("%s: WorkerPool %s has no workerImage (%v)", dir, o.Name(), err)
+				continue
+			}
+			if v := yaml.GetValue(ref); !strings.HasPrefix(v, "ko://") && !pinned[v] {
+				t.Errorf("%s: WorkerPool %s runs %q, which versions.yaml does not pin", dir, o.Name(), v)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Error("no WorkerPool in any profile")
+	}
+}

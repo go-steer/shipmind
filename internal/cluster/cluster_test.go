@@ -35,10 +35,11 @@ case "$*" in
   *" diff "*) [ -f "$d/diff.out" ] && cat "$d/diff.out"; exit $(cat "$d/diff.exit" 2>/dev/null || echo 0) ;;
   *" get secret "*"managedFields"*) [ -f "$d/managed.txt" ] && cat "$d/managed.txt"; exit 0 ;;
   *" get secret "*) [ -f "$d/secret.json" ] && cat "$d/secret.json"; exit 0 ;;
+  *" get deployments,daemonsets,statefulsets "*) [ -f "$d/workloads.json" ] && cat "$d/workloads.json"; exit 0 ;;
   *" get deployment "*) [ -f "$d/selector.json" ] && cat "$d/selector.json"; exit 0 ;;
   *" get pods "*) echo "$*" > "$d/pods.args"; [ -f "$d/starts.txt" ] && cat "$d/starts.txt"; exit 0 ;;
   *" apply --server-side "*) if [ -f "$d/ssa.fail" ]; then echo "error when applying patch: data: c2VjcmV0" >&2; exit 1; fi; echo applied ;;
-  *" get workspace "*) if [ -f "$d/workspace.yaml" ]; then cat "$d/workspace.yaml"; else echo 'workspace not found' >&2; exit 1; fi ;;
+  *" get workspace "*) if [ -f "$d/workspace.yaml" ]; then cat "$d/workspace.yaml"; else echo 'Error: getting workspace: rpc error: code = NotFound desc = workspace "ws" not found' >&2; exit 1; fi ;;
   *) echo ok ;;
 esac
 `
@@ -257,6 +258,12 @@ func TestAx(t *testing.T) {
 	if _, _, err := k.AxWorkspace(ctx, "fail", "ws"); err == nil {
 		t.Error("ax failure not reported")
 	}
+	// A missing ax binary is an error, not a missing Workspace, even
+	// though its message says "not found".
+	k.Ax = filepath.Join(t.TempDir(), "no-such-ax")
+	if _, found, err := k.AxWorkspace(ctx, "agents", "ws"); err == nil || found {
+		t.Errorf("missing binary: found=%v, err=%v; want an error", found, err)
+	}
 }
 
 func TestNoContext(t *testing.T) {
@@ -292,5 +299,25 @@ func TestSecretManifest(t *testing.T) {
 	want := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\n  namespace: ns\ntype: Opaque\ndata:\n  a: MQ==\n  b: Mg==\n"
 	if got != want {
 		t.Errorf("SecretManifest =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestWorkloadImages(t *testing.T) {
+	k, dir := fake(t)
+	put(t, filepath.Join(dir, "workloads.json"), `{"items":[
+	  {"kind":"DaemonSet","metadata":{"name":"atelet","namespace":"ate-system"},
+	   "spec":{"template":{"spec":{"initContainers":[{"image":"init:1"}],"containers":[{"image":"atelet:1"},{"image":"plugin:1"}]}}}},
+	  {"kind":"Deployment","metadata":{"name":"api","namespace":"ate-system"},
+	   "spec":{"template":{"spec":{"containers":[{"image":"api:1"}]}}}}]}`)
+	got, err := k.WorkloadImages(context.Background(), "ate-system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got["DaemonSet/ate-system/atelet"], []string{"init:1", "atelet:1", "plugin:1"}) || !slices.Equal(got["Deployment/ate-system/api"], []string{"api:1"}) {
+		t.Errorf("WorkloadImages = %v", got)
+	}
+	put(t, filepath.Join(dir, "workloads.json"), "{")
+	if _, err := k.WorkloadImages(context.Background(), "ate-system"); err == nil {
+		t.Error("bad JSON accepted")
 	}
 }

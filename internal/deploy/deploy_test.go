@@ -55,6 +55,7 @@ func plan(t *testing.T) *Plan {
 // fakeCluster records writes and serves Secrets and the Workspace from
 // memory.
 type fakeCluster struct {
+	workloads     map[string]map[string][]string
 	ops           []string // every write, in order
 	secretUpdated time.Time
 	podStarts     []time.Time
@@ -148,6 +149,10 @@ func (f *fakeCluster) Secret(_ context.Context, ns, name string) (map[string][]b
 func (f *fakeCluster) RolloutStatus(_ context.Context, ns, name string) error {
 	f.rollouts = append(f.rollouts, ns+"/"+name)
 	return f.fail("rollout")
+}
+
+func (f *fakeCluster) WorkloadImages(_ context.Context, ns string) (map[string][]string, error) {
+	return f.workloads[ns], f.fail("workloads")
 }
 
 func (f *fakeCluster) AxWorkspace(context.Context, string, string) ([]byte, bool, error) {
@@ -449,5 +454,73 @@ func TestDown(t *testing.T) {
 	c.failOn = "delete"
 	if _, err := Down(context.Background(), plan(t), c, false); err == nil {
 		t.Error("Down with delete failing succeeded")
+	}
+}
+
+func TestStatusSubstrate(t *testing.T) {
+	p := plan(t)
+	p.Env.Substrate = &env.Substrate{Images: "r.example.com/substrate", Tag: "v0.5.0", Namespaces: []string{"ate-system", "podcert"}}
+	p.SubstrateExtra = []string{"docker.io/library/postgres:18-alpine@sha256:" + strings.Repeat("1", 64), "docker.io/envoyproxy/envoy:v1@sha256:" + strings.Repeat("2", 64)}
+	c := inSync(t)
+	c.workloads = map[string]map[string][]string{
+		"ate-system": {
+			"DaemonSet/ate-system/atelet":     {"r.example.com/substrate/atelet:v0.5.0@sha256:" + strings.Repeat("3", 64)},
+			"StatefulSet/ate-system/postgres": {"postgres:18-alpine@sha256:" + strings.Repeat("1", 64)},
+			"Deployment/ate-system/atenet":    {"r.example.com/substrate/atenet:v0.5.0", "envoyproxy/envoy:v1@sha256:" + strings.Repeat("2", 64)},
+		},
+		"podcert": {"Deployment/podcert/ctl": {"r.example.com/substrate/podcertcontroller:v0.5.0"}},
+	}
+	r, err := Status(context.Background(), p, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Changes) != 0 {
+		t.Fatalf("in sync: %+v", r.Changes)
+	}
+
+	c.workloads["ate-system"]["DaemonSet/ate-system/atelet"] = []string{"r.example.com/substrate/atelet:v0.4.0"}
+	c.workloads["ate-system"]["StatefulSet/ate-system/postgres"] = []string{"postgres:17"}
+	c.workloads["podcert"] = nil
+	if r, err = Status(context.Background(), p, c); err != nil {
+		t.Fatal(err)
+	}
+	var whats []string
+	for _, ch := range r.Changes {
+		whats = append(whats, ch.What)
+	}
+	want := "substrate DaemonSet/ate-system/atelet, substrate StatefulSet/ate-system/postgres, substrate podcert"
+	if strings.Join(whats, ", ") != want {
+		t.Errorf("changes %v, want %s", whats, want)
+	}
+	c.failOn = "workloads"
+	if _, err := Status(context.Background(), p, c); err == nil {
+		t.Error("Status with workloads failing succeeded")
+	}
+}
+
+func TestOwnImageAndNormalize(t *testing.T) {
+	for img, want := range map[string]bool{
+		"r.example.com/s/atelet:v1":            true,
+		"r.example.com/s/atelet:v1@sha256:abc": true,
+		"r.example.com/s/atelet:v2":            false,
+		"r.example.com/s/atelet":               false,
+		"r.example.com/other/atelet:v1":        false,
+		"r.example.com/s/:v1":                  false,
+	} {
+		if got := ownImage(img, "r.example.com/s/", "v1"); got != want {
+			t.Errorf("ownImage(%q) = %v", img, got)
+		}
+	}
+	for in, want := range map[string]string{
+		"redis:7":               "docker.io/library/redis:7",
+		"bitnami/redis:7":       "docker.io/bitnami/redis:7",
+		"ghcr.io/a/b:1":         "ghcr.io/a/b:1",
+		"localhost/a:1":         "localhost/a:1",
+		"registry:5000/a:1":     "registry:5000/a:1",
+		"docker.io/library/x:1": "docker.io/library/x:1",
+	} {
+		if got := normalize(in); got != want {
+			t.Errorf("normalize(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

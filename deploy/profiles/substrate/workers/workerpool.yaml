@@ -1,0 +1,51 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The Substrate workers ax tasks run on: a WorkerPool of gVisor sandbox
+# hosts. Its pods select nodes of a ComputeClass named substrate-workers,
+# which the environment provides: it must label its nodes
+# ate.dev/worker-node=true (Substrate's atelet only runs there) and taint
+# them ate.dev/sandboxClass=gvisor:NoSchedule. A gVisor snapshot restores
+# only on a host with every CPU feature of the host the agent first
+# booted on, so the class must not mix CPU generations it hasn't proven
+# compatible.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ax-workers
+---
+apiVersion: ate.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: ax-pool
+  namespace: ax-workers
+  labels:
+    ate.dev/pool: ax-pool
+spec:
+  replicas: 4
+  sandboxClasses:
+    - name: gvisor
+  # Substrate's ateom-gvisor at the pinned version; an environment
+  # overlay sets it.
+  workerImage: ko://github.com/agent-substrate/substrate/ateom-gvisor
+  template:
+    nodeSelector:
+      cloud.google.com/compute-class: substrate-workers
+    resources:
+      requests:
+        cpu: 300m
+        memory: 384Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi

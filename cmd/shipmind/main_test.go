@@ -183,6 +183,9 @@ func (deployFake) SecretUpdated(context.Context, string, string) (time.Time, boo
 	return time.Time{}, false, nil
 }
 func (deployFake) PodStarts(context.Context, string, string) ([]time.Time, error) { return nil, nil }
+func (deployFake) WorkloadImages(context.Context, string) (map[string][]string, error) {
+	return nil, nil
+}
 func (deployFake) AxWorkspace(context.Context, string, string) ([]byte, bool, error) {
 	return nil, false, nil
 }
@@ -282,10 +285,38 @@ func TestDeployCommands(t *testing.T) {
 		})
 	}
 
+	// With a substrate section, the deploy commands read Substrate's
+	// third-party pins from the checkout's versions.yaml.
+	if err := os.WriteFile(filepath.Join(envDir, "shipmind.yaml"), append(readFile(t, filepath.Join(envDir, "shipmind.yaml")),
+		[]byte("substrate:\n  images: r.example.com/substrate\n  tag: v1\n  namespaces: [ate-system]\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out0, err0 bytes.Buffer
+	if code := run([]string{"status", "-root", root, "-any-ref", envDir}, &out0, &err0); code != 1 || !strings.Contains(err0.String(), "versions.yaml") {
+		t.Errorf("substrate without versions.yaml: exit %d, stderr %q", code, err0.String())
+	}
+	if err := os.WriteFile(filepath.Join(root, "versions.yaml"), []byte("components:\n  - name: substrate\n    source: github.com/a/substrate\n    version: v1.0.0\n    profiles: [substrate]\n    images:\n      - name: postgres\n        ref: docker.io/library/postgres:1@sha256:"+strings.Repeat("1", 64)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out0.Reset()
+	err0.Reset()
+	if code := run([]string{"status", "-root", root, "-any-ref", envDir}, &out0, &err0); code != exitDrift || !strings.Contains(out0.String(), "substrate ate-system: no workloads") {
+		t.Errorf("substrate status: exit %d\nstdout %s\nstderr %s", code, out0.String(), err0.String())
+	}
+
 	fake.failDiff = true
 	newCluster = func(string) cluster.Cluster { return fake }
 	var out, errOut bytes.Buffer
-	if code := run([]string{"status", "-root", root, envDir}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "diff failed") {
+	if code := run([]string{"status", "-root", root, "-any-ref", envDir}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "diff failed") {
 		t.Errorf("status with a failing cluster: exit %d, stderr %q", code, errOut.String())
 	}
+}
+
+func readFile(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

@@ -59,6 +59,10 @@ type Cluster interface {
 	RolloutRestart(ctx context.Context, namespace, name string) error
 	// RolloutStatus waits for a Deployment to finish rolling out.
 	RolloutStatus(ctx context.Context, namespace, name string) error
+	// WorkloadImages returns the container images of every Deployment,
+	// DaemonSet and StatefulSet in a namespace, keyed by
+	// "<Kind>/<namespace>/<name>".
+	WorkloadImages(ctx context.Context, namespace string) (map[string][]string, error)
 	// AxWorkspace returns an ax Workspace as YAML, or found=false.
 	AxWorkspace(ctx context.Context, atespace, name string) (yaml []byte, found bool, err error)
 	// AxApply applies ax resources in an atespace.
@@ -228,6 +232,48 @@ func (k Kube) PodStarts(ctx context.Context, namespace, deployment string) ([]ti
 	return starts, nil
 }
 
+// WorkloadImages implements Cluster.
+func (k Kube) WorkloadImages(ctx context.Context, namespace string) (map[string][]string, error) {
+	out, _, err := k.run(ctx, k.kubectl(), nil, "get", "deployments,daemonsets,statefulsets", "-n", namespace, "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	return parseWorkloadImages(out)
+}
+
+func parseWorkloadImages(out []byte) (map[string][]string, error) {
+	var list struct {
+		Items []struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name, Namespace string
+			} `json:"metadata"`
+			Spec struct {
+				Template struct {
+					Spec struct {
+						InitContainers []struct{ Image string } `json:"initContainers"`
+						Containers     []struct{ Image string } `json:"containers"`
+					} `json:"spec"`
+				} `json:"template"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, err
+	}
+	images := map[string][]string{}
+	for _, it := range list.Items {
+		id := it.Kind + "/" + it.Metadata.Namespace + "/" + it.Metadata.Name
+		for _, c := range it.Spec.Template.Spec.InitContainers {
+			images[id] = append(images[id], c.Image)
+		}
+		for _, c := range it.Spec.Template.Spec.Containers {
+			images[id] = append(images[id], c.Image)
+		}
+	}
+	return images, nil
+}
+
 // RolloutRestart implements Cluster.
 func (k Kube) RolloutRestart(ctx context.Context, namespace, name string) error {
 	_, _, err := k.run(ctx, k.kubectl(), nil, "rollout", "restart", "-n", namespace, "deployment/"+name)
@@ -278,9 +324,12 @@ func (k Kube) RolloutStatus(ctx context.Context, namespace, name string) error {
 
 // AxWorkspace implements Cluster.
 func (k Kube) AxWorkspace(ctx context.Context, atespace, name string) ([]byte, bool, error) {
-	out, _, err := k.run(ctx, k.ax(), nil, "-a", atespace, "get", "workspace", name)
+	out, exit, err := k.run(ctx, k.ax(), nil, "-a", atespace, "get", "workspace", name)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+		// Only ax's own answer means "missing": the gRPC NotFound code.
+		// A binary that isn't there ("executable file not found") or any
+		// other failure is an error, never a missing Workspace.
+		if exit > 0 && strings.Contains(err.Error(), "code = NotFound") {
 			return nil, false, nil
 		}
 		return nil, false, err
