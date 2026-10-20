@@ -33,7 +33,9 @@ Scope:
 - YAML: .github/*.yml, .github/workflows/*.yml, dev/tools/.golangci.yml,
   versions.yaml, and every file under deploy/ and agents/ (recursively),
   except deploy/vendor/, which is generated and carries its upstream's
-  own headers
+  own headers, and the agent bundles in VERBATIM, which are copied
+  byte for byte from upstream (normalizing their headers would change
+  the image they go into)
 - Python: dev/tools/add-license-headers (this file)
 
 For Go files, golangci-lint's `goheader` linter enforces the full
@@ -145,6 +147,11 @@ def is_executable_or_sh(p: Path) -> bool:
 
 SKIP_DIRS = {"vendor", "testdata"}
 
+# Agent bundles reproduced byte for byte from mast (they carry mast's
+# own short Apache header). Rewriting their headers would change the
+# agent image's contents, which must match what runs.
+VERBATIM = {Path("agents/sre-triage")}
+
 
 def go_files():
     """Every .go file in the repo, minus vendored/generated/dot trees."""
@@ -201,6 +208,8 @@ def main() -> None:
             continue
         rel = path.relative_to(REPO_ROOT)
         if any(part in SKIP_DIRS or part.startswith(".") for part in rel.parts):
+            continue
+        if any(rel.is_relative_to(v) for v in VERBATIM):
             continue
         if apply_header(path, HASH_HEADER, "# ", has_shebang=False):
             counts["yaml"] += 1

@@ -1,0 +1,105 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Builds the substrate profile's agent image (images/agent-mast). Every
+# PR that touches it builds it without pushing; main builds it and pushes
+# ghcr.io/go-steer/shipmind/agent-mast:<shipmind commit>, and the job
+# summary records the digest to pin in versions.yaml.
+#
+# Path-filtered and deliberately not a required check: a required check
+# on a path-filtered workflow never reports on PRs the filter excludes.
+name: image agent-mast
+
+on:
+  pull_request:
+    paths:
+      - images/agent-mast/**
+      - agents/sre-triage/**
+      - versions.yaml
+      - .github/workflows/image-agent-mast.yml
+  push:
+    branches: [main]
+    paths:
+      - images/agent-mast/**
+      - agents/sre-triage/**
+      - versions.yaml
+      - .github/workflows/image-agent-mast.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build agent-mast
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/go-steer/shipmind/agent-mast
+      PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v7
+      # The pins come from versions.yaml; the Dockerfile has no defaults.
+      - name: build arguments from versions.yaml
+        id: args
+        run: |
+          {
+            echo 'list<<EOF'
+            images/agent-mast/build-args.sh --lines
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
+      - if: env.PUSH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build${{ env.PUSH == 'true' && ' and push' || '' }}
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: images/agent-mast/Dockerfile
+          build-args: ${{ steps.args.outputs.list }}
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+      - name: summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### agent-mast"
+            echo
+            if [[ "$PUSH" == true ]]; then
+              echo "Pushed \`$IMAGE:$GITHUB_SHA\`"
+              echo
+              echo "Pin in versions.yaml: \`$IMAGE@$DIGEST\`"
+            else
+              echo "Built (not pushed): \`$DIGEST\`"
+            fi
+            echo
+            echo "Build arguments:"
+            echo '```'
+            images/agent-mast/build-args.sh --lines
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
