@@ -48,7 +48,7 @@ func TestParseGood(t *testing.T) {
 	if r, ok := e.Expected("apps.v1.Deployment.ns.name"); !ok || r != "image moves to a digest" {
 		t.Errorf("Expected = %q, %v", r, ok)
 	}
-	for _, id := range []string{"secret lookout-ax/lookout-ax-agent", "workspace agents/demo-ws", "substrate DaemonSet/ate-system/atelet", "substrate ate-system", "rbac.authorization.k8s.io.v1.ClusterRole..lookout-ax-watch", "v1.Namespace..demo"} {
+	for _, id := range []string{"secret lookout-ax/lookout-ax-agent", "workspace agents/demo-ws", "substrate DaemonSet/ate-system/atelet", "rollout Deployment/lookout-ax/lookout-ax", "rbac.authorization.k8s.io.v1.ClusterRole..lookout-ax-watch", "v1.Namespace..demo"} {
 		doc := good + "  - object: " + id + "\n    reason: test\n"
 		if _, err := Parse(strings.NewReader(doc)); err != nil {
 			t.Errorf("expect %q rejected: %v", id, err)
@@ -80,10 +80,14 @@ func TestParseErrors(t *testing.T) {
 		{"expect object", strings.Replace(good, "object: apps.v1.Deployment.ns.name", "object: apps/v1 Deployment", 1), "expect[0].object"},
 		{"expect reason", strings.Replace(good, "reason: image moves to a digest", "reason: ''", 1), "say why"},
 		{"expect agent id", strings.Replace(good, "object: apps.v1.Deployment.ns.name", "object: secret lookout-ax", 1), "expect[0].object"},
-		{"substrate images", strings.Replace(good, "expect:", "substrate:\n  images: r.example.com/s:v1\n  tag: v1\n  namespaces: [ate-system]\nexpect:", 1), "substrate.images"},
-		{"substrate tag", strings.Replace(good, "expect:", "substrate:\n  images: r.example.com/s\n  tag: a/b\n  namespaces: [ate-system]\nexpect:", 1), "substrate.tag"},
-		{"substrate namespaces", strings.Replace(good, "expect:", "substrate:\n  images: r.example.com/s\n  tag: v1\nexpect:", 1), "substrate.namespaces"},
-		{"substrate namespace", strings.Replace(good, "expect:", "substrate:\n  images: r.example.com/s\n  tag: v1\n  namespaces: [Ate]\nexpect:", 1), "substrate.namespaces[0]"},
+		{"substrate images", withSubstrate(strings.Replace(subOK, "images: r.example.com/s", "images: r.example.com/s:v1", 1)), "substrate.images"},
+		{"substrate tag", withSubstrate(strings.Replace(subOK, "tag: v1", "tag: a/b", 1)), "substrate.tag"},
+		{"substrate digests", withSubstrate(strings.Replace(subOK, "sha256:"+strings.Repeat("0", 64), "sha256:abc", 1)), "substrate.digests"},
+		{"substrate no digests", withSubstrate(strings.Replace(subOK, "  digests: {atelet: sha256:"+strings.Repeat("0", 64)+"}\n", "", 1)), "substrate.digests"},
+		{"substrate namespaces", withSubstrate(strings.Replace(subOK, "  namespaces: [ate-system]\n", "", 1)), "substrate.namespaces"},
+		{"substrate namespace", withSubstrate(strings.Replace(subOK, "namespaces: [ate-system]", "namespaces: [ate-system, Ate]", 1)), "substrate.namespaces[1]"},
+		{"substrate no workloads", withSubstrate(strings.Replace(subOK, "  workloads: [DaemonSet/ate-system/atelet]\n", "", 1)), "substrate.workloads"},
+		{"substrate workload", withSubstrate(strings.Replace(subOK, "DaemonSet/ate-system/atelet", "Job/other/x", 1)), "substrate.workloads[0]"},
 		{"duplicate expect", good + "  - object: apps.v1.Deployment.ns.name\n    reason: again\n", `"apps.v1.Deployment.ns.name" listed twice`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,11 +99,16 @@ func TestParseErrors(t *testing.T) {
 	}
 }
 
+const subOK = "substrate:\n  images: r.example.com/s\n  tag: v1\n  digests: {atelet: sha256:0000000000000000000000000000000000000000000000000000000000000000}\n  namespaces: [ate-system]\n  workloads: [DaemonSet/ate-system/atelet]\n"
+
+func withSubstrate(sub string) string { return strings.Replace(good, "expect:", sub+"expect:", 1) }
+
 func TestParseSubstrate(t *testing.T) {
-	doc := strings.Replace(good, "expect:", "substrate:\n  images: r.example.com/s\n  tag: v0.5.0\n  namespaces: [ate-system]\nexpect:", 1)
-	e, err := Parse(strings.NewReader(doc))
-	if err != nil || e.Substrate == nil || e.Substrate.Tag != "v0.5.0" {
-		t.Fatalf("Parse = %+v, %v", e, err)
+	for _, doc := range []string{withSubstrate(subOK), withSubstrate(strings.Replace(subOK, "r.example.com/s", "localhost:5000/s", 1))} {
+		e, err := Parse(strings.NewReader(doc))
+		if err != nil || e.Substrate == nil || e.Substrate.Tag != "v1" {
+			t.Fatalf("Parse = %+v, %v", e, err)
+		}
 	}
 }
 

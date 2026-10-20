@@ -59,10 +59,9 @@ type Cluster interface {
 	RolloutRestart(ctx context.Context, namespace, name string) error
 	// RolloutStatus waits for a Deployment to finish rolling out.
 	RolloutStatus(ctx context.Context, namespace, name string) error
-	// WorkloadImages returns the container images of every Deployment,
-	// DaemonSet and StatefulSet in a namespace, keyed by
-	// "<Kind>/<namespace>/<name>".
-	WorkloadImages(ctx context.Context, namespace string) (map[string][]string, error)
+	// Workloads lists every Deployment, DaemonSet and StatefulSet in a
+	// namespace with its images and whether its rollout has finished.
+	Workloads(ctx context.Context, namespace string) ([]Workload, error)
 	// AxWorkspace returns an ax Workspace as YAML, or found=false.
 	AxWorkspace(ctx context.Context, atespace, name string) (yaml []byte, found bool, err error)
 	// AxApply applies ax resources in an atespace.
@@ -232,46 +231,87 @@ func (k Kube) PodStarts(ctx context.Context, namespace, deployment string) ([]ti
 	return starts, nil
 }
 
-// WorkloadImages implements Cluster.
-func (k Kube) WorkloadImages(ctx context.Context, namespace string) (map[string][]string, error) {
+// Workload is a Deployment, DaemonSet or StatefulSet as it runs.
+type Workload struct {
+	// ID is "<Kind>/<namespace>/<name>".
+	ID string
+	// Images are its init and regular containers' images, in order.
+	Images []string
+	// Current is false while a rollout hasn't finished: the controller
+	// hasn't seen the latest spec, or pods from an older template remain.
+	// A stuck rollout keeps the new template but runs the old pods, so
+	// the template alone can't say what runs.
+	Current bool
+}
+
+// Workloads implements Cluster.
+func (k Kube) Workloads(ctx context.Context, namespace string) ([]Workload, error) {
 	out, _, err := k.run(ctx, k.kubectl(), nil, "get", "deployments,daemonsets,statefulsets", "-n", namespace, "-o", "json")
 	if err != nil {
 		return nil, err
 	}
-	return parseWorkloadImages(out)
+	return parseWorkloads(out)
 }
 
-func parseWorkloadImages(out []byte) (map[string][]string, error) {
+func parseWorkloads(out []byte) ([]Workload, error) {
+	type container struct{ Image string }
 	var list struct {
 		Items []struct {
 			Kind     string `json:"kind"`
 			Metadata struct {
-				Name, Namespace string
+				Name       string `json:"name"`
+				Namespace  string `json:"namespace"`
+				Generation int64  `json:"generation"`
 			} `json:"metadata"`
 			Spec struct {
+				Replicas *int64 `json:"replicas"`
 				Template struct {
 					Spec struct {
-						InitContainers []struct{ Image string } `json:"initContainers"`
-						Containers     []struct{ Image string } `json:"containers"`
+						InitContainers []container `json:"initContainers"`
+						Containers     []container `json:"containers"`
 					} `json:"spec"`
 				} `json:"template"`
 			} `json:"spec"`
+			Status struct {
+				ObservedGeneration     int64  `json:"observedGeneration"`
+				Replicas               int64  `json:"replicas"`
+				UpdatedReplicas        int64  `json:"updatedReplicas"`
+				DesiredNumberScheduled int64  `json:"desiredNumberScheduled"`
+				UpdatedNumberScheduled int64  `json:"updatedNumberScheduled"`
+				CurrentRevision        string `json:"currentRevision"`
+				UpdateRevision         string `json:"updateRevision"`
+			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(out, &list); err != nil {
 		return nil, err
 	}
-	images := map[string][]string{}
+	var ws []Workload
 	for _, it := range list.Items {
-		id := it.Kind + "/" + it.Metadata.Namespace + "/" + it.Metadata.Name
+		w := Workload{ID: it.Kind + "/" + it.Metadata.Namespace + "/" + it.Metadata.Name}
 		for _, c := range it.Spec.Template.Spec.InitContainers {
-			images[id] = append(images[id], c.Image)
+			w.Images = append(w.Images, c.Image)
 		}
 		for _, c := range it.Spec.Template.Spec.Containers {
-			images[id] = append(images[id], c.Image)
+			w.Images = append(w.Images, c.Image)
 		}
+		want := int64(1)
+		if it.Spec.Replicas != nil {
+			want = *it.Spec.Replicas
+		}
+		st := it.Status
+		seen := st.ObservedGeneration >= it.Metadata.Generation
+		switch it.Kind {
+		case "Deployment":
+			w.Current = seen && st.UpdatedReplicas == want && st.Replicas == want
+		case "DaemonSet":
+			w.Current = seen && st.UpdatedNumberScheduled == st.DesiredNumberScheduled
+		case "StatefulSet":
+			w.Current = seen && st.UpdatedReplicas == want && (st.UpdateRevision == "" || st.CurrentRevision == st.UpdateRevision)
+		}
+		ws = append(ws, w)
 	}
-	return images, nil
+	return ws, nil
 }
 
 // RolloutRestart implements Cluster.

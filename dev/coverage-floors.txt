@@ -36,11 +36,11 @@ github.com/go-steer/shipmind/internal/env      100.0
 github.com/go-steer/shipmind/internal/agent     91.0  # 92.1
 
 # kubectl and ax, run as subprocesses against a fake binary.
-github.com/go-steer/shipmind/internal/cluster   97.0  # 97.5
+github.com/go-steer/shipmind/internal/cluster   97.0  # 97.3
 
 # Status, Up and Down against a fake cluster. Uncovered: rendering
 # failures after a successful render, and YAML encoding errors.
-github.com/go-steer/shipmind/internal/deploy    91.0  # 92.6
+github.com/go-steer/shipmind/internal/deploy    91.0  # 92.5
 
 # Overlay rendering against a temporary git checkout. Uncovered:
 # filesystem failures in the temp copy and YAML re-encoding errors.

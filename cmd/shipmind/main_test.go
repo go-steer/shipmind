@@ -183,9 +183,7 @@ func (deployFake) SecretUpdated(context.Context, string, string) (time.Time, boo
 	return time.Time{}, false, nil
 }
 func (deployFake) PodStarts(context.Context, string, string) ([]time.Time, error) { return nil, nil }
-func (deployFake) WorkloadImages(context.Context, string) (map[string][]string, error) {
-	return nil, nil
-}
+func (deployFake) Workloads(context.Context, string) ([]cluster.Workload, error)  { return nil, nil }
 func (deployFake) AxWorkspace(context.Context, string, string) ([]byte, bool, error) {
 	return nil, false, nil
 }
@@ -288,7 +286,7 @@ func TestDeployCommands(t *testing.T) {
 	// With a substrate section, the deploy commands read Substrate's
 	// third-party pins from the checkout's versions.yaml.
 	if err := os.WriteFile(filepath.Join(envDir, "shipmind.yaml"), append(readFile(t, filepath.Join(envDir, "shipmind.yaml")),
-		[]byte("substrate:\n  images: r.example.com/substrate\n  tag: v1\n  namespaces: [ate-system]\n")...), 0o600); err != nil {
+		[]byte("substrate:\n  images: r.example.com/substrate\n  tag: v1\n  digests: {atelet: sha256:"+strings.Repeat("0", 64)+"}\n  namespaces: [ate-system]\n  workloads: [DaemonSet/ate-system/atelet]\n")...), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out0, err0 bytes.Buffer
@@ -300,7 +298,7 @@ func TestDeployCommands(t *testing.T) {
 	}
 	out0.Reset()
 	err0.Reset()
-	if code := run([]string{"status", "-root", root, "-any-ref", envDir}, &out0, &err0); code != exitDrift || !strings.Contains(out0.String(), "substrate ate-system: no workloads") {
+	if code := run([]string{"status", "-root", root, "-any-ref", envDir}, &out0, &err0); code != exitDrift || !strings.Contains(out0.String(), "substrate DaemonSet/ate-system/atelet: missing") {
 		t.Errorf("substrate status: exit %d\nstdout %s\nstderr %s", code, out0.String(), err0.String())
 	}
 

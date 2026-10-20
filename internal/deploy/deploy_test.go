@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/go-steer/shipmind/internal/agent"
+	"github.com/go-steer/shipmind/internal/cluster"
 	"github.com/go-steer/shipmind/internal/env"
 	"github.com/go-steer/shipmind/internal/render"
 )
@@ -55,7 +56,7 @@ func plan(t *testing.T) *Plan {
 // fakeCluster records writes and serves Secrets and the Workspace from
 // memory.
 type fakeCluster struct {
-	workloads     map[string]map[string][]string
+	workloads     map[string][]cluster.Workload
 	ops           []string // every write, in order
 	secretUpdated time.Time
 	podStarts     []time.Time
@@ -151,7 +152,7 @@ func (f *fakeCluster) RolloutStatus(_ context.Context, ns, name string) error {
 	return f.fail("rollout")
 }
 
-func (f *fakeCluster) WorkloadImages(_ context.Context, ns string) (map[string][]string, error) {
+func (f *fakeCluster) Workloads(_ context.Context, ns string) ([]cluster.Workload, error) {
 	return f.workloads[ns], f.fail("workloads")
 }
 
@@ -458,66 +459,114 @@ func TestDown(t *testing.T) {
 }
 
 func TestStatusSubstrate(t *testing.T) {
+	d := func(c string) string { return "sha256:" + strings.Repeat(c, 64) }
 	p := plan(t)
-	p.Env.Substrate = &env.Substrate{Images: "r.example.com/substrate", Tag: "v0.5.0", Namespaces: []string{"ate-system", "podcert"}}
-	p.SubstrateExtra = []string{"docker.io/library/postgres:18-alpine@sha256:" + strings.Repeat("1", 64), "docker.io/envoyproxy/envoy:v1@sha256:" + strings.Repeat("2", 64)}
-	c := inSync(t)
-	c.workloads = map[string]map[string][]string{
-		"ate-system": {
-			"DaemonSet/ate-system/atelet":     {"r.example.com/substrate/atelet:v0.5.0@sha256:" + strings.Repeat("3", 64)},
-			"StatefulSet/ate-system/postgres": {"postgres:18-alpine@sha256:" + strings.Repeat("1", 64)},
-			"Deployment/ate-system/atenet":    {"r.example.com/substrate/atenet:v0.5.0", "envoyproxy/envoy:v1@sha256:" + strings.Repeat("2", 64)},
-		},
-		"podcert": {"Deployment/podcert/ctl": {"r.example.com/substrate/podcertcontroller:v0.5.0"}},
+	p.Env.Substrate = &env.Substrate{
+		Images: "r.example.com/substrate", Tag: "v0.5.0",
+		Digests:    map[string]string{"atelet": d("3"), "atenet": d("4"), "podcertcontroller": d("5")},
+		Namespaces: []string{"ate-system", "podcert"},
+		Workloads:  []string{"DaemonSet/ate-system/atelet", "StatefulSet/ate-system/postgres", "Deployment/ate-system/atenet", "Deployment/podcert/ctl"},
 	}
-	r, err := Status(context.Background(), p, c)
-	if err != nil {
-		t.Fatal(err)
+	p.SubstrateExtra = []string{"docker.io/library/postgres:18-alpine@" + d("1"), "docker.io/envoyproxy/envoy:v1@" + d("2")}
+	good := func() map[string][]cluster.Workload {
+		return map[string][]cluster.Workload{
+			"ate-system": {
+				{ID: "DaemonSet/ate-system/atelet", Images: []string{"r.example.com/substrate/atelet:v0.5.0@" + d("3")}, Current: true},
+				{ID: "StatefulSet/ate-system/postgres", Images: []string{"postgres:18-alpine@" + d("1")}, Current: true},
+				{ID: "Deployment/ate-system/atenet", Images: []string{"r.example.com/substrate/atenet:v0.5.0@" + d("4"), "index.docker.io/envoyproxy/envoy:v1@" + d("2")}, Current: true},
+			},
+			"podcert": {{ID: "Deployment/podcert/ctl", Images: []string{"r.example.com/substrate/podcertcontroller:v0.5.0@" + d("5")}, Current: true}},
+		}
 	}
-	if len(r.Changes) != 0 {
-		t.Fatalf("in sync: %+v", r.Changes)
+	whats := func(c *fakeCluster) []string {
+		t.Helper()
+		r, err := Status(context.Background(), p, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var w []string
+		for _, ch := range r.Changes {
+			w = append(w, ch.What+": "+ch.Detail)
+		}
+		return w
 	}
 
-	c.workloads["ate-system"]["DaemonSet/ate-system/atelet"] = []string{"r.example.com/substrate/atelet:v0.4.0"}
-	c.workloads["ate-system"]["StatefulSet/ate-system/postgres"] = []string{"postgres:17"}
-	c.workloads["podcert"] = nil
-	if r, err = Status(context.Background(), p, c); err != nil {
-		t.Fatal(err)
+	c := inSync(t)
+	c.workloads = good()
+	if w := whats(c); len(w) != 0 {
+		t.Fatalf("in sync: %v", w)
 	}
-	var whats []string
-	for _, ch := range r.Changes {
-		whats = append(whats, ch.What)
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string][]cluster.Workload)
+		want   string
+	}{
+		{"republished tag", func(w map[string][]cluster.Workload) {
+			w["ate-system"][0].Images = []string{"r.example.com/substrate/atelet:v0.5.0@" + d("9")}
+		}, "substrate DaemonSet/ate-system/atelet: runs"},
+		{"no digest", func(w map[string][]cluster.Workload) {
+			w["ate-system"][0].Images = []string{"r.example.com/substrate/atelet:v0.5.0"}
+		}, "substrate DaemonSet/ate-system/atelet: runs"},
+		{"other tag", func(w map[string][]cluster.Workload) {
+			w["ate-system"][0].Images = []string{"r.example.com/substrate/atelet:v0.4.0@" + d("3")}
+		}, "substrate DaemonSet/ate-system/atelet: runs"},
+		{"unpinned name", func(w map[string][]cluster.Workload) {
+			w["ate-system"][0].Images = []string{"r.example.com/substrate/old/atelet:v0.5.0@" + d("3")}
+		}, "substrate DaemonSet/ate-system/atelet: runs"},
+		{"third party moved", func(w map[string][]cluster.Workload) { w["ate-system"][1].Images = []string{"postgres:17"} },
+			"substrate StatefulSet/ate-system/postgres: runs postgres:17"},
+		{"workload deleted", func(w map[string][]cluster.Workload) { w["ate-system"] = w["ate-system"][:2] },
+			"substrate Deployment/ate-system/atenet: missing"},
+		{"stray workload", func(w map[string][]cluster.Workload) {
+			w["podcert"] = append(w["podcert"], cluster.Workload{ID: "Deployment/podcert/debug", Current: true})
+		}, "substrate Deployment/podcert/debug: not part of the Substrate install"},
+		{"stuck rollout", func(w map[string][]cluster.Workload) { w["ate-system"][0].Current = false },
+			"substrate DaemonSet/ate-system/atelet: rollout not finished"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := inSync(t)
+			c.workloads = good()
+			tc.mutate(c.workloads)
+			w := whats(c)
+			if len(w) != 1 || !strings.HasPrefix(w[0], tc.want) {
+				t.Errorf("changes %v, want one starting %q", w, tc.want)
+			}
+		})
 	}
-	want := "substrate DaemonSet/ate-system/atelet, substrate StatefulSet/ate-system/postgres, substrate podcert"
-	if strings.Join(whats, ", ") != want {
-		t.Errorf("changes %v, want %s", whats, want)
-	}
+
+	c = inSync(t)
 	c.failOn = "workloads"
 	if _, err := Status(context.Background(), p, c); err == nil {
 		t.Error("Status with workloads failing succeeded")
 	}
 }
 
-func TestOwnImageAndNormalize(t *testing.T) {
-	for img, want := range map[string]bool{
-		"r.example.com/s/atelet:v1":            true,
-		"r.example.com/s/atelet:v1@sha256:abc": true,
-		"r.example.com/s/atelet:v2":            false,
-		"r.example.com/s/atelet":               false,
-		"r.example.com/other/atelet:v1":        false,
-		"r.example.com/s/:v1":                  false,
-	} {
-		if got := ownImage(img, "r.example.com/s/", "v1"); got != want {
-			t.Errorf("ownImage(%q) = %v", img, got)
-		}
+// A rendered workload whose rollout is stuck is drift even though its
+// template matches (kubectl diff sees only the template).
+func TestStatusRollout(t *testing.T) {
+	c := inSync(t)
+	c.workloads = map[string][]cluster.Workload{"ns": {{ID: "Deployment/ns/redis", Current: false}, {ID: "Deployment/ns/unrelated", Current: false}}}
+	r, err := Status(context.Background(), plan(t), c)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if len(r.Changes) != 1 || r.Changes[0].What != "rollout Deployment/ns/redis" {
+		t.Errorf("changes %+v, want only the rendered workload's stuck rollout", r.Changes)
+	}
+}
+
+func TestNormalize(t *testing.T) {
 	for in, want := range map[string]string{
-		"redis:7":               "docker.io/library/redis:7",
-		"bitnami/redis:7":       "docker.io/bitnami/redis:7",
-		"ghcr.io/a/b:1":         "ghcr.io/a/b:1",
-		"localhost/a:1":         "localhost/a:1",
-		"registry:5000/a:1":     "registry:5000/a:1",
-		"docker.io/library/x:1": "docker.io/library/x:1",
+		"redis:7":                     "docker.io/library/redis:7",
+		"docker.io/redis:7":           "docker.io/library/redis:7",
+		"index.docker.io/redis:7":     "docker.io/library/redis:7",
+		"index.docker.io/bitnami/x:1": "docker.io/bitnami/x:1",
+		"bitnami/redis:7":             "docker.io/bitnami/redis:7",
+		"ghcr.io/a/b:1":               "ghcr.io/a/b:1",
+		"localhost/a:1":               "localhost/a:1",
+		"registry:5000/a:1":           "registry:5000/a:1",
+		"docker.io/library/x:1":       "docker.io/library/x:1",
 	} {
 		if got := normalize(in); got != want {
 			t.Errorf("normalize(%q) = %q, want %q", in, got, want)

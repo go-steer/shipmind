@@ -302,22 +302,46 @@ func TestSecretManifest(t *testing.T) {
 	}
 }
 
-func TestWorkloadImages(t *testing.T) {
+func TestWorkloads(t *testing.T) {
 	k, dir := fake(t)
 	put(t, filepath.Join(dir, "workloads.json"), `{"items":[
-	  {"kind":"DaemonSet","metadata":{"name":"atelet","namespace":"ate-system"},
-	   "spec":{"template":{"spec":{"initContainers":[{"image":"init:1"}],"containers":[{"image":"atelet:1"},{"image":"plugin:1"}]}}}},
-	  {"kind":"Deployment","metadata":{"name":"api","namespace":"ate-system"},
-	   "spec":{"template":{"spec":{"containers":[{"image":"api:1"}]}}}}]}`)
-	got, err := k.WorkloadImages(context.Background(), "ate-system")
+	  {"kind":"DaemonSet","metadata":{"name":"atelet","namespace":"ate-system","generation":3},
+	   "spec":{"template":{"spec":{"initContainers":[{"image":"init:1"}],"containers":[{"image":"atelet:1"},{"image":"plugin:1"}]}}},
+	   "status":{"observedGeneration":3,"desiredNumberScheduled":2,"updatedNumberScheduled":2}},
+	  {"kind":"Deployment","metadata":{"name":"api","namespace":"ate-system","generation":5},
+	   "spec":{"replicas":2,"template":{"spec":{"containers":[{"image":"api:2"}]}}},
+	   "status":{"observedGeneration":5,"replicas":3,"updatedReplicas":2}},
+	  {"kind":"Deployment","metadata":{"name":"one","namespace":"ate-system","generation":1},
+	   "spec":{"template":{"spec":{"containers":[{"image":"one:1"}]}}},
+	   "status":{"observedGeneration":1,"replicas":1,"updatedReplicas":1}},
+	  {"kind":"StatefulSet","metadata":{"name":"pg","namespace":"ate-system","generation":2},
+	   "spec":{"replicas":1,"template":{"spec":{"containers":[{"image":"pg:1"}]}}},
+	   "status":{"observedGeneration":1,"updatedReplicas":1,"currentRevision":"a","updateRevision":"a"}}]}`)
+	ws, err := k.Workloads(context.Background(), "ate-system")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got["DaemonSet/ate-system/atelet"], []string{"init:1", "atelet:1", "plugin:1"}) || !slices.Equal(got["Deployment/ate-system/api"], []string{"api:1"}) {
-		t.Errorf("WorkloadImages = %v", got)
+	got := map[string]Workload{}
+	for _, w := range ws {
+		got[w.ID] = w
+	}
+	if w := got["DaemonSet/ate-system/atelet"]; !w.Current || !slices.Equal(w.Images, []string{"init:1", "atelet:1", "plugin:1"}) {
+		t.Errorf("atelet = %+v", w)
+	}
+	// An old pod still running: replicas 3 against 2 wanted.
+	if w := got["Deployment/ate-system/api"]; w.Current {
+		t.Errorf("api with an old pod left = %+v, want not current", w)
+	}
+	// replicas defaults to 1.
+	if w := got["Deployment/ate-system/one"]; !w.Current {
+		t.Errorf("one = %+v, want current", w)
+	}
+	// The controller hasn't seen generation 2.
+	if w := got["StatefulSet/ate-system/pg"]; w.Current {
+		t.Errorf("pg = %+v, want not current", w)
 	}
 	put(t, filepath.Join(dir, "workloads.json"), "{")
-	if _, err := k.WorkloadImages(context.Background(), "ate-system"); err == nil {
+	if _, err := k.Workloads(context.Background(), "ate-system"); err == nil {
 		t.Error("bad JSON accepted")
 	}
 }
