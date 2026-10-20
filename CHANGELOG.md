@@ -27,6 +27,10 @@ release is a tested set of component versions (see "Cutting a release" in
   digest, the egress trust bundle turned on. Rendered against the live
   agent-substrate cluster, the only difference is Redis's image moving
   from `redis:7-alpine` to the same image by digest.
+- `deploy/profiles/substrate/scope`: substrate-scope from its own
+  manifests at c2e8f50, its image left as a placeholder for the overlay.
+  The architecture page's nginx pin moved out of `versions.yaml`: that
+  page is the demo cluster's, not the platform's.
 - Profile invariant tests: every rendered image is pinned in
   `versions.yaml` (or a `ko://` placeholder for the overlay), no remote
   bases, and ax's Redis keeps its volume and append-only log.

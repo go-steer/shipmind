@@ -1,0 +1,36 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# substrate-scope, the 3D view of every agent on Substrate, from its own
+# manifests at the version versions.yaml pins. Its manifest names the
+# image in the registry scope's CI pushes to; that is replaced with a
+# placeholder an environment overlay must set. The manifest also passes
+# --cluster=agent-substrate, scope's own demo cluster: an overlay for
+# another cluster patches it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../vendor/substrate-scope/deploy/namespace
+  - ../../../vendor/substrate-scope/deploy/substrate-scope
+patches:
+  - target:
+      kind: Deployment
+      name: substrate-scope
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/name
+        value: substrate-scope
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: ko://github.com/go-steer/substrate-scope
