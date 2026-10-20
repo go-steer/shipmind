@@ -1,0 +1,237 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Builds and publishes the substrate profile's images, other than the
+# agent image (image-agent-mast.yml), to ghcr.io/go-steer/shipmind:
+#
+#   token-refresher   images/token-refresher, tagged with the shipmind commit
+#   ax-server         the ax fork at versions.yaml's ax pin, with the fork's
+#                     own .ko.yaml, tagged with that commit
+#   substrate-scope   go-steer/substrate-scope at its pin, with its own
+#                     Dockerfile, tagged with that commit
+#   substrate/*       the Substrate fork at its pin, every release image,
+#                     with the fork's own publisher, tagged with that commit
+#
+# Images built from another repository are tagged with the source commit,
+# so a main build skips any image that already exists for its pin, and a
+# versions.yaml change rebuilds only what moved. PRs build without
+# pushing (Substrate's full set only on main or by hand: it is long).
+# The job summary lists each digest to pin in versions.yaml.
+#
+# Path-filtered and deliberately not a required check.
+name: images
+
+on:
+  pull_request:
+    paths:
+      - images/token-refresher/**
+      - versions.yaml
+      - .github/workflows/images.yml
+  push:
+    branches: [main]
+    paths:
+      - images/token-refresher/**
+      - versions.yaml
+      - .github/workflows/images.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io/go-steer/shipmind
+  PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+
+jobs:
+  token-refresher:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - if: env.PUSH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: images/token-refresher
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ env.REGISTRY }}/token-refresher:${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+      - name: summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "token-refresher \`$REGISTRY/token-refresher@$DIGEST\` (pushed: $PUSH)" >> "$GITHUB_STEP_SUMMARY"
+
+  ax-server:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - id: pin
+        run: |
+          echo "source=$(yq '.components[] | select(.name == "ax") | .source' versions.yaml)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(yq '.components[] | select(.name == "ax") | .version' versions.yaml)" >> "$GITHUB_OUTPUT"
+      - if: env.PUSH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: exists
+        env:
+          IMAGE: ${{ env.REGISTRY }}/ax-server:${{ steps.pin.outputs.commit }}
+        run: |
+          if [[ "$PUSH" == true ]] && docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "ax-server \`$IMAGE\` already published; skipped" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - if: steps.exists.outputs.skip != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.pin.outputs.source == 'github.com/mastersingh24/ax' && 'mastersingh24/ax' || 'invalid/source' }}
+          ref: ${{ steps.pin.outputs.commit }}
+          path: src
+      - if: steps.exists.outputs.skip != 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: src/go.mod
+      - if: steps.exists.outputs.skip != 'true'
+        uses: ko-build/setup-ko@v0.9
+      - if: steps.exists.outputs.skip != 'true'
+        working-directory: src
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/ax-server
+          COMMIT: ${{ steps.pin.outputs.commit }}
+        run: |
+          push=--push=false
+          [[ "$PUSH" == true ]] && push=--push=true
+          ref=$(ko build ./cmd/ax-server --bare --platform=linux/amd64 --tags "$COMMIT" $push)
+          echo "ax-server \`$ref\` (pushed: $PUSH)" >> "$GITHUB_STEP_SUMMARY"
+
+  substrate-scope:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - id: pin
+        run: |
+          echo "commit=$(yq '.components[] | select(.name == "substrate-scope") | .version' versions.yaml)" >> "$GITHUB_OUTPUT"
+      - if: env.PUSH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: exists
+        env:
+          IMAGE: ${{ env.REGISTRY }}/substrate-scope:${{ steps.pin.outputs.commit }}
+        run: |
+          if [[ "$PUSH" == true ]] && docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "substrate-scope \`$IMAGE\` already published; skipped" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - if: steps.exists.outputs.skip != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: go-steer/substrate-scope
+          ref: ${{ steps.pin.outputs.commit }}
+          path: src
+      - if: steps.exists.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v4
+      - if: steps.exists.outputs.skip != 'true'
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: src
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ env.REGISTRY }}/substrate-scope:${{ steps.pin.outputs.commit }}
+          labels: org.opencontainers.image.revision=${{ steps.pin.outputs.commit }}
+          provenance: false
+      - if: steps.exists.outputs.skip != 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "substrate-scope \`$REGISTRY/substrate-scope@$DIGEST\` (pushed: $PUSH)" >> "$GITHUB_STEP_SUMMARY"
+
+  substrate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - id: pin
+        run: |
+          echo "source=$(yq '.components[] | select(.name == "substrate") | .source' versions.yaml)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(yq '.components[] | select(.name == "substrate") | .version' versions.yaml)" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: exists
+        env:
+          IMAGE: ${{ env.REGISTRY }}/substrate/ateapi:${{ steps.pin.outputs.commit }}
+        run: |
+          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "substrate images for \`${{ steps.pin.outputs.commit }}\` already published; skipped" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - if: steps.exists.outputs.skip != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.pin.outputs.source == 'github.com/mastersingh24/substrate' && 'mastersingh24/substrate' || 'invalid/source' }}
+          ref: ${{ steps.pin.outputs.commit }}
+          path: src
+      - if: steps.exists.outputs.skip != 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: src/go.mod
+      - if: steps.exists.outputs.skip != 'true'
+        uses: ko-build/setup-ko@v0.9
+      - if: steps.exists.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v4
+      - if: steps.exists.outputs.skip != 'true'
+        working-directory: src
+        env:
+          VERSION: ${{ steps.pin.outputs.commit }}
+          KO_DEFAULTPLATFORMS: linux/amd64
+          NO_DEV_ENV: "1"
+        run: |
+          go run ./cmd/ate-setup publish release-images --ko-docker-repo "$REGISTRY/substrate" | tee /tmp/publish.log
+          {
+            echo "### substrate release images for \`$VERSION\`"
+            echo '```'
+            grep -E "$REGISTRY/substrate/" /tmp/publish.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

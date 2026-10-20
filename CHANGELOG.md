@@ -40,6 +40,12 @@ release is a tested set of component versions (see "Cutting a release" in
   sink, its store on a volume, and lookout's own watcher ClusterRole at
   v0.36.0 (vendored). The live role predates v0.36.0 and lacks its
   `list volumeattachments` rule; applying the profile adds it.
+- `.github/workflows/images.yml`: builds and publishes the token
+  refresher, ax-server (the ax fork, with its own `.ko.yaml`),
+  substrate-scope (its own Dockerfile) and every Substrate release image
+  (the fork's own publisher) to `ghcr.io/go-steer/shipmind`, each built
+  from its pin; images from other repositories are tagged with their
+  source commit, and a main build skips what already exists.
 - `shipmind status | up | down <env-dir>`: an environment is an overlay
   directory with a `shipmind.yaml` (kube context, the agent's ax
   settings, expected changes). `status` compares the whole environment
