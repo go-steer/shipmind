@@ -21,4 +21,5 @@ kind: Kustomization
 resources:
   - ax
   - credentials
+  - lookout
   - scope

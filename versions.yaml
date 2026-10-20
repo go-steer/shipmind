@@ -90,7 +90,12 @@ components:
     images:
       - name: lookout
         ref: ghcr.io/go-steer/lookout:v0.36.0-gke@sha256:5b950c8fad9f5c2a61a532f99bf9a0b3da2a0c33cb0e52129f59cf93d9321cd8
-    note: Runs with the ax sink, opening one ax task per incident.
+    manifests:
+      - deploy/12-clusterrole-watcher.yaml
+    note: >-
+      Runs with the ax sink, opening one ax task per incident. Only the
+      watcher ClusterRole is vendored; the substrate profile's deployment
+      is shaped for the ax sink (deploy/profiles/substrate/lookout).
 
   - name: substrate-scope
     source: github.com/go-steer/substrate-scope
