@@ -49,5 +49,7 @@ release is a tested set of component versions (see "Cutting a release" in
   as they run on agent-substrate (workloads byte-identical to
   mast-triage:v13). CI builds it on PRs and publishes
   `ghcr.io/go-steer/shipmind/agent-mast:<commit>` from main.
+  `versions.yaml` pins the first build (aa9729e, `sha256:82128f81…`) as
+  the `agent-mast` component.
 - The design ([`docs/DESIGN.md`](./docs/DESIGN.md)) and the decision log
   ([`docs/decisions.md`](./docs/decisions.md)).
