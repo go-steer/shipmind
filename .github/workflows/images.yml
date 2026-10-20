@@ -227,7 +227,29 @@ jobs:
           VERSION: ${{ steps.pin.outputs.commit }}
           KO_DEFAULTPLATFORMS: linux/amd64
           NO_DEV_ENV: "1"
+        # bash with pipefail: the publisher's exit status must survive tee.
+        shell: bash
         run: |
+          set -euo pipefail
+          # ate-setup builds a Kubernetes client before every command,
+          # publish included, though publishing never talks to a cluster.
+          # Give it a placeholder kubeconfig to load.
+          kubeconfig="$RUNNER_TEMP/kubeconfig"
+          cat > "$kubeconfig" <<'KUBECONFIG'
+          apiVersion: v1
+          kind: Config
+          clusters:
+            - name: none
+              cluster: {server: "https://127.0.0.1:1"}
+          contexts:
+            - name: none
+              context: {cluster: none, user: none}
+          users:
+            - name: none
+              user: {}
+          current-context: none
+          KUBECONFIG
+          export KUBECONFIG="$kubeconfig"
           go run ./cmd/ate-setup publish release-images --ko-docker-repo "$REGISTRY/substrate" | tee /tmp/publish.log
           {
             echo "### substrate release images for \`$VERSION\`"
