@@ -4,6 +4,24 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-10-20: The agent's task template is rendered at deploy time
+
+The ax task template, which carries the agent's tokens, is rendered by
+`shipmind up` into a Secret from a template in this repository and the
+tokens already in the cluster; it is never committed, to this repository
+or the overlay. Tokens are adopted from a pre-shipmind deployment and
+never rotated by a deploy. `shipmind status` compares the template and
+the ax Workspace by value, so "no drift" covers the whole environment.
+
+**Why:** ax has no secret references for env, so the tokens must be in
+the template; tasks are immutable and carry the tokens they were created
+with, so rotating them would cut lookout off from every open incident.
+
+**Rejected:** a kustomize secretGenerator from an untracked file (tokens
+on a workstation that reboots daily); Secret Manager (a new dependency for
+two demo tokens; revisit for a production environment); committing the
+template encrypted.
+
 ## 2026-10-20: The agent image reproduces what runs, gke-triage-f included
 
 `images/agent-mast` rebuilds the running agent image (mast-triage:v13)

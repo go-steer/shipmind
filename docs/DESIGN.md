@@ -177,10 +177,39 @@ invariants: every image is pinned in `versions.yaml` (or is a `ko://`
 placeholder an overlay must replace), no remote bases, and
 component-specific rules such as ax's Redis keeping its volume.
 
-**Overlays.** An environment's overlay references a profile at a full
-shipmind commit SHA and adds its own values. Drift is measured with
-`kubectl diff` of the rendered overlay against the cluster, which is
-read-only.
+**Environments.** An environment is an overlay directory: a
+`kustomization.yaml` that references a profile at a full shipmind commit
+SHA and adds its own values, and a `shipmind.yaml` with what kustomize
+can't carry: the kube context (every command passes it explicitly, never
+the current context), the agent's ax settings (atespace, project,
+Workspace, agent image, the cluster table) and the changes `status`
+should expect.
+
+**The agent's ax objects.** Two pieces of an environment are not
+Kubernetes manifests. The ax task template lookout stamps every incident
+task from carries the agent's two bearer tokens as plain env (ax has no
+secret references for env), so it lives in a Secret rendered at deploy
+time, never in a repository. The tokens live in their own Secret
+(`lookout-ax/agent-tokens`); a deployment made before shipmind has them
+only in its task template, and `up` adopts them from there. Tokens are
+never rotated by a deploy: every existing task has them baked in. The
+Workspace (AGENTS.md: the cluster table and the repeat rule) is an ax
+object, applied with the ax CLI. Both are rendered from templates in
+`agents/sre-triage/ax/`.
+
+**status, up, down.** `shipmind status <env-dir>` renders everything and
+compares it with the cluster, read only: `kubectl diff` for the
+Kubernetes objects, a by-value comparison for the task template Secret
+and the Workspace. Each difference is either expected (listed in
+`shipmind.yaml` with its reason) or drift; it exits 3 on drift, so "no
+drift" is a script-checkable gate. `shipmind up` applies the render,
+stores the tokens (adopted or generated once), applies the task template
+Secret and the Workspace, and waits for every Deployment to roll out;
+`-dry-run` validates every write server-side and writes nothing. Both run
+from a shipmind checkout at exactly the commit the overlay pins, with no
+uncommitted changes, so what is deployed is what the pin says (`status
+-any-ref` relaxes that to try unmerged changes). `shipmind down` deletes
+the rendered objects, keeping Namespaces and volumes unless `-all`.
 
 **Substrate is the exception.** Agent Substrate installs through its own
 Go installer (`ate-setup`), which applies manifests from its checkout with

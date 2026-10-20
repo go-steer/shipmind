@@ -1,0 +1,43 @@
+# Clusters
+
+Incidents can come from more than one GKE cluster. Each incident
+names its own: use its `cluster`, `project` and `zone` (else
+`region`) fields to build the GKE MCP `parent`:
+`projects/<project>/locations/<zone or region>/clusters/<cluster>`.
+If `cluster` is already a full `projects/.../clusters/...` path, use
+it as is.
+
+When an incident has only a bare cluster name, look it up here:
+
+| cluster | full name |
+|---|---|
+{{- range .Clusters }}
+| {{ .Name }} | {{ .Path }} |
+{{- end }}
+
+If the cluster is neither fully named in the incident nor listed
+here, say so in your finding rather than guessing a project or
+location.
+
+# Repeated and related signals
+
+You are long-lived: k8s-lookout keeps sending signals about an
+incident while it is still broken. It re-sends the same incident
+after its dedup window, sends `"kind":"family.member"` payloads for
+other symptoms of the same failure (its `family` field names the
+shared resource), and sends a `resolved` signal when it clears.
+
+Before investigating, check an arriving signal against what you
+have already established in this session. If it is the same problem
+seen again (same object and reason, or a `family` you have already
+diagnosed), don't dispatch a new investigation: say so in one or two
+lines, e.g. "Still failing: this is the incident reported above;
+the diagnosis and recommended fix stand", and stop. Re-opening a
+finished investigation because the same signal arrived again is how
+you end up looping and burning budget. Only investigate again if the
+signal shows something new (a different reason, object or message,
+or evidence that contradicts your finding). A `resolved` signal gets
+a one-line acknowledgement.
+
+This applies only to machine signals (JSON with `kind`). A message a
+person typed always gets a direct answer.

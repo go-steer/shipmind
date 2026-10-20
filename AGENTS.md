@@ -105,9 +105,12 @@ force-push `main`. Full contributor flow + DCO in
 
 ## Current state
 
-**Milestone 1 started.** `versions.yaml` pins what the agent-substrate
-demo cluster runs (read from the cluster on 2026-10-20), and
-`internal/bom` plus `cmd/shipmind` check it. Nothing deploys from here
-yet; the cluster's configuration is still moving in, one Milestone 1
-issue per piece (see the milestone list in
-[`docs/DESIGN.md`](./docs/DESIGN.md)).
+**Milestone 1, mostly moved in.** `versions.yaml` pins what the
+agent-substrate demo cluster runs. `deploy/profiles/substrate` renders
+ax, lookout, the token refresher and substrate-scope; the agent's ax
+objects render from `agents/sre-triage/ax`; `shipmind status` against
+the cluster's overlay (the private go-steer/shipmind-agent-substrate)
+reports no drift. Still to come: Substrate's own install (#4), the agent
+image (#6), publishing images (#10), the nightly scenario (#12), and the
+cutover (#13). Never run `shipmind up` against agent-substrate outside
+the cutover runbook.
