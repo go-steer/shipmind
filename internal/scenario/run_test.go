@@ -94,16 +94,17 @@ func (w *world) Tasks(context.Context) (map[string]string, error) {
 		w.axFlaky--
 		return nil, errors.New("ax blip")
 	}
-	tasks := map[string]string{"lookout-old": "Suspended", "demo-agent-1": "Suspended"}
-	if w.leftover && !contains(w.tasksGone, "lookout-left") {
-		tasks["lookout-left"] = "Running"
+	tasks := map[string]string{"lookout-00000000000000aa": "Suspended", "demo-agent-1": "Suspended", "lookout-wb-demo-1234abcd": "Running",
+		"lookout-2222222222222222": "Running"}
+	if w.leftover && !contains(w.tasksGone, "lookout-1111111111111111") {
+		tasks["lookout-1111111111111111"] = "Running"
 	}
 	if w.incidentAt >= 0 && w.since() >= w.incidentAt {
 		phase := "Running"
 		if !w.removedAt.IsZero() && w.suspendAfter >= 0 && w.now.Sub(w.removedAt) >= w.suspendAfter {
 			phase = "Suspended"
 		}
-		tasks["lookout-new"] = phase
+		tasks["lookout-0123456789abcdef"] = phase
 	}
 	return tasks, nil
 }
@@ -128,15 +129,15 @@ func contains(xs []string, x string) bool {
 
 func (w *world) suspended() bool {
 	tasks, _ := w.Tasks(context.Background())
-	return tasks["lookout-new"] == "Suspended"
+	return tasks["lookout-0123456789abcdef"] == "Suspended"
 }
 
 func (w *world) Sessions(_ context.Context, task string) ([]Session, error) {
-	if task != "lookout-new" && task != "lookout-old" && task != "lookout-left" {
+	if task != "lookout-0123456789abcdef" && task != "lookout-00000000000000aa" && task != "lookout-1111111111111111" && task != "lookout-wb-demo-1234abcd" && task != "lookout-2222222222222222" {
 		return nil, errors.New("not found")
 	}
 	status := "active"
-	if task == "lookout-new" && w.suspended() && w.wokeStatus != "" {
+	if task == "lookout-0123456789abcdef" && w.suspended() && w.wokeStatus != "" {
 		status = w.wokeStatus
 	}
 	return []Session{{ID: "s-" + task, Status: status}}, nil
@@ -150,13 +151,29 @@ func (w *world) State(context.Context, string, string) (string, error) {
 }
 
 func (w *world) Events(_ context.Context, task, _ string) (*Transcript, error) {
-	if task == "lookout-old" {
+	if task == "lookout-00000000000000aa" {
 		return &Transcript{Events: []Event{{Seq: 1, Author: "user", Texts: []string{"old incident"}}}}, nil
 	}
-	if task == "lookout-left" {
-		return &Transcript{Events: []Event{{Seq: 1, Author: "user", Texts: []string{`{"name":"missing-env-1019-031700-abc"}`}}}}, nil
+	if task == "lookout-2222222222222222" {
+		// A storm on a shared Node: long-lived, its members include an
+		// earlier run's pod and this run's.
+		return &Transcript{Events: []Event{{Seq: 1, Author: "user", Texts: []string{
+			`{"kind":"storm","namespace":"triage-lab","ancestor_name":"node-1","representative_incidents":["missing-env-1019-031700-7d9f8c-abcde","` + w.name + `-64544d6c4b-x58zg"]}`}}}}, nil
 	}
-	tr := &Transcript{Cost: 0.05, Events: []Event{{Seq: 3, Author: "user", Texts: []string{`{"name":"` + w.name + `"}`}}}}
+	if task == "lookout-wb-demo-1234abcd" {
+		// The watchboard: a long-lived agent that hears about scenario
+		// workloads (an earlier run's and this one's) in later messages.
+		return &Transcript{Events: []Event{
+			{Seq: 1, Author: "user", Texts: []string{"digest: cluster healthy"}},
+			{Seq: 2, Author: "user", Texts: []string{`resolved probe_flap missing-env-1019-031700-abc and ` + w.name}},
+		}}, nil
+	}
+	if task == "lookout-1111111111111111" {
+		return &Transcript{Events: []Event{{Seq: 1, Author: "user", Texts: []string{
+			`{"kind":"k8s-event","namespace":"triage-lab","name":"missing-env-1019-031700-7d9f8c-abcde"}`}}}}, nil
+	}
+	tr := &Transcript{Cost: 0.05, Events: []Event{{Seq: 3, Author: "user", Texts: []string{
+		`{"kind":"k8s-event","namespace":"triage-lab","name":"` + w.name + `-64544d6c4b-x58zg"}`}}}}
 	if w.answerAt >= 0 && w.since() >= w.answerAt {
 		tr.Events = append(tr.Events, Event{Seq: 29, Author: "gke-triage_coordinator", Role: "model", Texts: []string{w.answer}})
 	}
@@ -197,13 +214,13 @@ func TestRunPasses(t *testing.T) {
 	var logs []string
 	o.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
 	r := run(t, w, s, o)
-	if !r.Pass || !r.Correct || !r.Suspended || !r.Woke || r.Task != "lookout-new" || r.CostUSD != 0.05 {
+	if !r.Pass || !r.Correct || !r.Suspended || !r.Woke || r.Task != "lookout-0123456789abcdef" || r.CostUSD != 0.05 {
 		t.Fatalf("result %+v", r)
 	}
 	if len(w.applied) != 1 || !strings.Contains(w.applied[0], "name: "+w.name+"\n") || !strings.Contains(w.applied[0], "namespace: triage-lab") {
 		t.Errorf("applied %v", w.applied)
 	}
-	if len(w.deleted) != 1 || len(w.tasksGone) != 1 || w.tasksGone[0] != "lookout-new" {
+	if len(w.deleted) != 1 || len(w.tasksGone) != 1 || w.tasksGone[0] != "lookout-0123456789abcdef" {
 		t.Errorf("cleanup: deleted %d workloads, tasks %v", len(w.deleted), w.tasksGone)
 	}
 	if r.IncidentAfter != "2m0s" || r.SuspendAfter == "" || len(logs) == 0 {
@@ -225,7 +242,7 @@ func TestRunFailures(t *testing.T) {
 		{"no suspend", func(w *world) { w.suspendAfter = -1 }, "did not suspend"},
 		{"restarted", func(w *world) { w.wokeStatus = "idle" }, "mast restarted instead of resuming"},
 		{"lost history", func(w *world) { w.wokeEvents = 1 }, "lost history"},
-		{"cleanup fails", func(w *world) { w.failDelete = true }, "deleting task lookout-new"},
+		{"cleanup fails", func(w *world) { w.failDelete = true }, "deleting task lookout-0123456789abcdef"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w, s, o := newWorld(t)
@@ -317,7 +334,7 @@ func TestRunCleanupOrder(t *testing.T) {
 	w, s, o := newWorld(t)
 	w.answerAt = -1 // fail early, through the deferred cleanup
 	run(t, w, s, o)
-	if got := strings.Join(w.ops, ", "); got != "delete workload, delete task lookout-new" {
+	if got := strings.Join(w.ops, ", "); got != "delete workload, delete task lookout-0123456789abcdef" {
 		t.Errorf("cleanup order %q", got)
 	}
 }
@@ -338,7 +355,7 @@ func TestRunCancelledCleansUp(t *testing.T) {
 	if err == nil || r == nil || r.Pass {
 		t.Fatalf("cancelled run: %+v, %v", r, err)
 	}
-	if len(w.deleted) != 1 || !contains(w.tasksGone, "lookout-new") {
+	if len(w.deleted) != 1 || !contains(w.tasksGone, "lookout-0123456789abcdef") {
 		t.Errorf("cancelled run left things behind: %d deletes, tasks %v", len(w.deleted), w.tasksGone)
 	}
 }
@@ -351,7 +368,7 @@ func TestRunDeletesLateTask(t *testing.T) {
 	o.Sleep = func(_ context.Context, d time.Duration) error { w.now = w.now.Add(d); return nil }
 	w.onCleanup = func() { w.now = w.now.Add(time.Minute) }
 	r := run(t, w, s, o)
-	if r.Pass || r.Task != "lookout-new" || !contains(w.tasksGone, "lookout-new") {
+	if r.Pass || r.Task != "lookout-0123456789abcdef" || !contains(w.tasksGone, "lookout-0123456789abcdef") {
 		t.Errorf("late task: pass=%v task=%q deleted %v", r.Pass, r.Task, w.tasksGone)
 	}
 }
@@ -367,8 +384,8 @@ func TestRunSweepsLeftovers(t *testing.T) {
 	if len(w.swept) != 1 || w.swept[0] != "triage-lab deployments,configmaps shipmind.dev/scenario=missing-env" {
 		t.Errorf("swept %v", w.swept)
 	}
-	if !contains(w.tasksGone, "lookout-left") || contains(w.tasksGone, "lookout-old") {
-		t.Errorf("tasks deleted %v, want lookout-left and not lookout-old", w.tasksGone)
+	if !contains(w.tasksGone, "lookout-1111111111111111") || contains(w.tasksGone, "lookout-00000000000000aa") {
+		t.Errorf("tasks deleted %v, want lookout-1111111111111111 and not lookout-00000000000000aa", w.tasksGone)
 	}
 }
 
@@ -382,12 +399,62 @@ func TestRunRetriesAxBlips(t *testing.T) {
 }
 
 func TestMentionsRun(t *testing.T) {
-	tr := &Transcript{Events: []Event{{Texts: []string{"pod missing-env-config is fine; missing-env-1019-031700-abc crashes"}}}}
-	if !tr.MentionsRun("missing-env-") {
-		t.Error("MentionsRun missed a run workload")
+	if !mentionsRun("pod missing-env-config is fine; missing-env-1019-031700-abc crashes", "missing-env-") {
+		t.Error("mentionsRun missed a run workload")
 	}
-	tr = &Transcript{Events: []Event{{Texts: []string{"missing-env-config and missing-env-12-3"}}}}
-	if tr.MentionsRun("missing-env-") {
-		t.Error("MentionsRun matched a non-run name")
+	if mentionsRun("missing-env-config and missing-env-12-3", "missing-env-") {
+		t.Error("mentionsRun matched a non-run name")
+	}
+}
+
+// lookout's watchboard, cluster-scope and storm tasks hear about
+// scenario workloads too; they are never swept, picked or deleted. (A
+// sweep that took "any lookout task mentioning a run" deleted the
+// watchboard once.)
+func TestRunNeverTouchesTheWatchboard(t *testing.T) {
+	w, s, o := newWorld(t)
+	w.leftover = true
+	w.incidentAt = -1 // only the watchboard mentions this run's workload
+	r := run(t, w, s, o)
+	for _, shared := range []string{"lookout-wb-demo-1234abcd", "lookout-2222222222222222"} {
+		if contains(w.tasksGone, shared) || r.Task == shared {
+			t.Errorf("shared task %s was taken for a run's task: deleted %v, task %q", shared, w.tasksGone, r.Task)
+		}
+	}
+	if !contains(w.tasksGone, "lookout-1111111111111111") {
+		t.Errorf("the real leftover incident task was not swept: %v", w.tasksGone)
+	}
+}
+
+func TestFirstMessage(t *testing.T) {
+	tr := &Transcript{Events: []Event{
+		{Author: "agent", Texts: []string{"hello"}},
+		{Author: "user", Texts: []string{"incident", "detail"}},
+		{Author: "user", Texts: []string{"later"}},
+	}}
+	if got := tr.FirstMessage(); got != "incident\ndetail" {
+		t.Errorf("FirstMessage = %q", got)
+	}
+	if got := (&Transcript{}).FirstMessage(); got != "" {
+		t.Errorf("empty FirstMessage = %q", got)
+	}
+}
+
+func TestFirstIncident(t *testing.T) {
+	msg := func(m string) *Transcript { return &Transcript{Events: []Event{{Author: "user", Texts: []string{m}}}} }
+	in, ok := msg(`{"kind":"k8s-event","namespace":"lab","name":"w-1-2"}`).FirstIncident()
+	if !ok || !in.About("lab", "w") || in.About("other", "w") || in.About("lab", "w-1-2-3") {
+		t.Errorf("incident %+v, %v", in, ok)
+	}
+	for _, m := range []string{`{"kind":"storm","name":"x"}`, `not json`, `{"kind":"k8s-event"}`, `{"name":"x"}`} {
+		if _, ok := msg(m).FirstIncident(); ok {
+			t.Errorf("FirstIncident(%s) = ok", m)
+		}
+	}
+	if (Incident{Namespace: "lab", Name: "w"}).About("lab", "w") != true {
+		t.Error("the workload itself is not About it")
+	}
+	if (Incident{Namespace: "lab", Name: "wx-1"}).About("lab", "w") {
+		t.Error("a workload sharing a prefix matched")
 	}
 }

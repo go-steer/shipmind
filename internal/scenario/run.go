@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -275,7 +276,7 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		cctx, cancel := cleanupCtx()
 		defer cancel()
 		if r.Task == "" {
-			r.Task, r.Session = findIncident(cctx, tasks, agent, before, name)
+			r.Task, r.Session = findIncident(cctx, tasks, agent, before, s.Namespace, name)
 		}
 		if r.Task == "" {
 			return
@@ -290,7 +291,7 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	// 1. lookout opens an incident: a new lookout-* task whose session
 	// names the workload.
 	werr := until(ctx, &o, s.Limits.Incident, func(ctx context.Context) (bool, error) {
-		r.Task, r.Session = findIncident(ctx, tasks, agent, before, name)
+		r.Task, r.Session = findIncident(ctx, tasks, agent, before, s.Namespace, name)
 		return r.Task != "", nil
 	})
 	if werr != nil {
@@ -403,16 +404,24 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	return r, nil
 }
 
-// findIncident returns the new lookout-* task (one not in before) whose
-// session mentions the workload, if there is one yet.
-func findIncident(ctx context.Context, tasks Tasks, agent Agent, before map[string]string, workload string) (task, session string) {
+// incidentTask matches the tasks lookout opens per incident:
+// "lookout-" and 16 hex digits. Its other tasks (the watchboard,
+// "lookout-wb-<cluster>-<hash>", and cluster-scope ones) are long-lived
+// agents that also hear about a scenario's workload, in digests and
+// resolved signals, and must never be taken for a run's task.
+var incidentTask = regexp.MustCompile(`^lookout-[0-9a-f]{16}$`)
+
+// findIncident returns the new incident task (one not in before) whose
+// incident, its first message, is about the workload, if there is one
+// yet.
+func findIncident(ctx context.Context, tasks Tasks, agent Agent, before map[string]string, ns, workload string) (task, session string) {
 	now, err := tasks.Tasks(ctx)
 	if err != nil {
 		return "", ""
 	}
 	names := make([]string, 0, len(now))
 	for t := range now {
-		if _, old := before[t]; !old && strings.HasPrefix(t, "lookout-") {
+		if _, old := before[t]; !old && incidentTask.MatchString(t) {
 			names = append(names, t)
 		}
 	}
@@ -423,7 +432,11 @@ func findIncident(ctx context.Context, tasks Tasks, agent Agent, before map[stri
 			continue // still booting
 		}
 		for _, sess := range sessions {
-			if tr, err := agent.Events(ctx, t, sess.ID); err == nil && tr.Mentions(workload) {
+			tr, err := agent.Events(ctx, t, sess.ID)
+			if err != nil {
+				continue
+			}
+			if in, ok := tr.FirstIncident(); ok && in.About(ns, workload) {
 				return t, sess.ID
 			}
 		}
@@ -432,8 +445,11 @@ func findIncident(ctx context.Context, tasks Tasks, agent Agent, before map[stri
 }
 
 // sweep removes what killed runs of this scenario left behind: its
-// labeled workloads, and lookout tasks whose session names one of its
-// run workloads. Best effort: failures are logged, not fatal.
+// labeled workloads, and incident tasks whose incident (their first
+// message, parsed) is about one of its run workloads in its namespace.
+// Nothing else: lookout's watchboard, cluster-scope and storm tasks hear
+// about scenario workloads too, and are long-lived agents. Best effort:
+// failures are logged, not fatal.
 func sweep(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o *Options) {
 	if o.Keep {
 		return
@@ -441,8 +457,8 @@ func sweep(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o
 	if sw, ok := k.(Sweeper); ok {
 		if out, err := sw.DeleteLabeled(ctx, s.Namespace, "deployments,configmaps", Leftovers+"="+s.Name); err != nil {
 			o.Log("sweep: %v", err)
-		} else if strings.TrimSpace(out) != "" {
-			o.Log("sweep: %s", strings.TrimSpace(out))
+		} else if out = strings.TrimSpace(out); out != "" && !strings.HasPrefix(out, "No resources found") {
+			o.Log("sweep: %s", out)
 		}
 	}
 	now, err := tasks.Tasks(ctx)
@@ -452,7 +468,7 @@ func sweep(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o
 	}
 	prefix := s.Name + "-"
 	for t := range now {
-		if !strings.HasPrefix(t, "lookout-") {
+		if !incidentTask.MatchString(t) {
 			continue
 		}
 		sessions, err := agent.Sessions(ctx, t)
@@ -461,7 +477,11 @@ func sweep(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o
 		}
 		for _, sess := range sessions {
 			tr, err := agent.Events(ctx, t, sess.ID)
-			if err != nil || !tr.MentionsRun(prefix) {
+			if err != nil {
+				continue
+			}
+			in, ok := tr.FirstIncident()
+			if !ok || in.Namespace != s.Namespace || !strings.HasPrefix(in.Name, prefix) || !mentionsRun(in.Name, prefix) {
 				continue
 			}
 			if err := tasks.DeleteTask(ctx, t); err != nil {

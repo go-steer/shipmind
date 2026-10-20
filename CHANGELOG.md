@@ -8,6 +8,16 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ## [Unreleased]
 
+### Fixed
+
+- `shipmind scenario run`'s leftover sweep deleted lookout's watchboard
+  task on agent-substrate: it took any lookout task whose session
+  mentioned an earlier run's workload, and the watchboard hears about
+  every workload. The sweep and the incident search now consider only
+  lookout's per-incident tasks (`lookout-<16 hex>`), and only when the
+  task's first message parses as a single incident (never a storm, whose
+  task is shared) about the run's workload in the scenario's namespace.
+
 ### Added
 
 - `shipmind status` and `up -dry-run` handle objects in namespaces that
