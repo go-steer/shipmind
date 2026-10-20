@@ -31,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -46,12 +47,16 @@ type Env struct {
 	Context string `yaml:"context"`
 	// Agent configures the ax task template and Workspace.
 	Agent Agent `yaml:"agent"`
+	// Substrate, when set, says which Substrate build the cluster should
+	// run; status checks its workloads against it.
+	Substrate *Substrate `yaml:"substrate,omitempty"`
 	// Expect lists changes `shipmind status` reports as expected rather
 	// than as drift, each with the reason: Kubernetes objects by the ID
 	// kubectl diff gives them ("apps.v1.Deployment.ax-system.ax-redis"),
 	// and the agent's objects as status names them ("secret
 	// lookout-ax/lookout-ax-agent", "workspace <atespace>/<name>",
-	// "deployment lookout-ax/lookout-ax").
+	// "deployment lookout-ax/lookout-ax", "substrate
+	// DaemonSet/ate-system/atelet").
 	Expect []Expected `yaml:"expect,omitempty"`
 
 	// Dir is the overlay directory the file was read from.
@@ -73,6 +78,25 @@ type Agent struct {
 	Clusters []Cluster `yaml:"clusters"`
 }
 
+// Substrate describes the installed Substrate build. Substrate's
+// installer applies it, not a render, so kubectl diff never sees it;
+// status checks it against this instead.
+type Substrate struct {
+	// Images is the repository Substrate's own images come from, and Tag
+	// the tag they all carry (Substrate's installer installs one tag).
+	Images string `yaml:"images"`
+	Tag    string `yaml:"tag"`
+	// Digests pins each of Substrate's own images by name ("atelet"):
+	// a tag can be republished, a digest can't.
+	Digests map[string]string `yaml:"digests"`
+	// Namespaces are where its workloads run.
+	Namespaces []string `yaml:"namespaces"`
+	// Workloads lists every workload those namespaces must hold, as
+	// "<Kind>/<namespace>/<name>". A missing one, or one not listed, is
+	// drift.
+	Workloads []string `yaml:"workloads"`
+}
+
 // Cluster maps a bare cluster name to its full GKE resource name.
 type Cluster struct {
 	Name string `yaml:"name"`
@@ -90,8 +114,9 @@ var (
 	projectRE   = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 	clusterPath = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/clusters/[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 	digestRef   = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
+	digestOnly  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	kubectlID   = regexp.MustCompile(`^[A-Za-z0-9.-]+\.[A-Za-z0-9]+\.[A-Za-z0-9-.]*\.[a-z0-9.-]+$`)
-	agentID     = regexp.MustCompile(`^(secret|workspace|deployment) [a-z0-9-]+/[a-z0-9.-]+$`)
+	agentID     = regexp.MustCompile(`^((secret|workspace|deployment) [a-z0-9-]+/[a-z0-9.-]+|(substrate|rollout) [A-Za-z]+/[a-z0-9-]+/[a-z0-9.-]+)$`)
 )
 
 // Load reads dir/shipmind.yaml and checks it.
@@ -165,10 +190,45 @@ func (e *Env) check() error {
 			fail("agent.clusters[%d].path %q: want projects/<project>/locations/<location>/clusters/%s", i, c.Path, c.Name)
 		}
 	}
+	if sub := e.Substrate; sub != nil {
+		last := sub.Images[strings.LastIndex(sub.Images, "/")+1:]
+		if sub.Images == "" || !strings.Contains(sub.Images, "/") || strings.ContainsAny(sub.Images, "@ \t") || strings.Contains(last, ":") {
+			fail("substrate.images %q: want an image repository (a registry port is fine) with no tag or digest", sub.Images)
+		}
+		if len(sub.Digests) == 0 {
+			fail("substrate.digests: want each of Substrate's images pinned by digest")
+		}
+		for name, d := range sub.Digests {
+			if !dnsLabel.MatchString(name) || !digestOnly.MatchString(d) {
+				fail("substrate.digests: %q: %q, want <image name>: sha256:<64 hex>", name, d)
+			}
+		}
+		if len(sub.Workloads) == 0 {
+			fail("substrate.workloads: want the workloads Substrate's namespaces must hold")
+		}
+		for i, w := range sub.Workloads {
+			parts := strings.Split(w, "/")
+			if len(parts) != 3 || !slices.Contains([]string{"Deployment", "DaemonSet", "StatefulSet"}, parts[0]) ||
+				!slices.Contains(sub.Namespaces, parts[1]) || !dnsLabel.MatchString(parts[2]) {
+				fail("substrate.workloads[%d] %q: want Deployment|DaemonSet|StatefulSet/<one of substrate.namespaces>/<name>", i, w)
+			}
+		}
+		if sub.Tag == "" || strings.ContainsAny(sub.Tag, "@/: \t") {
+			fail("substrate.tag %q: want an image tag", sub.Tag)
+		}
+		if len(sub.Namespaces) == 0 {
+			fail("substrate.namespaces: want at least one namespace")
+		}
+		for i, ns := range sub.Namespaces {
+			if !dnsLabel.MatchString(ns) {
+				fail("substrate.namespaces[%d] %q: want a namespace name", i, ns)
+			}
+		}
+	}
 	objs := map[string]bool{}
 	for i, x := range e.Expect {
 		if !kubectlID.MatchString(x.Object) && !agentID.MatchString(x.Object) {
-			fail("expect[%d].object %q: want a kubectl diff object ID like apps.v1.Deployment.ns.name, or \"secret|workspace|deployment <namespace>/<name>\"", i, x.Object)
+			fail("expect[%d].object %q: want a kubectl diff object ID like apps.v1.Deployment.ns.name, or \"secret|workspace|deployment <namespace>/<name>\" or \"substrate|rollout <Kind>/<namespace>/<name>\"", i, x.Object)
 		}
 		if objs[x.Object] {
 			fail("expect: %q listed twice", x.Object)

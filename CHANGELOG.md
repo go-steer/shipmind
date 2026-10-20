@@ -40,6 +40,17 @@ release is a tested set of component versions (see "Cutting a release" in
   sink, its store on a volume, and lookout's own watcher ClusterRole at
   v0.36.0 (vendored). The live role predates v0.36.0 and lacks its
   `list volumeattachments` rule; applying the profile adds it.
+- `deploy/profiles/substrate/workers`: Substrate's WorkerPool for ax
+  tasks, its image a placeholder the overlay sets, held by a test to the
+  same pinning rule as container images. `shipmind status` also checks
+  Substrate, which its own installer applies and kubectl diff never
+  sees: against the environment's `substrate` section, every listed
+  workload must exist and no other may, every image must be Substrate's
+  own at its pinned digest or one of versions.yaml's third-party pins,
+  and every rollout must have finished. Rendered workloads with an
+  unfinished rollout are drift too (a stuck rollout keeps the new
+  template while old pods run). A missing ax binary is an error, no
+  longer a missing Workspace.
 - `.github/workflows/images.yml`: builds and publishes the token
   refresher, ax-server (the ax fork, with its own `.ko.yaml`),
   substrate-scope (its own Dockerfile) and every Substrate release image

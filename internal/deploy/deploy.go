@@ -55,6 +55,9 @@ type Plan struct {
 	Root    string
 	Objects render.Objects
 	Ref     string
+	// SubstrateExtra are the third-party images versions.yaml pins for
+	// Substrate (its database, its proxy), which run beside its own.
+	SubstrateExtra []string
 }
 
 // Change is one difference between the environment and the cluster.
@@ -203,6 +206,13 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		}
 	}
 
+	if err := rolloutStatus(ctx, p, c, add); err != nil {
+		return nil, err
+	}
+	if err := substrateStatus(ctx, p, c, add); err != nil {
+		return nil, err
+	}
+
 	wsWhat := fmt.Sprintf("workspace %s/%s", p.Env.Agent.Atespace, p.Env.Agent.Workspace)
 	want, err := agent.Workspace(p.Root, p.Env)
 	if err != nil {
@@ -225,6 +235,112 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		}
 	}
 	return r, nil
+}
+
+// substrateStatus checks Substrate's workloads against the environment:
+// every listed workload exists and no other does; every image is
+// exactly one of Substrate's own (<images>/<name>:<tag>@<digest pinned
+// for name>) or a third-party image versions.yaml pins for Substrate;
+// and every rollout has finished.
+func substrateStatus(ctx context.Context, p *Plan, c cluster.Cluster, add func(what, detail string)) error {
+	sub := p.Env.Substrate
+	if sub == nil {
+		return nil
+	}
+	present := map[string]bool{}
+	for _, ns := range sub.Namespaces {
+		ws, err := c.Workloads(ctx, ns)
+		if err != nil {
+			return err
+		}
+		for _, w := range ws {
+			present[w.ID] = true
+			what := "substrate " + w.ID
+			if !slices.Contains(sub.Workloads, w.ID) {
+				add(what, "not part of the Substrate install (not in substrate.workloads)")
+				continue
+			}
+			for _, img := range w.Images {
+				if !substrateImage(img, sub) && !slices.ContainsFunc(p.SubstrateExtra, func(x string) bool { return normalize(x) == normalize(img) }) {
+					add(what, fmt.Sprintf("runs %s, which is neither %s/<name>:%s at its pinned digest nor an image versions.yaml pins for Substrate", img, strings.TrimSuffix(sub.Images, "/"), sub.Tag))
+				}
+			}
+			if !w.Current {
+				add(what, "rollout not finished: pods from an older template may still run")
+			}
+		}
+	}
+	for _, id := range sub.Workloads {
+		if !present[id] {
+			add("substrate "+id, "missing")
+		}
+	}
+	return nil
+}
+
+// substrateImage reports whether img is exactly one of Substrate's own
+// images: <images>/<name>:<tag>@<the digest pinned for name>.
+func substrateImage(img string, sub *env.Substrate) bool {
+	rest, ok := strings.CutPrefix(img, strings.TrimSuffix(sub.Images, "/")+"/")
+	if !ok {
+		return false
+	}
+	nameTag, digest, ok := strings.Cut(rest, "@")
+	if !ok {
+		return false
+	}
+	name, tag, ok := strings.Cut(nameTag, ":")
+	return ok && tag == sub.Tag && sub.Digests[name] != "" && sub.Digests[name] == digest
+}
+
+// normalize spells a Docker Hub reference in full, as the registry
+// resolves it: redis:7, docker.io/redis:7 and index.docker.io/redis:7
+// are all docker.io/library/redis:7, and bitnami/redis:7 is
+// docker.io/bitnami/redis:7.
+func normalize(ref string) string {
+	if r, ok := strings.CutPrefix(ref, "index.docker.io/"); ok {
+		ref = "docker.io/" + r
+	}
+	first, rest, hasSlash := strings.Cut(ref, "/")
+	switch {
+	case !hasSlash:
+		return "docker.io/library/" + ref
+	case first == "docker.io" && !strings.Contains(rest, "/"):
+		return "docker.io/library/" + rest
+	case !strings.ContainsAny(first, ".:") && first != "localhost":
+		return "docker.io/" + ref
+	}
+	return ref
+}
+
+// rolloutStatus reports rendered workloads whose rollout hasn't
+// finished. kubectl diff compares templates, and a stuck rollout keeps
+// the new template while the old pods run.
+func rolloutStatus(ctx context.Context, p *Plan, c cluster.Cluster, add func(what, detail string)) error {
+	want := map[string]bool{}
+	var namespaces []string
+	for _, o := range p.Objects {
+		switch o.Kind() {
+		case "Deployment", "DaemonSet", "StatefulSet":
+			want[o.Kind()+"/"+o.Namespace()+"/"+o.Name()] = true
+			if !slices.Contains(namespaces, o.Namespace()) {
+				namespaces = append(namespaces, o.Namespace())
+			}
+		}
+	}
+	slices.Sort(namespaces)
+	for _, ns := range namespaces {
+		ws, err := c.Workloads(ctx, ns)
+		if err != nil {
+			return err
+		}
+		for _, w := range ws {
+			if want[w.ID] && !w.Current {
+				add("rollout "+w.ID, "not finished: pods from an older template may still run")
+			}
+		}
+	}
+	return nil
 }
 
 // lookoutStale reports whether a running lookout pod started before the

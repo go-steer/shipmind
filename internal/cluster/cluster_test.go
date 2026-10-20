@@ -35,10 +35,11 @@ case "$*" in
   *" diff "*) [ -f "$d/diff.out" ] && cat "$d/diff.out"; exit $(cat "$d/diff.exit" 2>/dev/null || echo 0) ;;
   *" get secret "*"managedFields"*) [ -f "$d/managed.txt" ] && cat "$d/managed.txt"; exit 0 ;;
   *" get secret "*) [ -f "$d/secret.json" ] && cat "$d/secret.json"; exit 0 ;;
+  *" get deployments,daemonsets,statefulsets "*) [ -f "$d/workloads.json" ] && cat "$d/workloads.json"; exit 0 ;;
   *" get deployment "*) [ -f "$d/selector.json" ] && cat "$d/selector.json"; exit 0 ;;
   *" get pods "*) echo "$*" > "$d/pods.args"; [ -f "$d/starts.txt" ] && cat "$d/starts.txt"; exit 0 ;;
   *" apply --server-side "*) if [ -f "$d/ssa.fail" ]; then echo "error when applying patch: data: c2VjcmV0" >&2; exit 1; fi; echo applied ;;
-  *" get workspace "*) if [ -f "$d/workspace.yaml" ]; then cat "$d/workspace.yaml"; else echo 'workspace not found' >&2; exit 1; fi ;;
+  *" get workspace "*) if [ -f "$d/workspace.yaml" ]; then cat "$d/workspace.yaml"; else echo 'Error: getting workspace: rpc error: code = NotFound desc = workspace "ws" not found' >&2; exit 1; fi ;;
   *) echo ok ;;
 esac
 `
@@ -257,6 +258,12 @@ func TestAx(t *testing.T) {
 	if _, _, err := k.AxWorkspace(ctx, "fail", "ws"); err == nil {
 		t.Error("ax failure not reported")
 	}
+	// A missing ax binary is an error, not a missing Workspace, even
+	// though its message says "not found".
+	k.Ax = filepath.Join(t.TempDir(), "no-such-ax")
+	if _, found, err := k.AxWorkspace(ctx, "agents", "ws"); err == nil || found {
+		t.Errorf("missing binary: found=%v, err=%v; want an error", found, err)
+	}
 }
 
 func TestNoContext(t *testing.T) {
@@ -292,5 +299,49 @@ func TestSecretManifest(t *testing.T) {
 	want := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\n  namespace: ns\ntype: Opaque\ndata:\n  a: MQ==\n  b: Mg==\n"
 	if got != want {
 		t.Errorf("SecretManifest =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestWorkloads(t *testing.T) {
+	k, dir := fake(t)
+	put(t, filepath.Join(dir, "workloads.json"), `{"items":[
+	  {"kind":"DaemonSet","metadata":{"name":"atelet","namespace":"ate-system","generation":3},
+	   "spec":{"template":{"spec":{"initContainers":[{"image":"init:1"}],"containers":[{"image":"atelet:1"},{"image":"plugin:1"}]}}},
+	   "status":{"observedGeneration":3,"desiredNumberScheduled":2,"updatedNumberScheduled":2}},
+	  {"kind":"Deployment","metadata":{"name":"api","namespace":"ate-system","generation":5},
+	   "spec":{"replicas":2,"template":{"spec":{"containers":[{"image":"api:2"}]}}},
+	   "status":{"observedGeneration":5,"replicas":3,"updatedReplicas":2}},
+	  {"kind":"Deployment","metadata":{"name":"one","namespace":"ate-system","generation":1},
+	   "spec":{"template":{"spec":{"containers":[{"image":"one:1"}]}}},
+	   "status":{"observedGeneration":1,"replicas":1,"updatedReplicas":1}},
+	  {"kind":"StatefulSet","metadata":{"name":"pg","namespace":"ate-system","generation":2},
+	   "spec":{"replicas":1,"template":{"spec":{"containers":[{"image":"pg:1"}]}}},
+	   "status":{"observedGeneration":1,"updatedReplicas":1,"currentRevision":"a","updateRevision":"a"}}]}`)
+	ws, err := k.Workloads(context.Background(), "ate-system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Workload{}
+	for _, w := range ws {
+		got[w.ID] = w
+	}
+	if w := got["DaemonSet/ate-system/atelet"]; !w.Current || !slices.Equal(w.Images, []string{"init:1", "atelet:1", "plugin:1"}) {
+		t.Errorf("atelet = %+v", w)
+	}
+	// An old pod still running: replicas 3 against 2 wanted.
+	if w := got["Deployment/ate-system/api"]; w.Current {
+		t.Errorf("api with an old pod left = %+v, want not current", w)
+	}
+	// replicas defaults to 1.
+	if w := got["Deployment/ate-system/one"]; !w.Current {
+		t.Errorf("one = %+v, want current", w)
+	}
+	// The controller hasn't seen generation 2.
+	if w := got["StatefulSet/ate-system/pg"]; w.Current {
+		t.Errorf("pg = %+v, want not current", w)
+	}
+	put(t, filepath.Join(dir, "workloads.json"), "{")
+	if _, err := k.Workloads(context.Background(), "ate-system"); err == nil {
+		t.Error("bad JSON accepted")
 	}
 }
