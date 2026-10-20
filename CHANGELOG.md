@@ -44,5 +44,10 @@ release is a tested set of component versions (see "Cutting a release" in
   `versions.yaml` (or a `ko://` placeholder for the overlay), no remote
   bases, ax's Redis keeps its volume and append-only log, and lookout's
   store stays on its volume.
+- `images/agent-mast` and `agents/sre-triage`: the substrate profile's
+  agent image, rebuilt from the mast and ax-runner pins with the bundles
+  as they run on agent-substrate (workloads byte-identical to
+  mast-triage:v13). CI builds it on PRs and publishes
+  `ghcr.io/go-steer/shipmind/agent-mast:<commit>` from main.
 - The design ([`docs/DESIGN.md`](./docs/DESIGN.md)) and the decision log
   ([`docs/decisions.md`](./docs/decisions.md)).

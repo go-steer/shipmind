@@ -4,6 +4,31 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-10-20: The agent image reproduces what runs, gke-triage-f included
+
+`images/agent-mast` rebuilds the running agent image (mast-triage:v13)
+from pins: mast and ax's task runner built from the commits in
+`versions.yaml`, and the bundles in `agents/sre-triage` byte for byte as
+they run. That includes `gke-triage-f`, the October experiment the task
+template uses, and the routed `gke-triage` copy with the stock
+`diagnoser` specialist that v13's build left in it. The bundles are kept
+out of license-header normalization, which would change them.
+
+The image is not in `versions.yaml` until CI has published it: the entry
+then names this repository at the commit that built it, with the image
+digest, so `shipmind check`'s rules (a full SHA, a digest) apply to it
+like any other component.
+
+**Why:** the cutover moves the cluster to shipmind's build of the image.
+If the image also changed the agent's bundle, a difference in the
+agent's answers after the cutover couldn't be told apart from a build
+difference.
+
+**Rejected:** shipping mast's stock `gke-triage` now. It has absorbed
+most of `gke-triage-f`, but it still differs (the read-only endpoint, the
+change-executor budgets, the specialist), and that is a behavior change
+for scenario runs to decide (#20).
+
 ## 2026-10-20: Vendor plain manifests, one kustomize base each
 
 Components' manifests are vendored as files at their pinned version, one
