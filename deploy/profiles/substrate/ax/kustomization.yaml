@@ -13,14 +13,18 @@
 # limitations under the License.
 
 # ax-server and its Redis, from the ax fork's manifests at the version
-# versions.yaml pins. An environment overlay sets ax-server's image and
-# its snapshot location (AX_SNAPSHOT_URI).
+# versions.yaml pins, with ax-server's image as shipmind publishes it. An
+# environment overlay sets the snapshot bucket (AX_SNAPSHOTS_BUCKET).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../../vendor/ax/deploy/ax-server
   - redis
 images:
+  - name: ko://github.com/google/ax/cmd/ax-server
+    newName: ghcr.io/go-steer/shipmind/ax-server
+    newTag: 685b160d614122daea13d9fa56de1781a9d210f7
+    digest: sha256:89f82c0106dfa1579eff1ff1537fad04b0a263faffca8b54227799acb023c000
   - name: redis
     newName: docker.io/library/redis
     newTag: 7-alpine

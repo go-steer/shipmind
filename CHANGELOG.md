@@ -10,6 +10,15 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- Every image the substrate profile renders is now pinned in
+  `versions.yaml` and, apart from the third-party ones (redis, lookout),
+  published by shipmind's CI to `ghcr.io/go-steer/shipmind`: ax-server,
+  substrate-scope, the token refresher and Substrate's worker image. The
+  profiles reference them directly; no placeholders remain, and the
+  invariant tests no longer allow any. `versions.yaml` also pins the
+  nine Substrate release images its installer uses (CI publishes all
+  sixteen). An environment overlay may still point at its own registry.
+
 - `versions.yaml`, the platform's bill of materials, pinned to what the
   agent-substrate demo cluster runs on 2026-10-20: Substrate (fork
   b52296fe), ax (fork 685b160, deploy tag

@@ -92,10 +92,9 @@ func build(t *testing.T, dir string) Objects {
 	return objs
 }
 
-// An image is either pinned in versions.yaml, exactly, or a ko://
-// placeholder that an environment overlay must replace. Nothing else
-// gets through: no tag-only images, no digest that versions.yaml
-// doesn't know.
+// Every image is pinned in versions.yaml, exactly: no tag-only images,
+// no placeholders, no digest that versions.yaml doesn't know. An
+// environment overlay may still point at its own registry.
 func TestProfileImagesArePinned(t *testing.T) {
 	f, err := bom.Load("../../versions.yaml")
 	if err != nil {
@@ -113,7 +112,7 @@ func TestProfileImagesArePinned(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, img := range imgs {
-			if strings.HasPrefix(img.Ref, "ko://") || pinned[img.Ref] {
+			if pinned[img.Ref] {
 				continue
 			}
 			t.Errorf("%s: %s container %s runs %q, which versions.yaml does not pin", dir, img.Object, img.Container, img.Ref)
@@ -324,7 +323,7 @@ func TestProfileWorkerImagesArePinned(t *testing.T) {
 				t.Errorf("%s: WorkerPool %s has no workerImage (%v)", dir, o.Name(), err)
 				continue
 			}
-			if v := yaml.GetValue(ref); !strings.HasPrefix(v, "ko://") && !pinned[v] {
+			if v := yaml.GetValue(ref); !pinned[v] {
 				t.Errorf("%s: WorkerPool %s runs %q, which versions.yaml does not pin", dir, o.Name(), v)
 			}
 		}

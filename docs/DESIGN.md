@@ -173,8 +173,7 @@ upstream tag that moved.
 over the vendored bases with the profile's patches: images pinned by
 digest from `versions.yaml`, settings every deployment of the profile
 needs. Tests render every profile in-process and hold them to
-invariants: every image is pinned in `versions.yaml` (or is a `ko://`
-placeholder an overlay must replace), no remote bases, and
+invariants: every image is pinned in `versions.yaml`, no remote bases, and
 component-specific rules such as ax's Redis keeping its volume.
 
 **Environments.** An environment is an overlay directory: a

@@ -36,9 +36,9 @@ spec:
   replicas: 4
   sandboxClasses:
     - name: gvisor
-  # Substrate's ateom-gvisor at the pinned version; an environment
-  # overlay sets it.
-  workerImage: ko://github.com/agent-substrate/substrate/ateom-gvisor
+  # Substrate's ateom-gvisor at the pinned version, as shipmind
+  # publishes it. Changing it rolls every worker.
+  workerImage: ghcr.io/go-steer/shipmind/substrate/ateom-gvisor:b52296feb32525869befb16c7128ccafbb79cfe2@sha256:0aac2c562734d0bdaa6b786899a3c2afac156007c5494bb75b38d420d659c77d
   template:
     nodeSelector:
       cloud.google.com/compute-class: substrate-workers

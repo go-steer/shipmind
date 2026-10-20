@@ -18,18 +18,11 @@
 # SHA, never a branch or an abbreviated SHA, and every image is pinned by
 # digest.
 #
-# This first set is what the agent-substrate demo cluster runs as of
-# 2026-10-20, read from the cluster. Three gaps, each a Milestone 1 issue
-# (docs/DESIGN.md):
-#
-# - Images built from the forks and from go-steer sources (Substrate,
-#   ax-server, substrate-scope) live only in a private Artifact Registry,
-#   so they are pinned here by source commit until they are published.
-# - The token refresher image is built in this repository but not
-#   published or pinned yet.
-# - switchboard, mast-web and core-agent are not part of the substrate
-#   profile yet; they arrive with the standalone profile and with
-#   switchboard starting ax agents.
+# Every image the substrate profile runs is built by shipmind's CI from
+# the pins below and published to ghcr.io/go-steer/shipmind, except the
+# third-party ones (postgres, envoy, redis, lookout), pinned by digest as
+# their projects publish them. switchboard, mast-web and core-agent join
+# with the standalone profile and with switchboard starting ax agents.
 
 components:
   - name: substrate
@@ -37,6 +30,24 @@ components:
     version: b52296feb32525869befb16c7128ccafbb79cfe2
     profiles: [substrate]
     images:
+      - name: ateapi
+        ref: ghcr.io/go-steer/shipmind/substrate/ateapi:b52296feb32525869befb16c7128ccafbb79cfe2@sha256:15b927fd2820c20f7fa9e9c3ae0809453f998a8400f96cfbaeb24ce19838c25b
+      - name: atecontroller
+        ref: ghcr.io/go-steer/shipmind/substrate/atecontroller:b52296feb32525869befb16c7128ccafbb79cfe2@sha256:4e454471fa4e74ba270822d17fde24f5734068bf397a4dafd3b0a08cde4ad2d8
+      - name: atelet
+        ref: ghcr.io/go-steer/shipmind/substrate/atelet:b52296feb32525869befb16c7128ccafbb79cfe2@sha256:a98b9048cbf1852ac5551f33c6f49e5e474a1d939297a06f84c2b472e2fa6a7e
+      - name: atenet
+        ref: ghcr.io/go-steer/shipmind/substrate/atenet:b52296feb32525869befb16c7128ccafbb79cfe2@sha256:5c17428778ef8639f821fe8a45195d381e5e84f88b6b372060c5703b8d7ed1c6
+      - name: objectstore-plugin
+        ref: ghcr.io/go-steer/shipmind/substrate/objectstore-plugin:b52296feb32525869befb16c7128ccafbb79cfe2@sha256:8d54fb486662170e463ecd177b58192102a7892b4dbcbc0f14c47b7b51f63132
+      - name: kubernetes-secrets
+        ref: ghcr.io/go-steer/shipmind/substrate/kubernetes-secrets:b52296feb32525869befb16c7128ccafbb79cfe2@sha256:0e49cd4c08208776406fd96ad317f50dcba3b7fc167039f5e1a24ad2e99d2ff9
+      - name: podcertcontroller
+        ref: ghcr.io/go-steer/shipmind/substrate/podcertcontroller:b52296feb32525869befb16c7128ccafbb79cfe2@sha256:3bd0bcbaa2d8b9db6faa4f52bbfc6a0aa8f5d04f4d33cfe3efe178384f056c64
+      - name: ateom-gvisor
+        ref: ghcr.io/go-steer/shipmind/substrate/ateom-gvisor:b52296feb32525869befb16c7128ccafbb79cfe2@sha256:0aac2c562734d0bdaa6b786899a3c2afac156007c5494bb75b38d420d659c77d
+      - name: envoy-dataplane
+        ref: ghcr.io/go-steer/shipmind/substrate/envoy-dataplane:b52296feb32525869befb16c7128ccafbb79cfe2@sha256:739a356a4f1a17dc28686da85f729ea6a380d6f352ca7a46795f54cd996cdfda
       - name: postgres
         ref: docker.io/library/postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
       - name: envoy
@@ -52,6 +63,8 @@ components:
     version: 685b160d614122daea13d9fa56de1781a9d210f7
     profiles: [substrate]
     images:
+      - name: ax-server
+        ref: ghcr.io/go-steer/shipmind/ax-server:685b160d614122daea13d9fa56de1781a9d210f7@sha256:89f82c0106dfa1579eff1ff1537fad04b0a263faffca8b54227799acb023c000
       - name: redis
         ref: docker.io/library/redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     manifests:
@@ -113,6 +126,21 @@ components:
     source: github.com/go-steer/substrate-scope
     version: c2e8f508caade95cfec42e4d54966ade5e7f222f
     profiles: [substrate]
+    images:
+      - name: substrate-scope
+        ref: ghcr.io/go-steer/shipmind/substrate-scope:c2e8f508caade95cfec42e4d54966ade5e7f222f@sha256:1f8c599a49b9806af7944773f9c10ce5dd76fac3e396e2c710fde18913d6825e
     manifests:
       - deploy/namespace.yaml
       - deploy/substrate-scope.yaml
+
+  - name: token-refresher
+    source: github.com/go-steer/shipmind
+    version: 6193d32b7b43b23c9dbb6f396632b832c15d51ee
+    profiles: [substrate]
+    images:
+      - name: token-refresher
+        ref: ghcr.io/go-steer/shipmind/token-refresher:6193d32b7b43b23c9dbb6f396632b832c15d51ee@sha256:9a61d5d5306a6c1bf83ed81b9abe975aec637ee94013b0ee6fae222e26240017
+    note: >-
+      Built by this repository (images/token-refresher) at the commit in
+      version. CI publishes a build from every main commit that touches
+      it; move this pin deliberately.
