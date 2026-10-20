@@ -23,5 +23,13 @@
 # The pin rules. Small and pure: every branch is reachable.
 github.com/go-steer/shipmind/internal/bom      100.0
 
-# The CLI. The one uncovered statement is main itself.
-github.com/go-steer/shipmind/cmd/shipmind       96.0  # 97.3
+# The CLI. The uncovered statements are main itself.
+github.com/go-steer/shipmind/cmd/shipmind       97.5  # 98.4
+
+# Vendoring and its offline verification. The uncovered branches are
+# filesystem and git failures between the steps a test can arrange.
+github.com/go-steer/shipmind/internal/manifests 90.0  # 91.2
+
+# In-process kustomize rendering and image listing. The uncovered
+# branches are kyaml lookup errors on objects kustomize already accepted.
+github.com/go-steer/shipmind/internal/render    85.0  # 86.2

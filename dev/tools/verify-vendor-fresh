@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# Re-vendor every component from its source repository (network) and
+# fail if deploy/vendor changes. `shipmind check` verifies the vendored
+# files against VENDOR.yaml offline, but a file edited together with its
+# lock entry, or an upstream tag that moved, only shows up here. A failed
+# run leaves the fresh vendor in the working tree, ready to review.
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+go run ./cmd/shipmind vendor -f versions.yaml >/dev/null
+# Compare against the index, like verify-mod-tidy: staged work counts as
+# the baseline, so the check means the same before and after a commit.
+untracked=$(git ls-files --others --exclude-standard -- deploy/vendor)
+if ! git diff --quiet -- deploy/vendor || [[ -n "$untracked" ]]; then
+  echo "deploy/vendor differs from a fresh \`shipmind vendor\`:" >&2
+  git --no-pager diff --stat -- deploy/vendor >&2
+  [[ -z "$untracked" ]] || printf 'untracked: %s\n' $untracked >&2
+  exit 1
+fi
+echo "deploy/vendor matches a fresh vendor"

@@ -31,8 +31,9 @@ deployment manifests. It holds no component source code.
 - **No secrets anywhere.** Not in this repository and not in the overlay.
   Keys and tokens live in Secret Manager or Kubernetes Secrets; manifests
   refer to them.
-- **Generated stays generated.** `deploy/vendor/` is rendered from pinned
-  component versions by the CLI; don't edit it by hand.
+- **Generated stays generated.** `deploy/vendor/` is written by
+  `shipmind vendor` from pinned component versions; don't edit it by hand
+  (`shipmind check` fails if you do). Patch in a profile instead.
 - **Long runs don't run on a workstation.** End-to-end scenarios and
   evals run in CI or as Jobs on a cluster.
 
@@ -46,13 +47,15 @@ dev/ci/presubmits/vet       # go vet ./...
 dev/ci/presubmits/lint-go   # golangci-lint (auto-installs the pinned version)
 dev/ci/presubmits/verify-go-format  # gofmt + goimports (fix: dev/tools/fix-go-format)
 dev/ci/presubmits/verify-mod-tidy   # go.mod/go.sum are tidy
-dev/ci/presubmits/verify-versions   # versions.yaml pins are sound
+dev/ci/presubmits/verify-versions   # versions.yaml pins and deploy/vendor are sound
+dev/ci/presubmits/verify-vendor-fresh  # re-vendor from the network, fail on any diff
 dev/ci/presubmits/verify-coverage   # per-package floors (dev/coverage-floors.txt)
 dev/ci/presubmits/verify-vuln       # govulncheck
 dev/ci/presubmits/verify-no-agent-attribution  # no assistant attribution
 ```
 
 The default test run needs no network, no cluster and no credentials.
+`verify-vendor-fresh` and `verify-vuln` need the network.
 
 ## Conventions
 

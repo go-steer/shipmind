@@ -41,7 +41,8 @@ is `go-steer/shipmind-agent-substrate`.
 
 ```bash
 go run ./cmd/shipmind versions   # what a release pins
-go run ./cmd/shipmind check      # are the pins sound
+go run ./cmd/shipmind check      # are the pins and vendored manifests sound
+kubectl kustomize deploy/profiles/substrate/ax   # a profile, rendered
 ```
 
 ## Contributing

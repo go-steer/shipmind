@@ -35,7 +35,8 @@ dev/
 │   ├── build              # go build ./...
 │   ├── lint-go            # golangci-lint (auto-installs v2.12.1)
 │   ├── verify-mod-tidy    # `go mod tidy` clean check
-│   ├── verify-versions    # versions.yaml: tags/commits and image digests
+│   ├── verify-versions    # versions.yaml pins and deploy/vendor against its locks
+│   ├── verify-vendor-fresh # re-vendor from the network; fail on any diff
 │   ├── test-unit          # go test -race -coverprofile
 │   ├── verify-coverage    # each package at or above its floor
 │   ├── verify-vuln        # govulncheck ./...
@@ -51,6 +52,7 @@ dev/
         ├── lint-go
         ├── verify-mod-tidy
         ├── verify-versions
+        ├── verify-vendor-fresh
         ├── verify-vuln
         ├── verify-coverage
         └── test-unit

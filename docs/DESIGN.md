@@ -36,7 +36,7 @@ shipmind is a **distribution**. It owns:
   instructions, schemas.
 - **The images** that combine components (the agent image is mast, the
   ax task runner and the agent bundles in one image).
-- **Deployment**: each component's manifests, rendered at its pinned
+- **Deployment**: each component's manifests, vendored at its pinned
   version and checked in, composed into profiles and environments.
 - **End-to-end tests**: scenarios that break something real and check
   what the platform does about it.
@@ -110,8 +110,8 @@ images/
   agent-mast/            mast + ax runner + agent bundles
   token-refresher/
 deploy/
-  vendor/<component>/    rendered manifests at the pinned version (generated)
-  profiles/substrate/
+  vendor/<component>/    manifests at the pinned version, one kustomize base each (generated)
+  profiles/substrate/    one kustomization per component, patched for the profile
   profiles/standalone/
   envs/kind/
 cmd/shipmind/            the CLI
@@ -142,15 +142,54 @@ Moving a pin is a pull request:
 
 1. A component release (or a fork's deploy tag) triggers a
    `repository_dispatch` to shipmind.
-2. A workflow opens a PR that updates `versions.yaml` and re-renders
-   `deploy/vendor/<component>`, so the review shows exactly which
-   manifests changed.
+2. A workflow opens a PR that updates `versions.yaml` and re-vendors
+   `deploy/vendor/<component>` (`shipmind vendor`), so the review shows
+   exactly which manifests changed.
 3. The PR runs the end-to-end tier for the profiles that use the
    component.
 
 A shipmind release is a tag on a commit whose component set passed the
 nightly tier. Releases are versioned on their own (`v0.1.0`, ...), not
 after any component.
+
+## Deployment mechanics
+
+**Vendoring.** A component that ships Kubernetes manifests lists them
+under `manifests` in `versions.yaml`. `shipmind vendor` reads each one
+from the component's repository at its pin and stores it as its own
+kustomize base: `deploy/ax-server.yaml` in the ax fork becomes
+`deploy/vendor/ax/deploy/ax-server/`, holding the file and a generated
+`kustomization.yaml`. One base per manifest lets a profile take, patch or
+leave out each manifest separately; two manifests that declare the same
+Namespace (as ax's do) could not share a base. `VENDOR.yaml` records the
+source, the version, the commit it resolved to and each file's SHA-256.
+`shipmind check` verifies it offline: a pin moved without a re-vendor, or
+a vendored file edited without its lock, fails. CI also re-vendors from
+the network and fails on any difference, which catches what a lock in
+the same tree can't: a file edited together with its lock entry, or an
+upstream tag that moved.
+
+**Profiles.** `deploy/profiles/<profile>/<component>/` is a kustomization
+over the vendored bases with the profile's patches: images pinned by
+digest from `versions.yaml`, settings every deployment of the profile
+needs. Tests render every profile in-process and hold them to
+invariants: every image is pinned in `versions.yaml` (or is a `ko://`
+placeholder an overlay must replace), no remote bases, and
+component-specific rules such as ax's Redis keeping its volume.
+
+**Overlays.** An environment's overlay references a profile at a full
+shipmind commit SHA and adds its own values. Drift is measured with
+`kubectl diff` of the rendered overlay against the cluster, which is
+read-only.
+
+**Substrate is the exception.** Agent Substrate installs through its own
+Go installer (`ate-setup`), which applies manifests from its checkout with
+environment-driven settings, waits for rollouts and wires the credential
+provider; it has no render mode. shipmind runs that installer at the
+pinned fork commit with pre-built images, and keeps the cluster-specific
+inputs (installer settings, the worker ComputeClass, the WorkerPool) in
+the profile and the overlay. Source-level manifest patches stay in the
+fork.
 
 ## Testing
 
@@ -207,10 +246,6 @@ through Substrate's router. mast-web joins the substrate profile.
 
 ## Open questions
 
-- **Rendering.** Components ship Helm (mast, lookout), kustomize (lookout,
-  switchboard) and plain YAML (mast-web, substrate-scope). The working
-  assumption is kustomize for composition with Helm charts rendered at
-  vendor time, so `deploy/vendor` holds plain YAML; settle it in M1 issue 2.
 - **Where scenarios run nightly.** On agent-substrate itself, or on a
   fresh cluster per run. A fresh cluster tests the install too, at the
   cost of N4/C4 stockouts turning into red nightlies.
