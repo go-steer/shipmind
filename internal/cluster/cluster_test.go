@@ -36,6 +36,7 @@ case "$*" in
   *" get secret "*"managedFields"*) [ -f "$d/managed.txt" ] && cat "$d/managed.txt"; exit 0 ;;
   *" get secret "*) [ -f "$d/secret.json" ] && cat "$d/secret.json"; exit 0 ;;
   *" get deployments,daemonsets,statefulsets "*) [ -f "$d/workloads.json" ] && cat "$d/workloads.json"; exit 0 ;;
+  *" get namespaces "*) printf 'default\nlab\n'; exit 0 ;;
   *" get deployment "*) [ -f "$d/selector.json" ] && cat "$d/selector.json"; exit 0 ;;
   *" get pods "*) echo "$*" > "$d/pods.args"; [ -f "$d/starts.txt" ] && cat "$d/starts.txt"; exit 0 ;;
   *" apply --server-side "*) if [ -f "$d/ssa.fail" ]; then echo "error when applying patch: data: c2VjcmV0" >&2; exit 1; fi; echo applied ;;
@@ -373,5 +374,20 @@ func TestDeleteLabeled(t *testing.T) {
 	}
 	if got := lastArgs(t, dir); got != "--context demo delete deployments,configmaps -n lab -l app=x --ignore-not-found" {
 		t.Errorf("args %q", got)
+	}
+}
+
+func TestNamespaces(t *testing.T) {
+	k, _ := fake(t)
+	ns, err := k.Namespaces(context.Background())
+	if err != nil || !slices.Equal(ns, []string{"default", "lab"}) {
+		t.Errorf("Namespaces = %v, %v", ns, err)
+	}
+}
+
+func TestNamespacesError(t *testing.T) {
+	k := Kube{Context: "demo", Kubectl: filepath.Join(t.TempDir(), "no-kubectl")}
+	if _, err := k.Namespaces(context.Background()); err == nil {
+		t.Error("Namespaces with no kubectl succeeded")
 	}
 }
