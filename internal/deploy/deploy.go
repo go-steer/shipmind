@@ -91,11 +91,6 @@ func (r *Report) Drift() []Change {
 	return d
 }
 
-func (p *Plan) manifests() ([]byte, error) {
-	y, err := p.Objects.YAML()
-	return []byte(y), err
-}
-
 // tokens finds the agent's tokens: the tokens Secret, else (adopting a
 // deployment made before shipmind) the ones in the live task template.
 // source says which; found is false when the cluster has none yet. When
@@ -164,16 +159,23 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		r.Changes = append(r.Changes, Change{What: what, Detail: detail, Expected: reason})
 	}
 
-	m, err := p.manifests()
+	existing, pending, err := splitByNamespace(ctx, p.Objects, c)
 	if err != nil {
 		return nil, err
 	}
-	ids, err := c.Diff(ctx, m)
+	m, err := existing.YAML()
+	if err != nil {
+		return nil, err
+	}
+	ids, err := c.Diff(ctx, []byte(m))
 	if err != nil {
 		return nil, err
 	}
 	for _, id := range ids {
 		add(id, "differs from the render (kubectl diff)")
+	}
+	for _, ns := range sortedKeys(pending) {
+		add("namespace "+ns, fmt.Sprintf("new: the namespace and the %d objects in it don't exist yet", len(pending[ns])-1))
 	}
 
 	t, source, found, err := tokens(ctx, c)
@@ -343,6 +345,52 @@ func rolloutStatus(ctx context.Context, p *Plan, c cluster.Cluster, add func(wha
 	return nil
 }
 
+// splitByNamespace separates the objects kubectl can diff or validate
+// from those in namespaces the render creates but the cluster doesn't
+// have yet: the server can't dry-run an object into a missing namespace,
+// and a dry-run never creates one. A new namespace's own Namespace object
+// goes with its contents. An object in a missing namespace the render
+// doesn't create stays with the rest, so kubectl fails on it as it
+// should: a real apply would too.
+func splitByNamespace(ctx context.Context, objs render.Objects, c cluster.Cluster) (existing render.Objects, pending map[string]render.Objects, err error) {
+	names, err := c.Namespaces(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	have := map[string]bool{}
+	for _, n := range names {
+		have[n] = true
+	}
+	created := map[string]bool{}
+	for _, o := range objs {
+		if o.Kind() == "Namespace" {
+			created[o.Name()] = true
+		}
+	}
+	pending = map[string]render.Objects{}
+	for _, o := range objs {
+		ns := o.Namespace()
+		if o.Kind() == "Namespace" {
+			ns = o.Name()
+		}
+		if ns != "" && !have[ns] && created[ns] {
+			pending[ns] = append(pending[ns], o)
+			continue
+		}
+		existing = append(existing, o)
+	}
+	return existing, pending, nil
+}
+
+func sortedKeys(m map[string]render.Objects) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
 // lookoutStale reports whether a running lookout pod started before the
 // task template Secret was last written.
 func lookoutStale(ctx context.Context, c cluster.Cluster) (bool, error) {
@@ -437,8 +485,19 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 	}
 
 	// Compute.
+	objects := p.Objects
+	if opts.DryRun {
+		existing, pending, err := splitByNamespace(ctx, p.Objects, c)
+		if err != nil {
+			return err
+		}
+		for _, ns := range sortedKeys(pending) {
+			log("namespace %s and the %d objects in it would be created (not validated: a dry run can't create the namespace they need)", ns, len(pending[ns])-1)
+		}
+		objects = existing
+	}
 	var namespaces, rest render.Objects
-	for _, o := range p.Objects {
+	for _, o := range objects {
 		if o.Kind() == "Namespace" {
 			namespaces = append(namespaces, o)
 		} else {
@@ -514,11 +573,13 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 	} else {
 		log("task template in secret %s/%s unchanged", Namespace, AgentSecret)
 	}
-	out, err := c.Apply(ctx, []byte(restYAML), opts.DryRun)
-	if err != nil {
-		return err
+	if len(rest) > 0 {
+		out, err := c.Apply(ctx, []byte(restYAML), opts.DryRun)
+		if err != nil {
+			return err
+		}
+		log("applied %d objects%s\n%s", len(rest), dry(opts.DryRun), strings.TrimRight(out, "\n"))
 	}
-	log("applied %d objects%s\n%s", len(rest), dry(opts.DryRun), strings.TrimRight(out, "\n"))
 	switch {
 	case wsSame:
 		log("workspace %s/%s unchanged", p.Env.Agent.Atespace, p.Env.Agent.Workspace)

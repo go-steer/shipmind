@@ -173,6 +173,7 @@ func (f deployFake) Diff(context.Context, []byte) ([]string, error) {
 }
 func (deployFake) Apply(context.Context, []byte, bool) (string, error) { return "applied\n", nil }
 func (deployFake) Delete(context.Context, []byte) (string, error)      { return "deleted\n", nil }
+func (deployFake) Namespaces(context.Context) ([]string, error)        { return []string{"demo"}, nil }
 func (deployFake) Secret(context.Context, string, string) (map[string][]byte, bool, error) {
 	return nil, false, nil
 }

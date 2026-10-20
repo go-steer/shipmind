@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,10 @@ func plan(t *testing.T) *Plan {
 // fakeCluster records writes and serves Secrets and the Workspace from
 // memory.
 type fakeCluster struct {
+	// missingNS are namespaces the cluster doesn't have yet; every other
+	// namespace exists.
+	missingNS     []string
+	diffed        string
 	workloads     map[string][]cluster.Workload
 	ops           []string // every write, in order
 	secretUpdated time.Time
@@ -78,7 +83,30 @@ func (f *fakeCluster) fail(op string) error {
 	return nil
 }
 
-func (f *fakeCluster) Diff(context.Context, []byte) ([]string, error) { return f.diff, f.fail("diff") }
+func (f *fakeCluster) Diff(_ context.Context, m []byte) ([]string, error) {
+	f.diffed = string(m)
+	return f.diff, f.fail("diff")
+}
+
+func (f *fakeCluster) Namespaces(context.Context) ([]string, error) {
+	all := []string{"ns", "lookout-ax", "default"}
+	var have []string
+	for _, n := range all {
+		if !contains(f.missingNS, n) {
+			have = append(have, n)
+		}
+	}
+	return have, f.fail("namespaces")
+}
+
+func contains(xs []string, x string) bool {
+	for _, y := range xs {
+		if y == x {
+			return true
+		}
+	}
+	return false
+}
 
 func (f *fakeCluster) Apply(_ context.Context, m []byte, dryRun bool) (string, error) {
 	if err := f.fail("apply"); err != nil {
@@ -571,5 +599,75 @@ func TestNormalize(t *testing.T) {
 		if got := normalize(in); got != want {
 			t.Errorf("normalize(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Objects in a namespace that doesn't exist yet can't be diffed (the
+// server can't dry-run into a missing namespace): status reports the
+// namespace as new and diffs the rest.
+func TestStatusNewNamespace(t *testing.T) {
+	c := inSync(t)
+	c.missingNS = []string{"ns"}
+	r, err := Status(context.Background(), plan(t), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Changes) != 1 || r.Changes[0].What != "namespace ns" || !strings.Contains(r.Changes[0].Detail, "the 1 objects in it") {
+		t.Errorf("changes %+v", r.Changes)
+	}
+	if strings.Contains(c.diffed, "name: ns") || strings.Contains(c.diffed, "name: redis") {
+		t.Errorf("diffed objects in a missing namespace:\n%s", c.diffed)
+	}
+	c.failOn = "namespaces"
+	if _, err := Status(context.Background(), plan(t), c); err == nil {
+		t.Error("Status with namespaces failing succeeded")
+	}
+}
+
+// A dry run skips (and says so) what it can't validate; a real up
+// applies everything, namespaces first.
+func TestUpNewNamespace(t *testing.T) {
+	c := inSync(t)
+	c.missingNS = []string{"ns"}
+	var log []string
+	if err := Up(context.Background(), plan(t), c, UpOptions{DryRun: true, Log: func(f string, a ...any) { log = append(log, fmt.Sprintf(f, a...)) }}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(log, "\n"), "namespace ns and the 1 objects in it would be created") {
+		t.Errorf("dry-run log %v", log)
+	}
+	c = inSync(t)
+	c.missingNS = []string{"ns"}
+	if err := Up(context.Background(), plan(t), c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(c.ops, ", ") != "apply Namespace, apply Deployment" {
+		t.Errorf("real up writes %v", c.ops)
+	}
+	c = inSync(t)
+	c.failOn = "namespaces"
+	if err := Up(context.Background(), plan(t), c, UpOptions{DryRun: true}); err == nil {
+		t.Error("dry run with namespaces failing succeeded")
+	}
+}
+
+// An object in a missing namespace that the render doesn't create isn't
+// set aside: kubectl diffs it and fails, as a real apply would.
+func TestStatusMissingNamespaceNotCreated(t *testing.T) {
+	p := plan(t)
+	var noNS render.Objects
+	for _, o := range p.Objects {
+		if o.Kind() != "Namespace" {
+			noNS = append(noNS, o)
+		}
+	}
+	p.Objects = noNS
+	c := inSync(t)
+	c.missingNS = []string{"ns"}
+	if _, err := Status(context.Background(), p, c); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c.diffed, "name: redis") {
+		t.Errorf("the object in a namespace nothing creates was set aside instead of diffed:\n%s", c.diffed)
 	}
 }

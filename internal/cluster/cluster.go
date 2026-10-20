@@ -49,6 +49,8 @@ type Cluster interface {
 	ApplySecret(ctx context.Context, manifest []byte, dryRun bool) error
 	// Delete deletes the objects in manifests, ignoring ones not found.
 	Delete(ctx context.Context, manifests []byte) (string, error)
+	// Namespaces lists the cluster's namespaces.
+	Namespaces(ctx context.Context) ([]string, error)
 	// Secret returns a Secret's data, or found=false if it doesn't exist.
 	Secret(ctx context.Context, namespace, name string) (data map[string][]byte, found bool, err error)
 	// SecretUpdated returns when a Secret was last written (the latest
@@ -332,6 +334,15 @@ func (k Kube) DeleteLabeled(ctx context.Context, namespace, kinds, selector stri
 func (k Kube) Delete(ctx context.Context, manifests []byte) (string, error) {
 	out, _, err := k.run(ctx, k.kubectl(), manifests, "delete", "--ignore-not-found", "-f", "-")
 	return string(out), err
+}
+
+// Namespaces implements Cluster.
+func (k Kube) Namespaces(ctx context.Context) ([]string, error) {
+	out, _, err := k.run(ctx, k.kubectl(), nil, "get", "namespaces", "-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}")
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(out)), nil
 }
 
 // Secret implements Cluster.

@@ -10,6 +10,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- `shipmind status` and `up -dry-run` handle objects in namespaces that
+  don't exist yet: the server can't dry-run into a missing namespace, so
+  they are reported as new (status) or listed as to-be-created (dry run)
+  instead of failing the whole diff.
+
 - `deploy/e2e/substrate`: the nightly CronJob running the missing-env
   scenario in the cluster from the pinned `e2e-runner` image, with
   least-privilege RBAC. Environments opt in from their overlay. The
