@@ -144,3 +144,16 @@ components:
       Built by this repository (images/token-refresher) at the commit in
       version. CI publishes a build from every main commit that touches
       it; move this pin deliberately.
+
+  - name: e2e-runner
+    source: github.com/go-steer/shipmind
+    version: 4011a67fc427607784672b11479b1dc826bfa038
+    profiles: [substrate]
+    images:
+      - name: e2e-runner
+        ref: ghcr.io/go-steer/shipmind/e2e-runner:4011a67fc427607784672b11479b1dc826bfa038@sha256:3e77f13c14019ce12c02e5aa219241dc983cbf522a5950d8082b41cd25da95a9
+    note: >-
+      The end-to-end runner (images/e2e-runner: shipmind, the ax CLI,
+      kubectl, the scenarios) at the commit in version, which the nightly
+      in deploy/e2e/substrate runs. CI publishes a build from every main
+      commit that touches its inputs; move this pin deliberately.

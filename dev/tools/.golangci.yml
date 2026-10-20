@@ -52,6 +52,9 @@ linters:
   exclusions:
     # Generated code shouldn't fail the lint.
     generated: lax
+    # Git worktrees under .claude/ hold other branches' work in progress.
+    paths:
+      - (^|/)\.claude/
     presets:
       - common-false-positives
       - legacy

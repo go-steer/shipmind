@@ -32,13 +32,23 @@ import (
 
 const profilesDir = "../../deploy/profiles"
 
-// profileParts returns every profile (deploy/profiles/<profile>) and
-// every part directly under one (deploy/profiles/<profile>/<part>).
+// e2eDir holds the end-to-end deployments environments opt into
+// (deploy/e2e/<profile>), held to the same invariants as profiles.
+const e2eDir = "../../deploy/e2e"
+
+// profileParts returns every profile (deploy/profiles/<profile>), every
+// part directly under one (deploy/profiles/<profile>/<part>), and every
+// end-to-end deployment (deploy/e2e/<profile>).
 func profileParts(t *testing.T) []string {
 	t.Helper()
 	var dirs []string
-	for _, pattern := range []string{"*", filepath.Join("*", "*")} {
-		matches, err := filepath.Glob(filepath.Join(profilesDir, pattern, "kustomization.yaml"))
+	for _, pattern := range []string{
+		filepath.Join(profilesDir, "*", "kustomization.yaml"),
+		filepath.Join(profilesDir, "*", "*", "kustomization.yaml"),
+		filepath.Join(e2eDir, "*", "kustomization.yaml"),
+		filepath.Join(e2eDir, "*", "*", "kustomization.yaml"),
+	} {
+		matches, err := filepath.Glob(pattern)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +182,14 @@ func TestSubstrateAxRedisPersists(t *testing.T) {
 // kustomization is named kustomization.yaml, so nothing hides from this
 // check (or from profileParts) under another name kustomize accepts.
 func TestProfilesHaveNoRemoteResources(t *testing.T) {
-	err := filepath.WalkDir(profilesDir, func(p string, d os.DirEntry, err error) error {
+	for _, root := range []string{profilesDir, e2eDir} {
+		testNoRemote(t, root)
+	}
+}
+
+func testNoRemote(t *testing.T, root string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}

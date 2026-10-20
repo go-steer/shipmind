@@ -245,7 +245,10 @@ requires its session to still be in mast's memory with its history, and
 deletes the task. The result is one JSON object; the exit status says
 pass or fail. It runs from a workstation (a kube context and a
 port-forwarded router) or inside the cluster (`-in-cluster`, the
-`e2e-runner` image).
+`e2e-runner` image). `deploy/e2e/substrate` runs it nightly as a
+CronJob with just the permissions it needs (Deployments and ConfigMaps
+in the scenario's namespace, the agent's attach token); an environment
+opts in by referencing it at the same shipmind commit as its profile.
 
 ## Milestones
 

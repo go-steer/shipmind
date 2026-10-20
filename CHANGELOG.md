@@ -10,6 +10,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- `deploy/e2e/substrate`: the nightly CronJob running the missing-env
+  scenario in the cluster from the pinned `e2e-runner` image, with
+  least-privilege RBAC. Environments opt in from their overlay. The
+  profile invariant tests now cover `deploy/e2e` too.
+
 - `shipmind scenario run` and `e2e/scenarios/missing-env`: the first
   end-to-end scenario (a crash loop on a missing `DATABASE_URL`), scored
   on the agent's answer and checked through idle suspend and wake. The
