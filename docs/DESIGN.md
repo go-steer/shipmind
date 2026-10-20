@@ -232,6 +232,21 @@ Nothing long-running runs on a workstation; scenarios run in CI or as
 Jobs on the cluster. The prompt A/B experiments from October (generalist
 against routed specialists) become scenario runs with two agent variants.
 
+**Scenarios.** A scenario is a directory under `e2e/scenarios/`: a
+`scenario.yaml` (the namespace, what a correct answer must mention, how
+long each step may take) and a workload template. `shipmind scenario
+run` applies the workload under a name unique to the run (lookout keys
+an incident's ax task on the workload, so a reused name would land in an
+earlier run's session, where the agent rightly answers "still failing"),
+waits for lookout's new ax task, reads the agent's answer to the first
+incident message through Substrate's router and scores it, removes the
+workload, waits for the task to suspend, wakes it through the router and
+requires its session to still be in mast's memory with its history, and
+deletes the task. The result is one JSON object; the exit status says
+pass or fail. It runs from a workstation (a kube context and a
+port-forwarded router) or inside the cluster (`-in-cluster`, the
+`e2e-runner` image).
+
 ## Milestones
 
 ### Milestone 1: agent-substrate deploys from shipmind

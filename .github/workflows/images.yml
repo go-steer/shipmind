@@ -16,6 +16,8 @@
 # agent image (image-agent-mast.yml), to ghcr.io/go-steer/shipmind:
 #
 #   token-refresher   images/token-refresher, tagged with the shipmind commit
+#   e2e-runner        images/e2e-runner (shipmind, the ax CLI, kubectl and
+#                     the scenarios), tagged with the shipmind commit
 #   ax-server         the ax fork at versions.yaml's ax pin, with the fork's
 #                     own .ko.yaml, tagged with that commit
 #   substrate-scope   go-steer/substrate-scope at its pin, with its own
@@ -36,12 +38,24 @@ on:
   pull_request:
     paths:
       - images/token-refresher/**
+      - images/e2e-runner/**
+      - cmd/**
+      - internal/**
+      - e2e/**
+      - go.mod
+      - go.sum
       - versions.yaml
       - .github/workflows/images.yml
   push:
     branches: [main]
     paths:
       - images/token-refresher/**
+      - images/e2e-runner/**
+      - cmd/**
+      - internal/**
+      - e2e/**
+      - go.mod
+      - go.sum
       - versions.yaml
       - .github/workflows/images.yml
   workflow_dispatch:
@@ -85,6 +99,48 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           echo "token-refresher \`$REGISTRY/token-refresher@$DIGEST\` (pushed: $PUSH)" >> "$GITHUB_STEP_SUMMARY"
+
+  e2e-runner:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      # Go versions, the ax pin and kubectl's version; the Dockerfile has
+      # no defaults.
+      - name: build arguments
+        id: args
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo 'list<<EOF'
+            images/e2e-runner/build-args.sh --lines
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
+      - if: env.PUSH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: images/e2e-runner/Dockerfile
+          build-args: ${{ steps.args.outputs.list }}
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ env.REGISTRY }}/e2e-runner:${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+      - name: summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "e2e-runner \`$REGISTRY/e2e-runner:$GITHUB_SHA@$DIGEST\` (pushed: $PUSH)" >> "$GITHUB_STEP_SUMMARY"
 
   ax-server:
     runs-on: ubuntu-latest

@@ -26,7 +26,7 @@ github.com/go-steer/shipmind/internal/bom      100.0
 # The CLI. The uncovered statements are main itself and error branches
 # between steps a test can't separate (a render that succeeds, then a
 # cluster that fails differently per command).
-github.com/go-steer/shipmind/cmd/shipmind       93.0  # 94.6
+github.com/go-steer/shipmind/cmd/shipmind       90.5  # 91.0  (the scenario command's success path needs a live platform; internal/scenario's tests cover Run)
 
 # The environment file. Pure validation: every branch is reachable.
 github.com/go-steer/shipmind/internal/env      100.0
@@ -53,3 +53,8 @@ github.com/go-steer/shipmind/internal/manifests 90.0  # 91.2
 # In-process kustomize rendering and image listing. The uncovered
 # branches are kyaml lookup errors on objects kustomize already accepted.
 github.com/go-steer/shipmind/internal/render    85.0  # 86.2
+
+# End-to-end scenarios against a fake world on a virtual clock, and the
+# router client against an httptest server. Uncovered: transport errors
+# mid-stream and template errors on files that loaded.
+github.com/go-steer/shipmind/internal/scenario  91.0  # 92.1

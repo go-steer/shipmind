@@ -10,6 +10,15 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- `shipmind scenario run` and `e2e/scenarios/missing-env`: the first
+  end-to-end scenario (a crash loop on a missing `DATABASE_URL`), scored
+  on the agent's answer and checked through idle suspend and wake. The
+  `e2e-runner` image (shipmind, the ax CLI, kubectl and the scenarios) is
+  built and published by the `images` workflow for running it in the
+  cluster.
+- The format presubmits check only files git tracks or would track, so
+  worktrees under `.claude/` no longer fail them.
+
 - Every image the substrate profile renders is now pinned in
   `versions.yaml` and, apart from the third-party ones (redis, lookout),
   published by shipmind's CI to `ghcr.io/go-steer/shipmind`: ax-server,
