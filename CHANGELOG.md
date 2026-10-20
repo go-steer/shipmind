@@ -36,8 +36,13 @@ release is a tested set of component versions (see "Cutting a release" in
   in a Secret for Substrate's egress gateway to inject, so agents never
   hold a Google credential. `setup/workload-identity.sh` (from
   core-agent's gke-troubleshoot recipe) grants its IAM.
+- `deploy/profiles/substrate/lookout`: k8s-lookout v0.36.0 with the ax
+  sink, its store on a volume, and lookout's own watcher ClusterRole at
+  v0.36.0 (vendored). The live role predates v0.36.0 and lacks its
+  `list volumeattachments` rule; applying the profile adds it.
 - Profile invariant tests: every rendered image is pinned in
   `versions.yaml` (or a `ko://` placeholder for the overlay), no remote
-  bases, and ax's Redis keeps its volume and append-only log.
+  bases, ax's Redis keeps its volume and append-only log, and lookout's
+  store stays on its volume.
 - The design ([`docs/DESIGN.md`](./docs/DESIGN.md)) and the decision log
   ([`docs/decisions.md`](./docs/decisions.md)).

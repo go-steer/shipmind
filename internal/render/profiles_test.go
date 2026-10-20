@@ -244,3 +244,57 @@ func TestIsRemote(t *testing.T) {
 		}
 	}
 }
+
+// lookout keeps its incidents in a store; on an emptyDir a rollout made
+// it re-open every open incident as new work (fixed on agent-substrate
+// on 2026-10-19 by moving the store to a volume).
+func TestSubstrateLookoutStorePersists(t *testing.T) {
+	objs := build(t, filepath.Join(profilesDir, "substrate", "lookout"))
+	if _, ok := objs.Find("PersistentVolumeClaim", "lookout-ax", "lookout-store"); !ok {
+		t.Error("no PersistentVolumeClaim lookout-ax/lookout-store")
+	}
+	d, ok := objs.Find("Deployment", "lookout-ax", "lookout-ax")
+	if !ok {
+		t.Fatal("no Deployment lookout-ax/lookout-ax")
+	}
+	spec, err := d.Pipe(yaml.Lookup("spec", "template", "spec"))
+	if err != nil || spec == nil {
+		t.Fatalf("pod spec: %v", err)
+	}
+	claim, err := spec.Pipe(yaml.Lookup("volumes", "[name=store]", "persistentVolumeClaim", "claimName"))
+	if err != nil || claim == nil || yaml.GetValue(claim) != "lookout-store" {
+		t.Errorf("volume store is not the lookout-store claim (%v)", err)
+	}
+	mount, err := spec.Pipe(yaml.Lookup("containers", "[name=lookout]", "volumeMounts", "[name=store]", "mountPath"))
+	if err != nil || mount == nil || yaml.GetValue(mount) != "/var/lib/lookout" {
+		t.Errorf("volume store is not mounted at /var/lib/lookout (%v)", err)
+	}
+	argsNode, err := spec.Pipe(yaml.Lookup("containers", "[name=lookout]", "args"))
+	if err != nil || argsNode == nil {
+		t.Fatalf("lookout args: %v", err)
+	}
+	elems, err := argsNode.Elements()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var args []string
+	for _, e := range elems {
+		args = append(args, yaml.GetValue(e))
+	}
+	// Exactly one --store, on the volume: with Go's flag parsing a second
+	// one (say, appended by an overlay) would win.
+	var stores []string
+	for i, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--store="), strings.HasPrefix(a, "-store="):
+			stores = append(stores, a[strings.Index(a, "=")+1:])
+		case a == "--store" || a == "-store":
+			if i+1 < len(args) {
+				stores = append(stores, args[i+1])
+			}
+		}
+	}
+	if len(stores) != 1 || stores[0] != "/var/lib/lookout/lookout.db" {
+		t.Errorf("lookout --store values %v, want exactly /var/lib/lookout/lookout.db", stores)
+	}
+}
