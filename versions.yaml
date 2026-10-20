@@ -147,11 +147,11 @@ components:
 
   - name: e2e-runner
     source: github.com/go-steer/shipmind
-    version: 4011a67fc427607784672b11479b1dc826bfa038
+    version: 1238fb23f5f117e4653373ff9bfb1018bd0db554
     profiles: [substrate]
     images:
       - name: e2e-runner
-        ref: ghcr.io/go-steer/shipmind/e2e-runner:4011a67fc427607784672b11479b1dc826bfa038@sha256:3e77f13c14019ce12c02e5aa219241dc983cbf522a5950d8082b41cd25da95a9
+        ref: ghcr.io/go-steer/shipmind/e2e-runner:1238fb23f5f117e4653373ff9bfb1018bd0db554@sha256:bd27d181401abe4e9376f6d7d3616692ad8b29b629fd44fab70c8d81cbbb0798
     note: >-
       The end-to-end runner (images/e2e-runner: shipmind, the ax CLI,
       kubectl, the scenarios) at the commit in version, which the nightly
