@@ -105,12 +105,13 @@ force-push `main`. Full contributor flow + DCO in
 
 ## Current state
 
-**Milestone 1, mostly moved in.** `versions.yaml` pins what the
-agent-substrate demo cluster runs. `deploy/profiles/substrate` renders
-ax, lookout, the token refresher and substrate-scope; the agent's ax
-objects render from `agents/sre-triage/ax`; `shipmind status` against
-the cluster's overlay (the private go-steer/shipmind-agent-substrate)
-reports no drift. Still to come: Substrate's own install (#4), the agent
-image (#6), publishing images (#10), the nightly scenario (#12), and the
-cutover (#13). Never run `shipmind up` against agent-substrate outside
-the cutover runbook.
+**Milestone 1 done (2026-10-20).** The agent-substrate demo cluster is
+deployed with `shipmind up` from the substrate profile plus its private
+overlay (go-steer/shipmind-agent-substrate); `shipmind status` reports
+no drift, Substrate included. Every image the profile renders is pinned
+in `versions.yaml` and built by this repository's CI. The nightly
+scenario (`deploy/e2e/substrate`, missing-env) runs in the cluster at
+03:17 UTC. Next: the standalone profile and kind PR tests (Milestone 2);
+#20 (the stock gke-triage bundle, decided by scenario runs); #15.
+Changes reach the cluster by moving the overlay's shipmind pin, then
+`status`, `up -dry-run`, `up`.
