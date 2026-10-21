@@ -53,9 +53,10 @@ type Cluster interface {
 	Namespaces(ctx context.Context) ([]string, error)
 	// Secret returns a Secret's data, or found=false if it doesn't exist.
 	Secret(ctx context.Context, namespace, name string) (data map[string][]byte, found bool, err error)
-	// SecretUpdated returns when a Secret was last written (the latest
-	// managedFields time), or found=false.
-	SecretUpdated(ctx context.Context, namespace, name string) (t time.Time, found bool, err error)
+	// ObjectUpdated returns when an object (kind as kubectl names it:
+	// "secret", "configmap") was last written, by the API server's clock
+	// (the latest managedFields time), or found=false.
+	ObjectUpdated(ctx context.Context, kind, namespace, name string) (t time.Time, found bool, err error)
 	// PodStarts returns the start times of a Deployment's running pods.
 	PodStarts(ctx context.Context, namespace, deployment string) ([]time.Time, error)
 	// RolloutRestart restarts a Deployment's pods.
@@ -176,9 +177,9 @@ func (k Kube) ApplySecret(ctx context.Context, manifest []byte, dryRun bool) err
 	return nil
 }
 
-// SecretUpdated implements Cluster.
-func (k Kube) SecretUpdated(ctx context.Context, namespace, name string) (time.Time, bool, error) {
-	out, _, err := k.run(ctx, k.kubectl(), nil, "get", "secret", "-n", namespace, name, "--ignore-not-found",
+// ObjectUpdated implements Cluster.
+func (k Kube) ObjectUpdated(ctx context.Context, kind, namespace, name string) (time.Time, bool, error) {
+	out, _, err := k.run(ctx, k.kubectl(), nil, "get", kind, "-n", namespace, name, "--ignore-not-found",
 		"-o", "jsonpath={range .metadata.managedFields[*]}{.time}{\"\\n\"}{end}")
 	if err != nil {
 		return time.Time{}, false, err

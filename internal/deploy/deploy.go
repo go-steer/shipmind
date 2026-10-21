@@ -203,12 +203,14 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		if d := compareAgentSecret(live, want, t); d != "" {
 			add(agentWhat, d)
 		}
-		stale, err := lookoutStale(ctx, c)
+	}
+	for _, sr := range startupReaders {
+		stale, err := sr.stale(ctx, c)
 		if err != nil {
 			return nil, err
 		}
 		if stale {
-			add("deployment "+Namespace+"/"+Lookout, "running since before its task template last changed (lookout reads it only at startup)")
+			add("deployment "+sr.Namespace+"/"+sr.Deployment, fmt.Sprintf("running since before %s last changed (it reads it only at startup)", sr.What))
 		}
 	}
 
@@ -443,14 +445,31 @@ func sortedKeys(m map[string]render.Objects) []string {
 	return keys
 }
 
-// lookoutStale reports whether a running lookout pod started before the
-// task template Secret was last written.
-func lookoutStale(ctx context.Context, c cluster.Cluster) (bool, error) {
-	updated, ok, err := c.SecretUpdated(ctx, Namespace, AgentSecret)
+// startupReader is a Deployment that reads an object only when it
+// starts, so a change to the object needs a restart to take effect.
+type startupReader struct {
+	Kind, Namespace, Name string // the object, kind as kubectl names it
+	Deployment            string // in Namespace
+	What                  string // the object, for messages
+}
+
+// startupReaders are the platform's: lookout reads its task template,
+// and Substrate's Kubernetes Secrets credential provider its namespace
+// policy (an agent's credential fetches are refused until it has
+// restarted on a policy that admits the agent's atespace).
+var startupReaders = []startupReader{
+	{Kind: "secret", Namespace: Namespace, Name: AgentSecret, Deployment: Lookout, What: "its task template"},
+	{Kind: "configmap", Namespace: "ate-system", Name: "k8s-credential-provider-namespace-policy", Deployment: "k8s-credential-provider", What: "its namespace policy"},
+}
+
+// stale reports whether a running pod of the reader started before the
+// object was last written.
+func (sr startupReader) stale(ctx context.Context, c cluster.Cluster) (bool, error) {
+	updated, ok, err := c.ObjectUpdated(ctx, sr.Kind, sr.Namespace, sr.Name)
 	if err != nil || !ok {
 		return false, err
 	}
-	starts, err := c.PodStarts(ctx, Namespace, Lookout)
+	starts, err := c.PodStarts(ctx, sr.Namespace, sr.Deployment)
 	if err != nil {
 		return false, err
 	}
@@ -650,6 +669,11 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 		if templateChanged {
 			log("deployment %s/%s would be restarted (dry run)", Namespace, Lookout)
 		}
+		for _, sr := range startupReaders {
+			if sr.Deployment != Lookout {
+				log("deployment %s/%s would be restarted if it then runs on an older %s (dry run)", sr.Namespace, sr.Deployment, strings.TrimPrefix(sr.What, "its "))
+			}
+		}
 		if ax != axReady {
 			log("workspace %s/%s would be applied once ax is up (ax is %s; dry run)", p.Env.Agent.Atespace, p.Env.Agent.Workspace, ax)
 			return nil
@@ -663,6 +687,29 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 			}
 			log("deployment %s/%s restarted to read the new task template", Namespace, Lookout)
 		}
+	}
+	// Any other startup reader running on an older object restarts. Judged
+	// from the cluster's state, not from what this run changed, so an up
+	// that stopped between writing an object and restarting its reader is
+	// put right by the next one.
+	for _, sr := range startupReaders {
+		if sr.Deployment == Lookout {
+			continue // restarted on templateChanged, above
+		}
+		stale, err := sr.stale(ctx, c)
+		if err != nil {
+			return err
+		}
+		if !stale {
+			continue
+		}
+		if err := c.RolloutRestart(ctx, sr.Namespace, sr.Deployment); err != nil {
+			return err
+		}
+		if err := c.RolloutStatus(ctx, sr.Namespace, sr.Deployment); err != nil {
+			return err
+		}
+		log("deployment %s/%s restarted to read %s", sr.Namespace, sr.Deployment, sr.What)
 	}
 	for _, o := range p.Objects {
 		if o.Kind() == "Deployment" {

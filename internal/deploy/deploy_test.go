@@ -64,6 +64,10 @@ type fakeCluster struct {
 	workloads     map[string][]cluster.Workload
 	ops           []string // every write, in order
 	secretUpdated time.Time
+	// objectTimes are other objects' write times, "kind/ns/name"; a write
+	// through Apply advances a policy ConfigMap's when policyChanges.
+	objectTimes   map[string]time.Time
+	policyChanges bool
 	podStarts     []time.Time
 	diff          []string
 	secrets       map[string]map[string][]byte
@@ -118,6 +122,13 @@ func (f *fakeCluster) Apply(_ context.Context, m []byte, dryRun bool) (string, e
 	}
 	f.applied = append(f.applied, string(m))
 	f.ops = append(f.ops, "apply "+firstKind(m))
+	if f.policyChanges {
+		if f.objectTimes == nil {
+			f.objectTimes = map[string]time.Time{}
+		}
+		key := "configmap/ate-system/k8s-credential-provider-namespace-policy"
+		f.objectTimes[key] = f.objectTimes[key].Add(time.Hour)
+	}
 	return "applied\n", nil
 }
 
@@ -149,8 +160,15 @@ func (f *fakeCluster) ApplySecret(_ context.Context, m []byte, dryRun bool) erro
 	return nil
 }
 
-func (f *fakeCluster) SecretUpdated(context.Context, string, string) (time.Time, bool, error) {
-	return f.secretUpdated, !f.secretUpdated.IsZero(), f.fail("secretupdated")
+func (f *fakeCluster) ObjectUpdated(_ context.Context, kind, ns, name string) (time.Time, bool, error) {
+	if err := f.fail("objectupdated"); err != nil {
+		return time.Time{}, false, err
+	}
+	if kind == "secret" {
+		return f.secretUpdated, !f.secretUpdated.IsZero(), nil
+	}
+	t, ok := f.objectTimes[kind+"/"+ns+"/"+name]
+	return t, ok, nil
 }
 
 func (f *fakeCluster) PodStarts(context.Context, string, string) ([]time.Time, error) {
@@ -400,7 +418,7 @@ func TestStatusStaleLookout(t *testing.T) {
 	if r, err = Status(context.Background(), plan(t), c); err != nil || len(r.Changes) != 0 {
 		t.Errorf("fresh lookout: %+v, %v", r, err)
 	}
-	for _, op := range []string{"secretupdated", "podstarts"} {
+	for _, op := range []string{"objectupdated", "podstarts"} {
 		c.failOn = op
 		if _, err := Status(context.Background(), plan(t), c); err == nil {
 			t.Errorf("Status with %s failing succeeded", op)
@@ -816,5 +834,61 @@ func TestDryRunNewSecretNamespace(t *testing.T) {
 	}
 	if c.dryRuns != 0 || !strings.Contains(strings.Join(log, "\n"), "which the run creates") {
 		t.Errorf("dry runs %d, log %v", c.dryRuns, log)
+	}
+}
+
+// The credential provider reads its namespace policy only at startup: up
+// restarts it when the policy changes, and status flags a provider
+// running on an older policy.
+func TestCredentialProviderPolicy(t *testing.T) {
+	key := "configmap/ate-system/k8s-credential-provider-namespace-policy"
+	t0 := time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC)
+
+	c := inSync(t)
+	c.objectTimes = map[string]time.Time{key: t0}
+	c.podStarts = []time.Time{t0.Add(-time.Minute)}
+	r, err := Status(context.Background(), plan(t), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ch := range r.Changes {
+		found = found || (ch.What == "deployment ate-system/k8s-credential-provider" && strings.Contains(ch.Detail, "its namespace policy"))
+	}
+	if !found {
+		t.Errorf("stale provider not reported: %+v", r.Changes)
+	}
+
+	c = inSync(t)
+	c.objectTimes = map[string]time.Time{key: t0}
+	c.podStarts = []time.Time{t0.Add(time.Minute)}
+	c.policyChanges = true
+	if err := Up(context.Background(), plan(t), c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(c.ops, "restart ate-system/k8s-credential-provider") {
+		t.Errorf("provider not restarted after a policy change: %v", c.ops)
+	}
+
+	c = inSync(t)
+	c.objectTimes = map[string]time.Time{key: t0}
+	c.podStarts = []time.Time{t0.Add(time.Minute)}
+	if err := Up(context.Background(), plan(t), c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if contains(c.ops, "restart ate-system/k8s-credential-provider") {
+		t.Errorf("provider restarted without a policy change: %v", c.ops)
+	}
+
+	// An earlier up wrote the policy and stopped before restarting: this
+	// one restarts the provider though it changes nothing itself.
+	c = inSync(t)
+	c.objectTimes = map[string]time.Time{key: t0}
+	c.podStarts = []time.Time{t0.Add(-time.Minute)}
+	if err := Up(context.Background(), plan(t), c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(c.ops, "restart ate-system/k8s-credential-provider") {
+		t.Errorf("a provider left stale by an interrupted up was not restarted: %v", c.ops)
 	}
 }

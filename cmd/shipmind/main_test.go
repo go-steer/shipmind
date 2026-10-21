@@ -180,7 +180,7 @@ func (deployFake) Secret(context.Context, string, string) (map[string][]byte, bo
 func (deployFake) RolloutStatus(context.Context, string, string) error  { return nil }
 func (deployFake) RolloutRestart(context.Context, string, string) error { return nil }
 func (deployFake) ApplySecret(context.Context, []byte, bool) error      { return nil }
-func (deployFake) SecretUpdated(context.Context, string, string) (time.Time, bool, error) {
+func (deployFake) ObjectUpdated(context.Context, string, string, string) (time.Time, bool, error) {
 	return time.Time{}, false, nil
 }
 func (deployFake) PodStarts(context.Context, string, string) ([]time.Time, error) { return nil, nil }
