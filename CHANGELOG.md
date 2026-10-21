@@ -16,6 +16,10 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Fixed
 
+- `shipmind up -dry-run` on a fresh cluster no longer fails validating
+  the agent's Secrets in a namespace the run would create; it says they
+  would be stored, unvalidated.
+
 - `shipmind up` and `status` work on a fresh cluster: `up` reconciles the
   ax Workspace after the objects (ax-server among them) have rolled out,
   instead of asking ax before anything is deployed, and `status` reports
