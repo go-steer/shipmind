@@ -91,6 +91,10 @@ metadata:
 spec:
   # 03:17 UTC: off the hour, while the demo is quiet. An overlay may move it.
   schedule: "17 3 * * *"
+  # Stated, so the field is managed: a hand-set suspend shows in
+  # status and the next up undoes it (client-side apply leaves fields the
+  # manifest never mentions alone, and kubectl diff merges the same way).
+  suspend: false
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 7
   failedJobsHistoryLimit: 7

@@ -210,6 +210,13 @@ uncommitted changes, so what is deployed is what the pin says (`status
 -any-ref` relaxes that to try unmerged changes). `shipmind down` deletes
 the rendered objects, keeping Namespaces and volumes unless `-all`.
 
+**A limit of client-side apply.** `up` applies client-side, as the
+cluster's objects were first created, and `status` diffs the same way.
+A field set by hand that no manifest mentions (a `kubectl patch` adding
+`suspend: true`, say) survives an `up` and doesn't show as drift. Fields
+whose hand-set values matter are stated in the manifests, even at their
+defaults, so they are managed.
+
 **Substrate is the exception.** Agent Substrate installs through its own
 Go installer (`ate-setup`), which applies manifests from its checkout with
 environment-driven settings, waits for rollouts and wires the credential
