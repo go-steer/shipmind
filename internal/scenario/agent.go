@@ -203,32 +203,38 @@ func ParseEvents(r io.Reader) (*Transcript, error) {
 func isUser(e Event) bool { return e.Author == "user" && len(e.Texts) > 0 }
 
 // Answer returns the agent's answer to the first message a person or
-// lookout sent: the coordinator's last text before the next such
-// message (lookout re-sends an incident while it stays broken, and the
-// agent answers a repeat with a one-line acknowledgement, which must not
-// count as the diagnosis). Without an author ending in "_coordinator",
-// the last non-user text counts. It also returns whether a later
-// message arrived, meaning the answer is complete.
+// lookout sent: the coordinator's last text before the next such message
+// that follows it (lookout re-sends an incident while it stays broken,
+// and the agent answers a repeat with a one-line acknowledgement, which
+// must not count as the diagnosis). A message arriving before any answer
+// joins the same turn: lookout sends updates about the incident while
+// the agent is still investigating, and the answer then covers both.
+// Without an author ending in "_coordinator", the last non-user text
+// counts. It also returns whether a later message arrived after the
+// answer, meaning the answer is complete.
 func (t *Transcript) Answer() (answer string, superseded bool) {
 	first := -1
+	hasCoordinator := false
 	for i, e := range t.Events {
-		if isUser(e) {
+		if first < 0 && isUser(e) {
 			first = i
-			break
+		}
+		if strings.HasSuffix(e.Author, "_coordinator") {
+			hasCoordinator = true
 		}
 	}
 	if first < 0 {
 		return "", false
 	}
-	end := len(t.Events)
-	for i := first + 1; i < len(t.Events); i++ {
-		if isUser(t.Events[i]) {
-			end, superseded = i, true
-			break
-		}
-	}
 	var coordinator, other string
-	for _, e := range t.Events[first+1 : end] {
+	for _, e := range t.Events[first+1:] {
+		if isUser(e) {
+			if coordinator != "" || (!hasCoordinator && other != "") {
+				superseded = true
+				break
+			}
+			continue
+		}
 		if len(e.Texts) == 0 || e.Author == "user" || e.Role == "user" {
 			continue
 		}
