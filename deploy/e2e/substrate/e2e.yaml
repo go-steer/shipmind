@@ -121,7 +121,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: run
-              image: ghcr.io/go-steer/shipmind/e2e-runner:1238fb23f5f117e4653373ff9bfb1018bd0db554@sha256:bd27d181401abe4e9376f6d7d3616692ad8b29b629fd44fab70c8d81cbbb0798
+              image: ghcr.io/go-steer/shipmind/e2e-runner:95cd6b8f259244777ea91facf5cc443aa097b6f5@sha256:0c7120fc586c204c130573e4ac896f48397057d8b9c7892b29eba0f61e6481e8
               args:
                 - scenario
                 - run
