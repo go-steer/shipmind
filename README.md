@@ -22,13 +22,15 @@ that they do.
 
 ## Status
 
-**Early: Milestone 1 is under way.** Today the repository holds the bill
-of materials ([`versions.yaml`](./versions.yaml), what the agent-substrate
-demo cluster runs) and the `shipmind` CLI that checks it. Milestone 1
-moves that cluster's deployment here, so it can be rebuilt from this
-repository, and adds the first nightly end-to-end scenario. See
-[`docs/DESIGN.md`](./docs/DESIGN.md) for the design and the milestones,
-and [`docs/decisions.md`](./docs/decisions.md) for the decisions so far.
+**Milestone 1 is done.** The agent-substrate demo cluster deploys from
+this repository: every component pinned in
+[`versions.yaml`](./versions.yaml) and built by its CI, the substrate
+profile rendered and applied with `shipmind up`, `shipmind status`
+reporting no drift, and an end-to-end scenario running nightly in the
+cluster. Milestone 2 adds the standalone profile and kind tests on every
+PR. See [`docs/DESIGN.md`](./docs/DESIGN.md) for the design and the
+milestones, and [`docs/decisions.md`](./docs/decisions.md) for the
+decisions so far.
 
 ## Environments
 
@@ -44,6 +46,7 @@ go run ./cmd/shipmind versions   # what a release pins
 go run ./cmd/shipmind check      # are the pins and vendored manifests sound
 kubectl kustomize deploy/profiles/substrate      # a profile, rendered
 go run ./cmd/shipmind status <env-dir>          # an environment against its cluster (read only)
+go run ./cmd/shipmind scenario run -h           # an end-to-end scenario against a deployment
 ```
 
 ## Contributing
