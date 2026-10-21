@@ -1,0 +1,58 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Ingress for the switchboard pod, restricted to the metrics port. The
+# two chat paths as configured here are outbound pulls (Slack Socket Mode
+# is an outbound WebSocket; Google Chat is a Pub/Sub pull) and switchboard
+# dials the core-agent daemon rather than being dialed — so the ONLY thing
+# that should connect TO this pod is a Prometheus scraper (and the
+# kubelet's probes, which bypass NetworkPolicy) hitting :9090 for /metrics
+# + /healthz. The single rule below admits that port and nothing else.
+#
+# Two optional surfaces are not pull-based and need a rule of their own if
+# you turn them on: the outbound ingress (`ingress_addr`) and the Chat
+# HTTP ingress (`googlechat_ingress: http`). Both are off in these
+# manifests; deploy/README.md spells out what each needs.
+#
+# The rule has no `from`, so it admits the metrics port from any source.
+# Kubernetes NetworkPolicy cannot special-case the kubelet, and scraper
+# topology is environment-specific; narrow `from` to your monitoring
+# namespace if your Prometheus runs in-cluster.
+#
+# Egress is deliberately unrestricted: switchboard dials the core-agent
+# Service (:7777) plus platform APIs (slack.com, pubsub.googleapis.com,
+# chat.googleapis.com), whose addresses are environment-specific; a wrong
+# egress pin here would silently break the gateway. If your policy needs
+# egress locked down, add a policyTypes: Egress block admitting the
+# daemon Service, kube-dns, and 443 to the platform APIs.
+#
+# If your CNI does not enforce NetworkPolicy this manifest is inert.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: switchboard
+  labels:
+    app.kubernetes.io/name: switchboard
+    app.kubernetes.io/component: gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: switchboard
+      app.kubernetes.io/component: gateway
+  policyTypes: ["Ingress"]
+  ingress:
+    # Admit scrapes/probes to the metrics port only.
+    - ports:
+        - port: metrics
+          protocol: TCP
