@@ -799,3 +799,22 @@ func TestUpAxFailures(t *testing.T) {
 		t.Error("status with workloads failing succeeded")
 	}
 }
+
+// A dry run on a cluster without the agent's namespace can't validate
+// the agent's Secrets either; it says so rather than failing.
+func TestDryRunNewSecretNamespace(t *testing.T) {
+	c := &fakeCluster{secrets: map[string]map[string][]byte{}, missingNS: []string{"lookout-ax"}}
+	p := plan(t)
+	objs, err := render.Build("testdata/lookout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Objects = objs
+	var log []string
+	if err := Up(context.Background(), p, c, UpOptions{DryRun: true, Log: func(f string, a ...any) { log = append(log, fmt.Sprintf(f, a...)) }}); err != nil {
+		t.Fatal(err)
+	}
+	if c.dryRuns != 0 || !strings.Contains(strings.Join(log, "\n"), "which the run creates") {
+		t.Errorf("dry runs %d, log %v", c.dryRuns, log)
+	}
+}

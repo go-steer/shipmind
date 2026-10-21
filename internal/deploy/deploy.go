@@ -538,6 +538,9 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 
 	// Compute.
 	objects := p.Objects
+	// In a dry run, the agent's Secrets can't be validated either while
+	// their namespace is one the run would create.
+	secretsPending := false
 	if opts.DryRun {
 		existing, pending, err := splitByNamespace(ctx, p.Objects, c)
 		if err != nil {
@@ -547,6 +550,7 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 			log("namespace %s and the %d objects in it would be created (not validated: a dry run can't create the namespace they need)", ns, len(pending[ns])-1)
 		}
 		objects = existing
+		_, secretsPending = pending[Namespace]
 	}
 	var namespaces, rest render.Objects
 	for _, o := range objects {
@@ -612,7 +616,10 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 		}
 		log("applied %d namespaces%s", len(namespaces), dry(opts.DryRun))
 	}
-	if !strings.HasPrefix(source, "secret ") {
+	switch {
+	case secretsPending:
+		log("tokens %s and the task template would be stored in namespace %s, which the run creates (not validated; dry run)", source, Namespace)
+	case !strings.HasPrefix(source, "secret "):
 		secret := cluster.SecretManifest(Namespace, TokensSecret, map[string][]byte{
 			"inject": []byte(t.Inject), "attach": []byte(t.Attach),
 		})
@@ -621,7 +628,7 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 		}
 		log("tokens %s, stored in secret %s/%s%s", source, Namespace, TokensSecret, dry(opts.DryRun))
 	}
-	if templateChanged {
+	if templateChanged && !secretsPending {
 		secret := cluster.SecretManifest(Namespace, AgentSecret, map[string][]byte{
 			"token": []byte(t.Attach), "task.yaml": task,
 		})
@@ -629,7 +636,7 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 			return fmt.Errorf("secret %s/%s: %w", Namespace, AgentSecret, err)
 		}
 		log("task template applied to secret %s/%s%s", Namespace, AgentSecret, dry(opts.DryRun))
-	} else {
+	} else if !secretsPending {
 		log("task template in secret %s/%s unchanged", Namespace, AgentSecret)
 	}
 	if len(rest) > 0 {
