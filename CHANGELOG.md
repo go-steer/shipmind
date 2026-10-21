@@ -10,6 +10,10 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Fixed
 
+- Go 1.26.10, for GO-2026-6809 (crypto/x509 distrusting compromised
+  intermediates), which govulncheck finds reachable; the e2e-runner image
+  builds with it too.
+
 - The nightly CronJob states `suspend: false`, so a hand-set suspend is
   drift and the next `up` undoes it; DESIGN.md notes the client-side
   apply limit behind it.
