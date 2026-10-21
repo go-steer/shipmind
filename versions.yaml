@@ -157,3 +157,22 @@ components:
       kubectl, the scenarios) at the commit in version, which the nightly
       in deploy/e2e/substrate runs. CI publishes a build from every main
       commit that touches its inputs; move this pin deliberately.
+
+  - name: switchboard
+    source: github.com/go-steer/switchboard
+    version: v0.8.0
+    profiles: [standalone, substrate]
+    images:
+      - name: switchboard
+        ref: ghcr.io/go-steer/switchboard:0.8.0@sha256:9d8eae9bf5a0c531d2374fc20a6cc8bf7d70133367e808dbc364e8b17828a6de
+    manifests:
+      - deploy/base/11-serviceaccount.yaml
+      - deploy/base/16-networkpolicy.yaml
+      - deploy/base/51-deployment.yaml
+      - deploy/components/durable-state/pvc.yaml
+    note: >-
+      The chat gateway, run as two instances (Slack and Google Chat) from
+      one base, as switchboard's own gke-demo does. Vendored: the base and
+      the durable-state PVC; durable-state's mount is a kustomize patch,
+      which a profile part carries. Not yet rendered by a profile: which
+      agents the gateways front, and on which cluster, is still open.

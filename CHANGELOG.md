@@ -8,6 +8,12 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ## [Unreleased]
 
+### Added
+
+- switchboard v0.8.0 pinned in `versions.yaml` and its base and
+  durable-state PVC vendored, ahead of two instances (Slack and Google
+  Chat) in a profile.
+
 ### Fixed
 
 - Go 1.26.10, for GO-2026-6809 (crypto/x509 distrusting compromised

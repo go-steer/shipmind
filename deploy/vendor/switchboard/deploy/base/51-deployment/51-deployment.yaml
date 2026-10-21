@@ -1,0 +1,170 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The switchboard Deployment: `switchboard serve` bridging one chat
+# platform onto the core-agent daemon. This base carries the
+# platform-NEUTRAL shape — image, probes, security context, the daemon
+# token env var, and the mount the config file arrives on. It is not
+# meant to be applied on its own: the settings themselves live in a
+# ConfigMap a platform overlay (overlays/slack or overlays/googlechat)
+# generates, so applying the base alone leaves the pod mounting a
+# ConfigMap that does not exist and stuck before switchboard runs.
+#
+# Runs as its OWN Deployment alongside core-agent (not a sidecar) so the
+# two scale and restart independently. Talks to the daemon via the
+# in-cluster core-agent Service on :7777; for a remote daemon, set
+# `daemon_url` in an overlay's config.json.
+#
+# Health + metrics: `metrics_addr: ":9090"` in the config file serves
+# /healthz (liveness + readiness) and /metrics (Prometheus) on the
+# containerPort declared below — the two have to agree, and they are in
+# different files now, which is the one seam this split introduces. That
+# port is the ONLY inbound surface as configured here — both chat
+# platforms are outbound in these overlays — so the NetworkPolicy admits
+# scrapers to it and nothing else. The outbound ingress and the Chat HTTP
+# ingress each add one, and each takes a port, a rule and a Service of its
+# own; see deploy/README.md. serve()
+# still exits non-zero on any fatal error (bad token, adapter failure, or
+# a metrics bind failure), so the container also restarts on real
+# failures via restartPolicy.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: switchboard
+  labels:
+    app.kubernetes.io/name: switchboard
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: 1
+  # A chat conversation maps to one core-agent session. The map is in
+  # memory unless the durable-state component (deploy/components) gives it a
+  # volume (#86) — and even then it is one file with one writer, so a second
+  # replica would split the routing table either way. Keep this at 1 until
+  # there is a shared store. Recreate avoids two instances briefly
+  # double-consuming the same Slack/Pub/Sub stream during a rollout, and
+  # with durable state it is also what keeps the old pod from writing the
+  # file after the new one has read it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: switchboard
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: switchboard
+        app.kubernetes.io/component: gateway
+    spec:
+      serviceAccountName: switchboard
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: switchboard
+          # Tag is pinned centrally by the kustomization `images:`
+          # transformer (base defaults to :main until the first tagged
+          # release; pin :vX.Y.Z in a production overlay).
+          image: ghcr.io/go-steer/switchboard:main
+          imagePullPolicy: IfNotPresent
+          # ENTRYPOINT is ["/switchboard", "serve"]; this arg splices in
+          # behind `serve`. It is the only one, and deliberately: every
+          # other setting lives in the mounted config file (#71).
+          #
+          # Not a style preference. Precedence is flag > $SWITCHBOARD_* >
+          # file, so a setting named here would silently outrank the same
+          # setting in the ConfigMap — an operator edits the file, rolls
+          # the pod, and nothing changes. Keeping argv to --config alone
+          # means the file is the whole answer.
+          #
+          # --config rather than -c: core-agent shipped the short form
+          # alone and a distroless Deployment written as
+          # args: ["--config=..."] exited at flag-parse during a live demo
+          # (go-steer/core-agent#209). switchboard accepts both.
+          args:
+            - "--config=/etc/switchboard/config.json"
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            # The core-agent daemon bearer token. Never a bare flag
+            # (AGENTS.md) — it rides an env var sourced from a Secret the
+            # operator creates out-of-band (see deploy/README.md).
+            - name: SWITCHBOARD_DAEMON_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: switchboard-daemon-token
+                  key: token
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # Writable /tmp so the root filesystem can stay read-only;
+            # HTTP/TLS clients may spool here. emptyDir is ephemeral, which
+            # is right: the one thing switchboard can persist, the routing
+            # table, goes on its own volume (components/durable-state).
+            - name: tmp
+              mountPath: /tmp
+            # The gateway config file. Read once at startup, so a ConfigMap
+            # edit takes a pod restart to land — which the overlays get for
+            # free by generating the ConfigMap with a content hash in its
+            # name, so an edit rolls the Deployment. Read-only because
+            # nothing writes it and the root filesystem is read-only.
+            - name: config
+              mountPath: /etc/switchboard
+              readOnly: true
+          # Liveness + readiness both hit /healthz on the metrics port. The
+          # handler has no /metrics dependency, so it reports "the process is
+          # up" rather than "Prometheus is scraping." A single-replica gateway
+          # has no traffic to gate, so readiness mainly keeps rollouts honest.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "128Mi"
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        # Created by the platform overlay, not by this base — the config
+        # names the platform, so there is no neutral version of it to
+        # ship. Same posture as the Secrets referenced above: the base
+        # names what it needs and an overlay provides it. kustomize
+        # rewrites this reference to the generated name + hash.
+        - name: config
+          configMap:
+            name: switchboard-config
