@@ -89,7 +89,7 @@ func (f *fakeCluster) Diff(_ context.Context, m []byte) ([]string, error) {
 }
 
 func (f *fakeCluster) Namespaces(context.Context) ([]string, error) {
-	all := []string{"ns", "lookout-ax", "default"}
+	all := []string{"ns", "lookout-ax", "default", "ax-system"}
 	var have []string
 	for _, n := range all {
 		if !contains(f.missingNS, n) {
@@ -177,6 +177,7 @@ func (f *fakeCluster) Secret(_ context.Context, ns, name string) (map[string][]b
 
 func (f *fakeCluster) RolloutStatus(_ context.Context, ns, name string) error {
 	f.rollouts = append(f.rollouts, ns+"/"+name)
+	f.ops = append(f.ops, "rollout "+ns+"/"+name)
 	return f.fail("rollout")
 }
 
@@ -185,6 +186,7 @@ func (f *fakeCluster) Workloads(_ context.Context, ns string) ([]cluster.Workloa
 }
 
 func (f *fakeCluster) AxWorkspace(context.Context, string, string) ([]byte, bool, error) {
+	f.ops = append(f.ops, "ax get")
 	return f.workspace, f.workspace != nil, f.fail("axget")
 }
 
@@ -315,7 +317,7 @@ func TestUpFresh(t *testing.T) {
 	// Namespaces first, then the tokens and the task template (so a pod
 	// that starts can read them), then the rest, then the Workspace.
 	want := []string{"apply Namespace", "secret agent-tokens", "secret lookout-ax-agent", "apply Deployment", "ax apply"}
-	if strings.Join(c.ops, ", ") != strings.Join(want, ", ") {
+	if strings.Join(writes(c.ops), ", ") != strings.Join(want, ", ") {
 		t.Errorf("writes in order %v, want %v", c.ops, want)
 	}
 	if len(c.rollouts) != 1 || c.rollouts[0] != "ns/redis" {
@@ -364,7 +366,7 @@ func TestUpRefusesDisagreeingTokens(t *testing.T) {
 	}
 	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = task
 	err = Up(context.Background(), plan(t), c, UpOptions{})
-	if err == nil || !strings.Contains(err.Error(), "disagree") || len(c.ops) != 0 {
+	if err == nil || !strings.Contains(err.Error(), "disagree") || len(writes(c.ops)) != 0 {
 		t.Errorf("err = %v, writes %v; want a refusal before any write", err, c.ops)
 	}
 	if _, err := Status(context.Background(), plan(t), c); err == nil || !strings.Contains(err.Error(), "disagree") {
@@ -378,7 +380,7 @@ func TestUpWritesNothingOnRenderFailure(t *testing.T) {
 	c := &fakeCluster{secrets: map[string]map[string][]byte{}}
 	p := plan(t)
 	p.Root = t.TempDir()
-	if err := Up(context.Background(), p, c, UpOptions{}); err == nil || len(c.ops) != 0 {
+	if err := Up(context.Background(), p, c, UpOptions{}); err == nil || len(writes(c.ops)) != 0 {
 		t.Errorf("err = %v, writes %v", err, c.ops)
 	}
 }
@@ -414,7 +416,7 @@ func TestUpInSyncKeepsTokens(t *testing.T) {
 	// Namespaces and the rest only: existing tokens are never rewritten,
 	// an unchanged template isn't either, and an unchanged Workspace is
 	// not re-applied.
-	if strings.Join(c.ops, ", ") != "apply Namespace, apply Deployment" {
+	if strings.Join(writes(c.ops), ", ") != "apply Namespace, apply Deployment" {
 		t.Errorf("writes %v", c.ops)
 	}
 }
@@ -425,7 +427,7 @@ func TestUpAdoptsTokens(t *testing.T) {
 	if err := Up(context.Background(), plan(t), c, UpOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(c.ops, ", ") != "apply Namespace, secret agent-tokens, apply Deployment" {
+	if strings.Join(writes(c.ops), ", ") != "apply Namespace, secret agent-tokens, apply Deployment" {
 		t.Fatalf("writes %v, want the adopted tokens stored and nothing else rewritten", c.ops)
 	}
 	stored := c.applied[1]
@@ -641,7 +643,7 @@ func TestUpNewNamespace(t *testing.T) {
 	if err := Up(context.Background(), plan(t), c, UpOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(c.ops, ", ") != "apply Namespace, apply Deployment" {
+	if strings.Join(writes(c.ops), ", ") != "apply Namespace, apply Deployment" {
 		t.Errorf("real up writes %v", c.ops)
 	}
 	c = inSync(t)
@@ -669,5 +671,131 @@ func TestStatusMissingNamespaceNotCreated(t *testing.T) {
 	}
 	if !strings.Contains(c.diffed, "name: redis") {
 		t.Errorf("the object in a namespace nothing creates was set aside instead of diffed:\n%s", c.diffed)
+	}
+}
+
+// writes filters ops down to the writes, in order.
+func writes(ops []string) []string {
+	var w []string
+	for _, op := range ops {
+		if op != "ax get" && !strings.HasPrefix(op, "rollout ") {
+			w = append(w, op)
+		}
+	}
+	return w
+}
+
+func freshPlan(t *testing.T) *Plan {
+	t.Helper()
+	p := plan(t)
+	objs, err := render.Build("testdata/fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Objects = objs
+	return p
+}
+
+// On a fresh cluster ax isn't deployed: status doesn't ask it, and up
+// reconciles the Workspace only once ax-server has rolled out.
+func TestFreshCluster(t *testing.T) {
+	c := &fakeCluster{secrets: map[string]map[string][]byte{}, missingNS: []string{"ax-system"}}
+	r, err := Status(context.Background(), freshPlan(t), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(c.ops, "ax get") {
+		t.Error("status asked ax on a cluster without ax")
+	}
+	var ws Change
+	for _, ch := range r.Changes {
+		if strings.HasPrefix(ch.What, "workspace ") {
+			ws = ch
+		}
+	}
+	if !strings.Contains(ws.Detail, "ax is not deployed yet") {
+		t.Errorf("workspace change %+v", ws)
+	}
+
+	c = &fakeCluster{secrets: map[string]map[string][]byte{}, missingNS: []string{"ax-system"}}
+	var log []string
+	if err := Up(context.Background(), freshPlan(t), c, UpOptions{DryRun: true, Log: func(f string, a ...any) { log = append(log, fmt.Sprintf(f, a...)) }}); err != nil {
+		t.Fatal(err)
+	}
+	if contains(c.ops, "ax get") || !strings.Contains(strings.Join(log, "\n"), "would be applied once ax is up") {
+		t.Errorf("fresh dry run: ops %v, log %v", c.ops, log)
+	}
+
+	c = &fakeCluster{secrets: map[string]map[string][]byte{}, missingNS: []string{"ax-system"}}
+	if err := Up(context.Background(), freshPlan(t), c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	ri, ai := indexOf(c.ops, "rollout ax-system/ax-server"), indexOf(c.ops, "ax get")
+	if ri < 0 || ai < 0 || ai < ri || !contains(c.ops, "ax apply") {
+		t.Errorf("fresh up: the Workspace must follow ax-server's rollout: %v", c.ops)
+	}
+}
+
+func indexOf(xs []string, x string) int {
+	for i, y := range xs {
+		if y == x {
+			return i
+		}
+	}
+	return -1
+}
+
+// ax's namespace can exist with ax-server missing (a first up that
+// stopped early) or still rolling out: status and dry runs don't ask it.
+func TestAxNotUpYet(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		workloads []cluster.Workload
+		want      string
+	}{
+		{"absent", nil, "missing (ax is not deployed yet)"},
+		{"not ready", []cluster.Workload{{ID: "Deployment/ax-system/ax-server", Current: false}}, "unknown (ax-server's rollout hasn't finished)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &fakeCluster{secrets: map[string]map[string][]byte{}, workloads: map[string][]cluster.Workload{"ax-system": tc.workloads}}
+			r, err := Status(context.Background(), freshPlan(t), c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, ch := range r.Changes {
+				found = found || (strings.HasPrefix(ch.What, "workspace ") && ch.Detail == tc.want)
+			}
+			if !found || contains(c.ops, "ax get") {
+				t.Errorf("changes %+v, ops %v", r.Changes, c.ops)
+			}
+			c = &fakeCluster{secrets: map[string]map[string][]byte{}, workloads: map[string][]cluster.Workload{"ax-system": tc.workloads}}
+			if err := Up(context.Background(), freshPlan(t), c, UpOptions{DryRun: true}); err != nil || contains(c.ops, "ax get") {
+				t.Errorf("dry run: %v, ops %v", err, c.ops)
+			}
+		})
+	}
+}
+
+// With ax up, a broken ax fails up before anything is written; a
+// Workspace failure after the writes says where things stand.
+func TestUpAxFailures(t *testing.T) {
+	ready := map[string][]cluster.Workload{"ax-system": {{ID: "Deployment/ax-system/ax-server", Current: true}}}
+	c := &fakeCluster{secrets: map[string]map[string][]byte{}, workloads: ready, failOn: "axget"}
+	err := Up(context.Background(), freshPlan(t), c, UpOptions{})
+	if err == nil || !strings.Contains(err.Error(), "nothing written yet") || len(writes(c.ops)) != 0 {
+		t.Errorf("early ax failure: %v, writes %v", err, writes(c.ops))
+	}
+	c = &fakeCluster{secrets: map[string]map[string][]byte{}, workloads: ready, failOn: "axapply"}
+	err = Up(context.Background(), freshPlan(t), c, UpOptions{})
+	if err == nil || !strings.Contains(err.Error(), "re-run up to retry") {
+		t.Errorf("late workspace failure: %v", err)
+	}
+	c = &fakeCluster{secrets: map[string]map[string][]byte{}, workloads: ready, failOn: "workloads"}
+	if err := Up(context.Background(), freshPlan(t), c, UpOptions{}); err == nil {
+		t.Error("up with workloads failing succeeded")
+	}
+	if _, err := Status(context.Background(), freshPlan(t), c); err == nil {
+		t.Error("status with workloads failing succeeded")
 	}
 }
