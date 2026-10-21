@@ -88,6 +88,12 @@ func TestParseErrors(t *testing.T) {
 		{"substrate namespace", withSubstrate(strings.Replace(subOK, "namespaces: [ate-system]", "namespaces: [ate-system, Ate]", 1)), "substrate.namespaces[1]"},
 		{"substrate no workloads", withSubstrate(strings.Replace(subOK, "  workloads: [DaemonSet/ate-system/atelet]\n", "", 1)), "substrate.workloads"},
 		{"substrate workload", withSubstrate(strings.Replace(subOK, "DaemonSet/ate-system/atelet", "Job/other/x", 1)), "substrate.workloads[0]"},
+		{"slack app", withSlack(strings.Replace(slackOK, "app: shipmind-stage", "app: ''", 1)), "slack.app"},
+		{"slack app long", withSlack(strings.Replace(slackOK, "app: shipmind-stage", "app: "+strings.Repeat("x", 36), 1)), "slack.app"},
+		{"slack app spaces", withSlack(strings.Replace(slackOK, "app: shipmind-stage", "app: ' x'", 1)), "slack.app"},
+		{"slack command", withSlack(strings.Replace(slackOK, "command: /shipmind-stage", "command: shipmind", 1)), "slack.command"},
+		{"slack command case", withSlack(strings.Replace(slackOK, "command: /shipmind-stage", "command: /Shipmind", 1)), "slack.command"},
+		{"slack description", withSlack(slackOK + "  description: " + strings.Repeat("x", 141) + "\n"), "slack.description"},
 		{"duplicate expect", good + "  - object: apps.v1.Deployment.ns.name\n    reason: again\n", `"apps.v1.Deployment.ns.name" listed twice`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -109,6 +115,18 @@ func TestParseSubstrate(t *testing.T) {
 		if err != nil || e.Substrate == nil || e.Substrate.Tag != "v1" {
 			t.Fatalf("Parse = %+v, %v", e, err)
 		}
+	}
+}
+
+const slackOK = "slack:\n  app: shipmind-stage\n  command: /shipmind-stage\n"
+
+func withSlack(sl string) string { return strings.Replace(good, "expect:", sl+"expect:", 1) }
+
+func TestParseSlack(t *testing.T) {
+	e, err := Parse(strings.NewReader(withSlack(slackOK + "  description: Chat with the staging agents\n")))
+	if err != nil || e.Slack == nil || e.Slack.App != "shipmind-stage" || e.Slack.Command != "/shipmind-stage" ||
+		e.Slack.Description != "Chat with the staging agents" {
+		t.Fatalf("Parse = %+v, %v", e, err)
 	}
 }
 

@@ -182,7 +182,7 @@ func TestVerify(t *testing.T) {
 		}, "b/b.yaml was edited after vendoring"},
 		{"extra file", func(t *testing.T, root string, _ *bom.Component) {
 			write(t, filepath.Join(root, Dir, "ax", "extra.yaml"), "x")
-		}, "extra.yaml is not a vendored manifest or its kustomization"},
+		}, "extra.yaml is not a vendored manifest, its kustomization or a vendored file"},
 		{"deleted file", func(t *testing.T, root string, _ *bom.Component) {
 			if err := os.Remove(filepath.Join(root, Dir, "ax", "deploy", "a", "a.yaml")); err != nil {
 				t.Fatal(err)
@@ -275,6 +275,57 @@ func TestLayout(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("Layout(%v) = %v, want %q", tc.manifests, err, tc.want)
 		}
+	}
+}
+
+// Files are vendored as they are, at their own path, with no
+// kustomization, and verified like manifests.
+func TestVendorFiles(t *testing.T) {
+	root := t.TempDir()
+	c := comp("v1.0.0", "deploy/a.yaml")
+	c.Files = []string{"deploy/slack/app.yaml"}
+	f := fakeFetcher{files: map[string][]byte{"deploy/a.yaml": []byte("a"), "deploy/slack/app.yaml": []byte("app")}}
+	if err := Vendor(context.Background(), f, root, c); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, Dir, "ax")
+	if b, err := os.ReadFile(filepath.Join(dir, "deploy", "slack", "app.yaml")); err != nil || string(b) != "app" {
+		t.Fatalf("vendored file = %q, %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "deploy", "slack", KustomizationFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a file got a kustomization: %v", err)
+	}
+	if err := Verify(root, c); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	write(t, filepath.Join(dir, "deploy", "slack", "app.yaml"), "edited")
+	if err := Verify(root, c); err == nil || !strings.Contains(err.Error(), "deploy/slack/app.yaml was edited after vendoring") {
+		t.Errorf("edited file: err = %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, "deploy", "slack", "app.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(root, c); err == nil || !strings.Contains(err.Error(), "deploy/slack/app.yaml is missing") {
+		t.Errorf("deleted file: err = %v", err)
+	}
+	c.Files = nil
+	if err := Verify(root, c); err == nil || !strings.Contains(err.Error(), "but versions.yaml lists") {
+		t.Errorf("file dropped from versions.yaml: err = %v", err)
+	}
+
+	// Only files: still a component to vendor.
+	only := comp("v1.0.0")
+	only.Files = []string{"app.yaml"}
+	if err := Vendor(context.Background(), fakeFetcher{files: map[string][]byte{"app.yaml": []byte("x")}}, t.TempDir(), only); err != nil {
+		t.Errorf("Vendor(files only): %v", err)
+	}
+
+	// A file can't sit where a manifest's base needs a directory.
+	clash := comp("v1.0.0", "a.yaml")
+	clash.Files = []string{"a"}
+	if err := Layout(clash); err == nil || !strings.Contains(err.Error(), `file "a" would be vendored to a, a directory manifest "a.yaml" needs`) {
+		t.Errorf("Layout(file vs base) = %v", err)
 	}
 }
 

@@ -69,6 +69,11 @@ type Component struct {
 	// copies into deploy/vendor/<name>/. Slash-separated, relative, and
 	// YAML.
 	Manifests []string `yaml:"manifests,omitempty"`
+	// Files are other paths in Source, at Version, that `shipmind vendor`
+	// copies as they are to the same path under deploy/vendor/<name>/,
+	// with no kustomization: files a deployment needs that aren't
+	// Kubernetes objects, such as switchboard's Slack app manifest.
+	Files []string `yaml:"files,omitempty"`
 	// Note says why the pin is what it is, when that isn't obvious.
 	Note string `yaml:"note,omitempty"`
 }
@@ -197,6 +202,19 @@ func (f *File) Check() error {
 			manifests[strings.TrimSuffix(m, path.Ext(m))] = true
 		}
 
+		files := map[string]bool{}
+		for _, p := range c.Files {
+			switch {
+			case p == "" || path.IsAbs(p) || path.Clean(p) != p || p == ".." || strings.HasPrefix(p, "../") || strings.Contains(p, "\\"):
+				fail("file %q is not a clean relative path", p)
+			case slices.Contains(c.Manifests, p):
+				fail("file %q is also listed as a manifest", p)
+			case files[strings.ToLower(p)]:
+				fail("file %q listed twice", p)
+			}
+			files[strings.ToLower(p)] = true
+		}
+
 		images := map[string]bool{}
 		for j, img := range c.Images {
 			if img.Name == "" {
@@ -211,6 +229,12 @@ func (f *File) Check() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// Vendored lists every path `shipmind vendor` copies for c: its
+// manifests, then its files.
+func (c Component) Vendored() []string {
+	return append(slices.Clip(c.Manifests), c.Files...)
 }
 
 // Component returns the component with the given name.

@@ -14,7 +14,17 @@ release is a tested set of component versions (see "Cutting a release" in
   durable-state PVC vendored, ahead of two instances (Slack and Google
   Chat) in a profile.
 
+- `shipmind slack-app <env-dir>` prints an environment's Slack app
+  manifest: switchboard's, vendored at its pin, under the names in the
+  environment's new `slack` block. `versions.yaml` can now vendor
+  components' non-Kubernetes files (`files`), checked like manifests.
+
 ### Fixed
+
+- `shipmind scenario run` no longer fails a correct diagnosis when
+  lookout sends an update about the incident (a restart burst) while the
+  agent is still investigating: a message before the answer joins the
+  agent's turn instead of ending the answer window empty.
 
 - Substrate's credential provider reads its namespace policy only at
   startup, so on a fresh cluster (installer first, policy from `up`

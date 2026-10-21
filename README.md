@@ -46,6 +46,7 @@ go run ./cmd/shipmind versions   # what a release pins
 go run ./cmd/shipmind check      # are the pins and vendored manifests sound
 kubectl kustomize deploy/profiles/substrate      # a profile, rendered
 go run ./cmd/shipmind status <env-dir>          # an environment against its cluster (read only)
+go run ./cmd/shipmind slack-app <env-dir>       # the environment's Slack app manifest
 go run ./cmd/shipmind scenario run -h           # an end-to-end scenario against a deployment
 ```
 

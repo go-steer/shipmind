@@ -110,7 +110,7 @@ images/
   agent-mast/            mast + ax runner + agent bundles
   token-refresher/
 deploy/
-  vendor/<component>/    manifests at the pinned version, one kustomize base each (generated)
+  vendor/<component>/    manifests at the pinned version, one kustomize base each, and other listed files (generated)
   profiles/substrate/    one kustomization per component, patched for the profile
   profiles/standalone/
   envs/kind/
@@ -168,6 +168,23 @@ a vendored file edited without its lock, fails. CI also re-vendors from
 the network and fails on any difference, which catches what a lock in
 the same tree can't: a file edited together with its lock entry, or an
 upstream tag that moved.
+
+A component's other files, ones a deployment needs that aren't
+Kubernetes objects, are listed under `files` and copied as they are to
+the same path under `deploy/vendor/<component>/`, with no kustomization,
+locked and checked the same way. Today that is switchboard's Slack app
+manifest.
+
+**Slack apps.** Each environment gets its own Slack app, so staging and
+production can share a workspace. switchboard's app manifest carries
+the scopes its code needs, so it is vendored with switchboard and moves
+with the pin. An environment's `shipmind.yaml` only names its app
+(`slack: {app, command, description}`), and `shipmind slack-app
+<env-dir>` prints switchboard's manifest under those names, from a
+checkout at the environment's pin. After a switchboard bump, rerun it
+for each environment and paste the result into each app's App Manifest
+page; Slack shows the scope changes, and the app is reinstalled.
+Creating the app and storing its tokens: [`slack.md`](./slack.md).
 
 **Profiles.** `deploy/profiles/<profile>/<component>/` is a kustomization
 over the vendored bases with the profile's patches: images pinned by

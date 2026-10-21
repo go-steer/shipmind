@@ -22,8 +22,10 @@
 // deploy/ax/, next to a generated kustomization.yaml that lists it, so a
 // profile can take, patch or leave out each manifest separately (two
 // manifests that both declare the same Namespace can't share one base).
+// A component's files (versions.yaml's `files`, not Kubernetes objects)
+// are copied as they are to the same path, with no kustomization.
 // deploy/vendor/<component>/VENDOR.yaml records the source, the version
-// and every manifest's SHA-256.
+// and every vendored file's SHA-256.
 //
 // Fetching needs git and the network; verifying needs neither. Verify
 // catches a pin moved without a re-vendor and a file edited without its
@@ -171,46 +173,49 @@ func Layout(c bom.Component) error {
 	files := map[string]string{strings.ToLower(LockFile): "the lock"}
 	dirs := map[string]string{}
 	var errs []error
-	add := func(p, m string) {
+	add := func(p, what string) {
 		key := strings.ToLower(p)
 		if other, ok := files[key]; ok {
-			errs = append(errs, fmt.Errorf("%s: manifest %q would be vendored to %s, which %s already uses", c.Name, m, p, other))
+			errs = append(errs, fmt.Errorf("%s: %s would be vendored to %s, which %s already uses", c.Name, what, p, other))
 		}
 		if other, ok := dirs[key]; ok {
-			errs = append(errs, fmt.Errorf("%s: manifest %q would be vendored to %s, a directory %s needs", c.Name, m, p, other))
+			errs = append(errs, fmt.Errorf("%s: %s would be vendored to %s, a directory %s needs", c.Name, what, p, other))
 		}
-		files[key] = fmt.Sprintf("manifest %q", m)
+		files[key] = what
 		for d := path.Dir(key); d != "."; d = path.Dir(d) {
 			if other, ok := files[d]; ok {
-				errs = append(errs, fmt.Errorf("%s: manifest %q needs directory %s, which is %s's file", c.Name, m, d, other))
+				errs = append(errs, fmt.Errorf("%s: %s needs directory %s, which is %s's file", c.Name, what, d, other))
 			}
-			dirs[d] = fmt.Sprintf("manifest %q", m)
+			dirs[d] = what
 		}
 	}
 	for _, m := range c.Manifests {
-		add(vendoredPath(m), m)
-		add(path.Join(BaseDir(m), KustomizationFile), m)
+		add(vendoredPath(m), fmt.Sprintf("manifest %q", m))
+		add(path.Join(BaseDir(m), KustomizationFile), fmt.Sprintf("manifest %q", m))
+	}
+	for _, f := range c.Files {
+		add(f, fmt.Sprintf("file %q", f))
 	}
 	return errors.Join(errs...)
 }
 
 // Vendor fetches c's manifests and replaces root/Dir/<c.Name> with
-// them and a fresh lock. The new tree is written beside the old one and
-// renamed into place, so a failure leaves the old tree as it was. A
-// component without manifests is an error.
+// them (and its files) and a fresh lock. The new tree is written beside
+// the old one and renamed into place, so a failure leaves the old tree
+// as it was. A component with nothing to vendor is an error.
 func Vendor(ctx context.Context, f Fetcher, root string, c bom.Component) error {
-	if len(c.Manifests) == 0 {
-		return fmt.Errorf("%s: no manifests to vendor", c.Name)
+	if len(c.Vendored()) == 0 {
+		return fmt.Errorf("%s: no manifests or files to vendor", c.Name)
 	}
 	if err := Layout(c); err != nil {
 		return err
 	}
-	files, commit, err := f.Fetch(ctx, c.Source, c.Version, c.Manifests)
+	files, commit, err := f.Fetch(ctx, c.Source, c.Version, c.Vendored())
 	if err != nil {
 		return err
 	}
 	lock := Lock{Source: c.Source, Version: c.Version, Commit: commit, Files: map[string]string{}}
-	for _, p := range c.Manifests {
+	for _, p := range c.Vendored() {
 		b, ok := files[p]
 		if !ok {
 			return fmt.Errorf("%s: fetcher returned no %s", c.Name, p)
@@ -240,15 +245,23 @@ func writeTree(dir string, c bom.Component, files map[string][]byte, lock Lock) 
 	if err := os.Chmod(dir, 0o755); err != nil { //nolint:gosec // vendored manifests are meant to be readable
 		return err
 	}
+	put := func(rel string, b []byte) error {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(p, b, 0o644) //nolint:gosec // manifests are meant to be readable
+	}
 	for _, m := range c.Manifests {
-		base := filepath.Join(dir, filepath.FromSlash(BaseDir(m)))
-		if err := os.MkdirAll(base, 0o755); err != nil {
+		if err := put(vendoredPath(m), files[m]); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(base, path.Base(m)), files[m], 0o644); err != nil { //nolint:gosec // manifests are meant to be readable
+		if err := put(path.Join(BaseDir(m), KustomizationFile), kustomization(m)); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(base, KustomizationFile), kustomization(m), 0o644); err != nil { //nolint:gosec // as above
+	}
+	for _, f := range c.Files {
+		if err := put(f, files[f]); err != nil {
 			return err
 		}
 	}
@@ -260,13 +273,13 @@ func writeTree(dir string, c bom.Component, files map[string][]byte, lock Lock) 
 }
 
 // Verify checks, offline, that root/Dir/<c.Name> holds exactly c's
-// manifests at c's version, unedited. A component without manifests
-// must have no vendor directory.
+// manifests and files at c's version, unedited. A component with
+// neither must have no vendor directory.
 func Verify(root string, c bom.Component) error {
 	dir := filepath.Join(root, Dir, c.Name)
-	if len(c.Manifests) == 0 {
+	if len(c.Vendored()) == 0 {
 		if _, err := os.Stat(dir); err == nil {
-			return fmt.Errorf("%s: %s exists but versions.yaml lists no manifests", c.Name, filepath.ToSlash(filepath.Join(Dir, c.Name)))
+			return fmt.Errorf("%s: %s exists but versions.yaml lists no manifests or files", c.Name, filepath.ToSlash(filepath.Join(Dir, c.Name)))
 		}
 		return nil
 	}
@@ -299,12 +312,13 @@ func Verify(root string, c bom.Component) error {
 		fail("vendored from %s@%s, but versions.yaml pins %s@%s (run `shipmind vendor %s`)",
 			lock.Source, lock.Version, c.Source, c.Version, c.Name)
 	}
-	if want, got := slices.Sorted(slices.Values(c.Manifests)), slices.Sorted(maps.Keys(lock.Files)); !slices.Equal(want, got) {
+	if want, got := slices.Sorted(slices.Values(c.Vendored())), slices.Sorted(maps.Keys(lock.Files)); !slices.Equal(want, got) {
 		fail("vendored files %v, but versions.yaml lists %v (run `shipmind vendor %s`)", got, want, c.Name)
 	}
 
-	// Every file on disk must be a manifest, its generated kustomization
-	// or the lock; every manifest must be on disk, unedited.
+	// Every file on disk must be a manifest, its generated kustomization,
+	// a listed file or the lock; every one of those must be on disk,
+	// unedited.
 	expected := map[string]func([]byte) error{}
 	for _, m := range c.Manifests {
 		want, ok := lock.Files[m]
@@ -321,6 +335,18 @@ func Verify(root string, c bom.Component) error {
 		expected[k] = func(b []byte) error {
 			if !bytes.Equal(b, kustomization(m)) {
 				return fmt.Errorf("%s was edited after vendoring (re-vendor instead)", k)
+			}
+			return nil
+		}
+	}
+	for _, f := range c.Files {
+		want, ok := lock.Files[f]
+		if !ok {
+			continue // already reported as a file-list mismatch
+		}
+		expected[f] = func(b []byte) error {
+			if digest(b) != want {
+				return fmt.Errorf("%s was edited after vendoring (re-vendor instead)", f)
 			}
 			return nil
 		}
@@ -343,7 +369,7 @@ func Verify(root string, c bom.Component) error {
 		}
 		check, ok := expected[rel]
 		if !ok {
-			fail("%s is not a vendored manifest or its kustomization", rel)
+			fail("%s is not a vendored manifest, its kustomization or a vendored file", rel)
 			return nil
 		}
 		seen[rel] = true
