@@ -143,19 +143,19 @@ func TestApplySecret(t *testing.T) {
 	}
 }
 
-func TestSecretUpdatedAndPodStarts(t *testing.T) {
+func TestObjectUpdatedAndPodStarts(t *testing.T) {
 	k, dir := fake(t)
 	ctx := context.Background()
-	if _, found, err := k.SecretUpdated(ctx, "ns", "s"); err != nil || found {
+	if _, found, err := k.ObjectUpdated(ctx, "secret", "ns", "s"); err != nil || found {
 		t.Errorf("no secret: found=%v, %v", found, err)
 	}
 	put(t, filepath.Join(dir, "managed.txt"), "2026-10-19T09:00:00Z\n2026-10-20T10:00:00Z\n2026-10-18T00:00:00Z\n")
-	ts, found, err := k.SecretUpdated(ctx, "ns", "s")
+	ts, found, err := k.ObjectUpdated(ctx, "secret", "ns", "s")
 	if err != nil || !found || ts.Format("2006-01-02T15") != "2026-10-20T10" {
-		t.Errorf("SecretUpdated = %v, %v, %v", ts, found, err)
+		t.Errorf("ObjectUpdated = %v, %v, %v", ts, found, err)
 	}
 	put(t, filepath.Join(dir, "managed.txt"), "yesterday\n")
-	if _, _, err := k.SecretUpdated(ctx, "ns", "s"); err == nil {
+	if _, _, err := k.ObjectUpdated(ctx, "secret", "ns", "s"); err == nil {
 		t.Error("bad time accepted")
 	}
 

@@ -16,6 +16,13 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Fixed
 
+- Substrate's credential provider reads its namespace policy only at
+  startup, so on a fresh cluster (installer first, policy from `up`
+  after) every agent's credential fetch was refused: "egress denied".
+  `up` now restarts the provider when the policy changes, and `status`
+  flags a provider running on an older policy, as it already did for
+  lookout and its task template.
+
 - `shipmind up -dry-run` on a fresh cluster no longer fails validating
   the agent's Secrets in a namespace the run would create; it says they
   would be stored, unvalidated.
