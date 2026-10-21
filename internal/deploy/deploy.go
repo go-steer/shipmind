@@ -163,6 +163,10 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
+	ax, err := axState(ctx, p.Objects, pending, c)
+	if err != nil {
+		return nil, err
+	}
 	m, err := existing.YAML()
 	if err != nil {
 		return nil, err
@@ -219,6 +223,14 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 	want, err := agent.Workspace(p.Root, p.Env)
 	if err != nil {
 		return nil, err
+	}
+	switch ax {
+	case axAbsent:
+		add(wsWhat, "missing (ax is not deployed yet)")
+		return r, nil
+	case axNotReady:
+		add(wsWhat, "unknown (ax-server's rollout hasn't finished)")
+		return r, nil
 	}
 	live, ok, err := c.AxWorkspace(ctx, p.Env.Agent.Atespace, p.Env.Agent.Workspace)
 	if err != nil {
@@ -382,6 +394,46 @@ func splitByNamespace(ctx context.Context, objs render.Objects, c cluster.Cluste
 	return existing, pending, nil
 }
 
+// AxServer is the profile's ax-server Deployment, through which ax
+// answers.
+const AxServer = "ax-server"
+
+// ax's states as up and status see them.
+const (
+	axReady    = "ready"
+	axAbsent   = "absent"    // not deployed yet: a fresh cluster, or a first up that stopped early
+	axNotReady = "not ready" // deployed, but its rollout hasn't finished
+)
+
+// axState says whether ax can be asked anything: ax-server exists and
+// has rolled out. A render without ax-server reports ready, leaving any
+// failure to the ax call itself.
+func axState(ctx context.Context, objs render.Objects, pending map[string]render.Objects, c cluster.Cluster) (string, error) {
+	for _, o := range objs {
+		if o.Kind() != "Deployment" || o.Name() != AxServer {
+			continue
+		}
+		ns := o.Namespace()
+		if _, ok := pending[ns]; ok {
+			return axAbsent, nil
+		}
+		ws, err := c.Workloads(ctx, ns)
+		if err != nil {
+			return "", err
+		}
+		for _, w := range ws {
+			if w.ID == "Deployment/"+ns+"/"+AxServer {
+				if !w.Current {
+					return axNotReady, nil
+				}
+				return axReady, nil
+			}
+		}
+		return axAbsent, nil
+	}
+	return axReady, nil
+}
+
 func sortedKeys(m map[string]render.Objects) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -535,14 +587,21 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 		return err
 	}
 	templateChanged := compareAgentSecret(liveAgent, task, t) != ""
-	liveWS, wsFound, err := c.AxWorkspace(ctx, p.Env.Agent.Atespace, p.Env.Agent.Workspace)
+	// The Workspace is reconciled last, through ax, which on a fresh
+	// cluster only exists once the objects below have rolled out. When ax
+	// is already up, ask it now anyway, so a broken ax CLI or connection
+	// fails before anything is written.
+	_, nsPending, err := splitByNamespace(ctx, p.Objects, c)
 	if err != nil {
 		return err
 	}
-	wsSame := false
-	if wsFound {
-		if wsSame, err = sameWorkspace(liveWS, ws); err != nil {
-			return err
+	ax, err := axState(ctx, p.Objects, nsPending, c)
+	if err != nil {
+		return err
+	}
+	if ax == axReady {
+		if _, _, err := c.AxWorkspace(ctx, p.Env.Agent.Atespace, p.Env.Agent.Workspace); err != nil {
+			return fmt.Errorf("workspace %s/%s (nothing written yet): %w", p.Env.Agent.Atespace, p.Env.Agent.Workspace, err)
 		}
 	}
 
@@ -580,23 +639,15 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 		}
 		log("applied %d objects%s\n%s", len(rest), dry(opts.DryRun), strings.TrimRight(out, "\n"))
 	}
-	switch {
-	case wsSame:
-		log("workspace %s/%s unchanged", p.Env.Agent.Atespace, p.Env.Agent.Workspace)
-	case opts.DryRun:
-		log("workspace %s/%s would be applied (dry run)", p.Env.Agent.Atespace, p.Env.Agent.Workspace)
-	default:
-		if err := c.AxApply(ctx, p.Env.Agent.Atespace, ws); err != nil {
-			return err
-		}
-		log("workspace %s/%s applied", p.Env.Agent.Atespace, p.Env.Agent.Workspace)
-	}
-
 	if opts.DryRun {
 		if templateChanged {
 			log("deployment %s/%s would be restarted (dry run)", Namespace, Lookout)
 		}
-		return nil
+		if ax != axReady {
+			log("workspace %s/%s would be applied once ax is up (ax is %s; dry run)", p.Env.Agent.Atespace, p.Env.Agent.Workspace, ax)
+			return nil
+		}
+		return reconcileWorkspace(ctx, p, c, ws, true, log)
 	}
 	if templateChanged {
 		if _, ok := p.Objects.Find("Deployment", Namespace, Lookout); ok {
@@ -614,6 +665,37 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 			log("deployment %s/%s rolled out", o.Namespace(), o.Name())
 		}
 	}
+	if err := reconcileWorkspace(ctx, p, c, ws, false, log); err != nil {
+		return fmt.Errorf("workspace %s/%s (every object is applied and rolled out; re-run up to retry): %w", p.Env.Agent.Atespace, p.Env.Agent.Workspace, err)
+	}
+	return nil
+}
+
+// reconcileWorkspace applies the rendered Workspace through ax unless ax
+// already has an identical one.
+func reconcileWorkspace(ctx context.Context, p *Plan, c cluster.Cluster, ws []byte, dryRun bool, log func(string, ...any)) error {
+	live, found, err := c.AxWorkspace(ctx, p.Env.Agent.Atespace, p.Env.Agent.Workspace)
+	if err != nil {
+		return err
+	}
+	if found {
+		same, err := sameWorkspace(live, ws)
+		if err != nil {
+			return err
+		}
+		if same {
+			log("workspace %s/%s unchanged", p.Env.Agent.Atespace, p.Env.Agent.Workspace)
+			return nil
+		}
+	}
+	if dryRun {
+		log("workspace %s/%s would be applied (dry run)", p.Env.Agent.Atespace, p.Env.Agent.Workspace)
+		return nil
+	}
+	if err := c.AxApply(ctx, p.Env.Agent.Atespace, ws); err != nil {
+		return err
+	}
+	log("workspace %s/%s applied", p.Env.Agent.Atespace, p.Env.Agent.Workspace)
 	return nil
 }
 

@@ -16,6 +16,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Fixed
 
+- `shipmind up` and `status` work on a fresh cluster: `up` reconciles the
+  ax Workspace after the objects (ax-server among them) have rolled out,
+  instead of asking ax before anything is deployed, and `status` reports
+  the Workspace as missing without asking an ax that doesn't exist yet.
+
 - Go 1.26.10, for GO-2026-6809 (crypto/x509 distrusting compromised
   intermediates), which govulncheck finds reachable; the e2e-runner image
   builds with it too.
