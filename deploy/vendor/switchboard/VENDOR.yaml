@@ -7,3 +7,4 @@ files:
     deploy/base/16-networkpolicy.yaml: sha256:0fd8be4d1c468a687bb106d5f06c00a7d09d344313ebfb425908b8df110a8941
     deploy/base/51-deployment.yaml: sha256:8aa6f182d7a2e0a997e8a3384e88679b2f59ab821f4cc740b6e15a01bf292dca
     deploy/components/durable-state/pvc.yaml: sha256:da3b31643fe06e8f42492e41ebf8659423515b3d6ded263ac1c2dee5b4069e1b
+    deploy/slack/app-manifest.yaml: sha256:cf6cd3a19013cb593b9c234c37c8299baaffb20cc408d2ea6350100b6f2b2350

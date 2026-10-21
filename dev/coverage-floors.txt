@@ -58,3 +58,5 @@ github.com/go-steer/shipmind/internal/render    85.0  # 86.2
 # router client against an httptest server. Uncovered: transport errors
 # mid-stream and template errors on files that loaded.
 github.com/go-steer/shipmind/internal/scenario  91.0  # 92.1
+
+github.com/go-steer/shipmind/internal/slackapp  94.0  # 95.4

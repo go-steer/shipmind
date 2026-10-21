@@ -20,6 +20,7 @@
 //	shipmind status   [-root .] [-any-ref] <env-dir>    compare an environment with its cluster (read only)
 //	shipmind up       [-root .] [-dry-run] <env-dir>    bring the cluster to the environment
 //	shipmind down     [-root .] -yes [-all] <env-dir>   delete the environment's rendered objects
+//	shipmind slack-app [-root .] <env-dir>              print the environment's Slack app manifest
 //	shipmind scenario run -atespace A (-context C -router URL | -in-cluster) <scenario-dir>
 //	                                                    run an end-to-end scenario against a deployment
 //
@@ -62,6 +63,7 @@ commands:
   status    compare an environment (an overlay directory) with its cluster, read only
   up        bring the cluster to an environment (-dry-run validates without writing)
   down      delete an environment's rendered objects (-yes; keeps namespaces and volumes unless -all)
+  slack-app print an environment's Slack app manifest (switchboard's, under its names)
   scenario  run an end-to-end scenario (scenario run -h)
 `
 
@@ -79,6 +81,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "check", "versions", "vendor":
 	case "status", "up", "down":
 		return runDeploy(cmd, args, stdout, stderr)
+	case "slack-app":
+		return runSlackApp(args, stdout, stderr)
 	case "scenario":
 		return runScenario(args, stdout, stderr)
 	case "-h", "-help", "--help", "help":
@@ -120,7 +124,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		vendored := 0
 		for _, c := range f.Components {
 			errs = append(errs, manifests.Verify(root, c))
-			if len(c.Manifests) > 0 {
+			if len(c.Vendored()) > 0 {
 				vendored++
 			}
 		}
@@ -133,7 +137,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		names := fs.Args()
 		if len(names) == 0 {
 			for _, c := range f.Components {
-				if len(c.Manifests) > 0 {
+				if len(c.Vendored()) > 0 {
 					names = append(names, c.Name)
 				}
 			}
@@ -148,7 +152,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stderr, "shipmind vendor: %v\n", err)
 				return 1
 			}
-			fmt.Fprintf(stdout, "vendored %s@%s: %d files\n", c.Name, c.Version, len(c.Manifests))
+			fmt.Fprintf(stdout, "vendored %s@%s: %d files\n", c.Name, c.Version, len(c.Vendored()))
 		}
 	case "versions":
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)

@@ -20,7 +20,8 @@
 // (which references a shipmind profile at a full commit SHA) and a
 // shipmind.yaml (this package): the kube context every command runs
 // against, the agent's settings for the ax task template and Workspace,
-// and the changes `shipmind status` should expect.
+// the environment's Slack app names, and the changes `shipmind status`
+// should expect.
 package env
 
 import (
@@ -50,6 +51,9 @@ type Env struct {
 	// Substrate, when set, says which Substrate build the cluster should
 	// run; status checks its workloads against it.
 	Substrate *Substrate `yaml:"substrate,omitempty"`
+	// Slack, when set, names the environment's Slack app, which
+	// `shipmind slack-app` prints switchboard's app manifest for.
+	Slack *Slack `yaml:"slack,omitempty"`
 	// Expect lists changes `shipmind status` reports as expected rather
 	// than as drift, each with the reason: Kubernetes objects by the ID
 	// kubectl diff gives them ("apps.v1.Deployment.ax-system.ax-redis"),
@@ -97,6 +101,19 @@ type Substrate struct {
 	Workloads []string `yaml:"workloads"`
 }
 
+// Slack names an environment's Slack app. Each environment gets its own
+// app, so several can share one workspace.
+type Slack struct {
+	// App is the app's name and its bot's display name.
+	App string `yaml:"app"`
+	// Command is the app's slash command. switchboard ignores the
+	// command word, but two apps in one workspace can't share it.
+	Command string `yaml:"command"`
+	// Description, when set, replaces switchboard's description of the
+	// app.
+	Description string `yaml:"description,omitempty"`
+}
+
 // Cluster maps a bare cluster name to its full GKE resource name.
 type Cluster struct {
 	Name string `yaml:"name"`
@@ -116,6 +133,8 @@ var (
 	digestRef   = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 	digestOnly  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	kubectlID   = regexp.MustCompile(`^[A-Za-z0-9.-]+\.[A-Za-z0-9]+\.[A-Za-z0-9-.]*\.[a-z0-9.-]+$`)
+	slackApp    = regexp.MustCompile(`^[^\x00-\x1f]{1,35}$`)
+	slashCmd    = regexp.MustCompile(`^/[a-z0-9][a-z0-9_-]{0,30}$`)
 	agentID     = regexp.MustCompile(`^((secret|workspace|deployment) [a-z0-9-]+/[a-z0-9.-]+|(substrate|rollout) [A-Za-z]+/[a-z0-9-]+/[a-z0-9.-]+)$`)
 )
 
@@ -223,6 +242,17 @@ func (e *Env) check() error {
 			if !dnsLabel.MatchString(ns) {
 				fail("substrate.namespaces[%d] %q: want a namespace name", i, ns)
 			}
+		}
+	}
+	if sl := e.Slack; sl != nil {
+		if !slackApp.MatchString(sl.App) || strings.TrimSpace(sl.App) != sl.App {
+			fail("slack.app %q: want a Slack app name (1 to 35 characters, no surrounding spaces)", sl.App)
+		}
+		if !slashCmd.MatchString(sl.Command) {
+			fail("slack.command %q: want a slash command (/ then up to 31 lowercase letters, digits, - or _)", sl.Command)
+		}
+		if len([]rune(sl.Description)) > 140 || strings.ContainsAny(sl.Description, "\n\r") {
+			fail("slack.description: want one line of at most 140 characters")
 		}
 	}
 	objs := map[string]bool{}

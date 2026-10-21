@@ -17,6 +17,7 @@ package bom
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -188,6 +189,10 @@ func TestCheck(t *testing.T) {
 			[]string{`manifest "/abs.yaml" is not a clean`, `manifest "../up.yaml" is not a clean`, `manifest "a/../b.yaml" is not a clean`,
 				`manifest "" is not a clean`, `manifest "x.json" is not a .yaml`, `"k/kustomization.yaml" would collide`,
 				`manifest "d.yml" listed twice`, `manifest "e.yaml" listed twice`}},
+		{"file problems", "components:\n  - {name: a, source: github.com/a/b, version: v1.0.0, profiles: [substrate],\n" +
+			"     manifests: [m.yaml], files: [/abs, ../up, '', m.yaml, f.json, F.json]}\n",
+			[]string{`file "/abs" is not a clean`, `file "../up" is not a clean`, `file "" is not a clean`,
+				`file "m.yaml" is also listed as a manifest`, `file "F.json" listed twice`}},
 		{"image problems", "components:\n  - {name: a, source: github.com/a/b, version: v1.0.0, profiles: [substrate],\n" +
 			"     images: [{ref: 'x@" + digest + "'}, {name: y, ref: 'y@" + digest + "'}, {name: y, ref: 'y@" + digest + "'}]}\n",
 			[]string{"images[0]: no name", `image "y" listed twice`}},
@@ -203,6 +208,20 @@ func TestCheck(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestVendored(t *testing.T) {
+	manifests := make([]string, 1, 4)
+	manifests[0] = "m.yaml"
+	c := Component{Manifests: manifests, Files: []string{"f.json"}}
+	if got := c.Vendored(); !slices.Equal(got, []string{"m.yaml", "f.json"}) {
+		t.Errorf("Vendored = %v", got)
+	}
+	// Spare capacity in Manifests must not be written through.
+	_ = append(c.Manifests, "x")
+	if c.Vendored()[1] != "f.json" {
+		t.Error("Vendored shares Manifests' backing array")
 	}
 }
 

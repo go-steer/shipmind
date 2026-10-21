@@ -157,7 +157,7 @@ func TestVendorAndCheck(t *testing.T) {
 	runFail(`no component "gone"`, "check", "-f", path)
 
 	runFail(`no component "nope"`, "vendor", "-f", path, "nope")
-	runFail("no manifests to vendor", "vendor", "-f", path, "mast")
+	runFail("no manifests or files to vendor", "vendor", "-f", path, "mast")
 	fetcher = fakeFetcher{err: errors.New("network down")}
 	runFail("network down", "vendor", "-f", path, "ax")
 }
