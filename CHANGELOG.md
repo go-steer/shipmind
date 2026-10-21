@@ -10,6 +10,10 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Fixed
 
+- The nightly CronJob states `suspend: false`, so a hand-set suspend is
+  drift and the next `up` undoes it; DESIGN.md notes the client-side
+  apply limit behind it.
+
 - The nightly runs the e2e-runner build with the sweep fix (1238fb2).
 
 - `shipmind scenario run`'s leftover sweep deleted lookout's watchboard
