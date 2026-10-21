@@ -95,6 +95,26 @@ data: {"seq":2,"event":{"author":"agent","content":{"role":"model","parts":[{"te
 	if a, s := tr.Answer(); a != "first\nsecond" || s {
 		t.Errorf("answer = %q, %v", a, s)
 	}
+	// Another message before any answer joins the turn (lookout's update
+	// while the agent investigates); the specialist's text doesn't count
+	// when a coordinator answers later.
+	tr = parse(`data: {"seq":1,"event":{"author":"user","content":{"role":"user","parts":[{"text":"incident"}]}}}
+data: {"seq":2,"event":{"author":"gke-triage_coordinator","content":{"role":"model","parts":[{"functionCall":{"name":"_fallback"}}]}}}
+data: {"seq":3,"event":{"author":"_fallback","content":{"role":"model","parts":[{"text":"looking"}]}}}
+data: {"seq":4,"event":{"author":"user","content":{"role":"user","parts":[{"text":"update"}]}}}
+data: {"seq":5,"event":{"author":"gke-triage_coordinator","content":{"role":"model","parts":[{"text":"diagnosis"}]}}}`)
+	if a, s := tr.Answer(); a != "diagnosis" || s {
+		t.Errorf("answer with a mid-turn message = %q, %v", a, s)
+	}
+	// Without a coordinator, any text is an answer, so the next message
+	// supersedes it.
+	tr = parse(`data: {"seq":1,"event":{"author":"user","content":{"role":"user","parts":[{"text":"incident"}]}}}
+data: {"seq":2,"event":{"author":"agent","content":{"role":"model","parts":[{"text":"diagnosis"}]}}}
+data: {"seq":3,"event":{"author":"user","content":{"role":"user","parts":[{"text":"repeat"}]}}}
+data: {"seq":4,"event":{"author":"agent","content":{"role":"model","parts":[{"text":"ack"}]}}}`)
+	if a, s := tr.Answer(); a != "diagnosis" || !s {
+		t.Errorf("answer without a coordinator = %q, %v", a, s)
+	}
 }
 
 func TestRouter(t *testing.T) {
