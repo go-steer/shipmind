@@ -293,9 +293,11 @@ once shipmind covers them.
 
 ### Milestone 3: switchboard starts agents
 
-switchboard's ax backend (target switchboard v0.8): picking an agent in
-Chat starts an ax task per thread or a personal agent per owner, woken
-through Substrate's router. mast-web joins the substrate profile.
+switchboard's ax backend (target switchboard v0.9; designed in
+go-steer/switchboard `docs/ax-backend.md`, tracked in
+go-steer/switchboard#168 and #39 here): picking an agent in Chat starts an
+ax task per thread or a personal agent per owner, woken through
+Substrate's router. mast-web joins the substrate profile.
 
 ## Open questions
 

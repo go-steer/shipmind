@@ -4,6 +4,30 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-10-21: switchboard's ax backend targets v0.9, not v0.8
+
+Milestone 3's switchboard ax backend now targets switchboard v0.9.
+switchboard v0.8.0 shipped without it, carrying the admin API and the
+gateway's own identity instead. Its design is go-steer/switchboard
+`docs/ax-backend.md`, tracked in go-steer/switchboard#168, with the
+end-to-end here as #39.
+
+In that design an ax agent is a task template with a scope: a task per
+thread, per owner, or one shared. switchboard creates the task, resumes it
+and waits for readiness. It then speaks the unchanged session contract
+through the atenet router, as lookout's ax sink does.
+
+**Why:** nothing for the ax backend had been started when v0.8.0 was cut,
+and shipmind wanted that release for what it does carry. Two things the
+backend depends on landed in the ax fork only recently: a task serving its
+own API (`spec.http.port`) and the readiness hold.
+
+**Consequence:** the backend scopes switchboard's streams to the turn,
+because an open SSE stream keeps a task from idle-suspending. When
+Milestone 3 deploys it, this profile needs the router's raised parking
+budget kept, a rendered task template for the gateway's agent, and a
+NetworkPolicy letting switchboard reach ax-server and the router.
+
 ## 2026-10-20: The agent's task template is rendered at deploy time
 
 The ax task template, which carries the agent's tokens, is rendered by
