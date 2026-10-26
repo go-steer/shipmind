@@ -178,7 +178,7 @@ jobs:
         with:
           go-version-file: src/go.mod
       - if: steps.exists.outputs.skip != 'true'
-        uses: ko-build/setup-ko@v0.9
+        uses: ko-build/setup-ko@v0.10
       - if: steps.exists.outputs.skip != 'true'
         working-directory: src
         env:
@@ -274,7 +274,7 @@ jobs:
         with:
           go-version-file: src/go.mod
       - if: steps.exists.outputs.skip != 'true'
-        uses: ko-build/setup-ko@v0.9
+        uses: ko-build/setup-ko@v0.10
       - if: steps.exists.outputs.skip != 'true'
         uses: docker/setup-buildx-action@v4
       - if: steps.exists.outputs.skip != 'true'
