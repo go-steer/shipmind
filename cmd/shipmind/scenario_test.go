@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,6 +86,8 @@ func TestScenarioCommand(t *testing.T) {
 		{"help", []string{"scenario", "run", "-h"}, 0, "", "-atespace"},
 		{"bad scenario", []string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", t.TempDir()}, 1, "", "scenario.yaml"},
 		{"not in cluster", []string{"scenario", "run", "-atespace", "a", "-in-cluster", dir}, 1, "", "not running in a cluster"},
+		{"half mTLS", []string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-router-cert", "c.pem", dir}, 2, "", "wants both -router-cert and -router-trust"},
+		{"server name without mTLS", []string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-router-server-name", "x", dir}, 2, "", "-router-server-name is for mTLS"},
 		{"times out", []string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-json", jsonOut, dir}, 1,
 			`"pass": false`, "scenario quick: broke lab/quick-"},
 	} {
@@ -128,6 +131,31 @@ func TestScenarioCommand(t *testing.T) {
 	err0.Reset()
 	if code := run([]string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-json", t.TempDir(), dir}, &out0, &err0); code != 1 || !strings.Contains(err0.String(), "is a directory") {
 		t.Errorf("bad -json: exit %d, stderr %q", code, err0.String())
+	}
+
+	// With mTLS: the https service name in the cluster, and the client
+	// built from the projected files.
+	oldC := newRouterClient
+	t.Cleanup(func() { newRouterClient = oldC })
+	var gotTLS scenario.RouterTLS
+	closed := false
+	tlsClient := &http.Client{}
+	newRouterClient = func(rt scenario.RouterTLS) (*http.Client, func() error, error) {
+		gotTLS = rt
+		return tlsClient, func() error { closed = true; return nil }, nil
+	}
+	err0.Reset()
+	if code := run([]string{"scenario", "run", "-atespace", "a", "-in-cluster", "-router-cert", "/pc/bundle.pem", "-router-trust", "/tb/ca.pem", dir}, &out0, &err0); code != 1 {
+		t.Errorf("in-cluster mTLS: exit %d, stderr %s", code, err0.String())
+	}
+	if gotRouter.Base != inClusterRouterTLS || gotRouter.Client != tlsClient || !closed ||
+		gotTLS != (scenario.RouterTLS{CredentialBundle: "/pc/bundle.pem", TrustBundle: "/tb/ca.pem"}) {
+		t.Errorf("in-cluster mTLS: router %+v, tls %+v, closed %v", gotRouter, gotTLS, closed)
+	}
+	newRouterClient = func(scenario.RouterTLS) (*http.Client, func() error, error) { return nil, nil, errors.New("no bundle") }
+	err0.Reset()
+	if code := run([]string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "https://r", "-router-cert", "c", "-router-trust", "t", "-router-server-name", "n", dir}, &out0, &err0); code != 1 || !strings.Contains(err0.String(), "no bundle") {
+		t.Errorf("mTLS client error: exit %d, stderr %q", code, err0.String())
 	}
 
 	fake.token = ""

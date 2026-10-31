@@ -274,6 +274,15 @@ CronJob with just the permissions it needs (Deployments and ConfigMaps
 in the scenario's namespace, the agent's attach token); an environment
 opts in by referencing it at the same shipmind commit as its profile.
 
+Substrate v1.0's router accepts only mTLS clients whose SPIFFE ID it
+allows. With `-router-cert` (a podCertificate projection's credential
+bundle, from the podidentity signer) and `-router-trust` (a
+clusterTrustBundle projection of the servicedns signer), the runner
+dials the router over https, presents the pod's certificate and
+verifies the router as `atenet-router.ate-system.svc`, re-reading both
+files as the kubelet rotates them (go-steer/purser's PKI client
+profile). Without them it speaks plain HTTP, as v0.5's router expects.
+
 ## Milestones
 
 ### Milestone 1: agent-substrate deploys from shipmind
