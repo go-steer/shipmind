@@ -371,3 +371,41 @@ func TestProfileWorkerImagesArePinned(t *testing.T) {
 		t.Error("no WorkerPool in any profile")
 	}
 }
+
+// Substrate's router takes only mTLS clients (v1.0). Each of its clients
+// in the substrate profile, and the nightly scenario, mounts the pod's
+// podidentity certificate and the servicedns trust bundle, both as
+// projected volumes, and its SPIFFE ID goes in the install's allowlist.
+func TestSubstrateRouterClientsMountMTLS(t *testing.T) {
+	type client struct{ dir, kind, ns, name string }
+	for _, c := range []client{
+		{filepath.Join(profilesDir, "substrate"), "Deployment", "ax-system", "ax-server"},
+		{filepath.Join(profilesDir, "substrate"), "Deployment", "lookout-ax", "lookout-ax"},
+		{filepath.Join(profilesDir, "substrate"), "Deployment", "substrate-scope", "substrate-scope"},
+		{filepath.Join(profilesDir, "..", "e2e", "substrate"), "CronJob", "shipmind-e2e", "missing-env"},
+	} {
+		o, ok := build(t, c.dir).Find(c.kind, c.ns, c.name)
+		if !ok {
+			t.Errorf("no %s %s/%s in %s", c.kind, c.ns, c.name, c.dir)
+			continue
+		}
+		path := []string{"spec", "template", "spec", "volumes"}
+		if c.kind == "CronJob" {
+			path = []string{"spec", "jobTemplate", "spec", "template", "spec", "volumes"}
+		}
+		vols, err := o.Pipe(yaml.Lookup(path...))
+		if err != nil || vols == nil {
+			t.Errorf("%s %s: no volumes (%v)", c.kind, c.name, err)
+			continue
+		}
+		s, err := vols.String()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"podCertificate:", "signerName: podidentity.podcert.ate.dev/identity", "clusterTrustBundle:", "signerName: servicedns.podcert.ate.dev/identity"} {
+			if !strings.Contains(s, want) {
+				t.Errorf("%s %s/%s: volumes lack %q", c.kind, c.ns, c.name, want)
+			}
+		}
+	}
+}

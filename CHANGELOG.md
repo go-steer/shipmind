@@ -46,6 +46,9 @@ release is a tested set of component versions (see "Cutting a release" in
     2 CPU / 4Gi a worker.
   - The nightly scenario reaches the router over mTLS with its pod's
     certificate.
+  - k8s-lookout v0.43.0 and substrate-scope v0.1.0 (d52a8aa): the ax
+    fork's v1 protos and router mTLS; lookout mounts its pod
+    certificate and the trust bundle, scope's own manifest does.
 
 ### Fixed
 

@@ -72,7 +72,14 @@ spec:
             - "--substrate-token-file=/var/run/secrets/ateapi/token"
             - "--substrate-ca-file=/run/servicedns-ca/trust-bundle.pem"
             - "--ax-endpoint=ax-server.ax-system.svc.cluster.local:8080"
-            - "--router=atenet-router.ate-system.svc.cluster.local:80"
+            # The router's HTTPS ingress, with this pod's podidentity
+            # certificate. Its SPIFFE ID,
+            # spiffe://cluster.local/ns/substrate-scope/sa/substrate-scope,
+            # must be in ate-setup's ATE_INGRESS_ALLOWED_SPIFFE_IDS.
+            - "--router=atenet-router.ate-system.svc.cluster.local:443"
+            - "--router-cert-file=/run/podidentity/credential-bundle.pem"
+            - "--router-ca-file=/run/servicedns-ca/trust-bundle.pem"
+            - "--router-server-name=atenet-router.ate-system.svc"
             - "--attach-token-file=/run/attach/token"
           ports:
             - containerPort: 8080
@@ -107,12 +114,16 @@ spec:
             - mountPath: /run/servicedns-ca
               name: servicedns-ca
               readOnly: true
+            - mountPath: /run/podidentity
+              name: podidentity
+              readOnly: true
             - mountPath: /run/attach
               name: attach-token
               readOnly: true
       volumes:
         # Same mechanism as ax-server: a projected token for the control
-        # API's audience, and the servicedns CA bundle that signs its cert.
+        # API's audience, and the servicedns CA bundle that signs its cert
+        # (and the router's).
         - name: ate-token
           projected:
             sources:
@@ -129,6 +140,18 @@ spec:
                       podcert.ate.dev/canarying: live
                   path: trust-bundle.pem
                   signerName: servicedns.podcert.ate.dev/identity
+        # The client certificate for the router's mTLS ingress: Substrate's
+        # podidentity signer issues an X.509-SVID for this pod's service
+        # account, a PKCS#8 key then the chain in one file. It lasts up to
+        # 24h and the kubelet rewrites it before expiry; the collector
+        # re-reads it.
+        - name: podidentity
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
         - name: attach-token
           secret:
             secretName: substrate-scope-attach
