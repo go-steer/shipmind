@@ -35,7 +35,7 @@
 # Run by hand on main with `ax-commit` (a full SHA in the ax fork) to
 # publish ax-server and the e2e-runner for a commit versions.yaml doesn't
 # pin yet, so the pull request that moves the pin can pin their digests
-# too. The e2e-runner built that way is tagged
+# too; `substrate-scope-commit` does the same for substrate-scope. The e2e-runner built that way is tagged
 # <shipmind commit>-ax-<12 characters of the ax commit>.
 #
 # Path-filtered and deliberately not a required check.
@@ -69,6 +69,10 @@ on:
     inputs:
       ax-commit:
         description: Build ax-server and the e2e-runner for this ax fork commit (full SHA) instead of versions.yaml's ax pin
+        required: false
+        default: ""
+      substrate-scope-commit:
+        description: Build substrate-scope for this commit (full SHA) instead of versions.yaml's pin
         required: false
         default: ""
 
@@ -238,8 +242,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: pin
+        env:
+          SCOPE_COMMIT_OVERRIDE: ${{ inputs.substrate-scope-commit }}
         run: |
-          echo "commit=$(yq '.components[] | select(.name == "substrate-scope") | .version' versions.yaml)" >> "$GITHUB_OUTPUT"
+          commit=${SCOPE_COMMIT_OVERRIDE:-$(yq '.components[] | select(.name == "substrate-scope") | .version' versions.yaml)}
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "substrate-scope commit $commit: want a full SHA" >&2; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
       - if: env.PUSH == 'true'
         uses: docker/login-action@v4
         with:
