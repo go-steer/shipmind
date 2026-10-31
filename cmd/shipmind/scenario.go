@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,8 +32,12 @@ import (
 	"github.com/go-steer/shipmind/internal/scenario"
 )
 
-// inClusterRouter is Substrate's router as seen from inside the cluster.
-const inClusterRouter = "http://atenet-router.ate-system.svc.cluster.local"
+// inClusterRouter is Substrate's router as seen from inside the cluster,
+// over plain HTTP (Substrate v0.5) or mTLS (v1.0).
+const (
+	inClusterRouter    = "http://atenet-router.ate-system.svc.cluster.local"
+	inClusterRouterTLS = "https://atenet-router.ate-system.svc.cluster.local"
+)
 
 // scenarioKube is what a run needs from kubectl.
 type scenarioKube interface {
@@ -45,12 +50,13 @@ var (
 	newScenarioKube  = func(kubeContext string) scenarioKube { return cluster.Kube{Context: kubeContext} }
 	newScenarioTasks = func(ax scenario.Ax) scenario.Tasks { return ax }
 	newScenarioAgent = func(r *scenario.Router) scenario.Agent { return r }
+	newRouterClient  = func(t scenario.RouterTLS) (*http.Client, func() error, error) { return t.Client() }
 )
 
 // runScenario implements `shipmind scenario run`.
 func runScenario(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "run" {
-		fmt.Fprintln(stderr, "usage: shipmind scenario run -atespace A (-context C -router URL | -in-cluster) [-keep] [-json FILE] <scenario-dir>")
+		fmt.Fprintln(stderr, "usage: shipmind scenario run -atespace A (-context C -router URL | -in-cluster) [-router-cert F -router-trust F] [-keep] [-json FILE] <scenario-dir>")
 		return 2
 	}
 	fs := flag.NewFlagSet("shipmind scenario run", flag.ContinueOnError)
@@ -60,6 +66,9 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 	inCluster := fs.Bool("in-cluster", false, "run inside the cluster: the pod's service account, ax-server and the router by their service names")
 	router := fs.String("router", "", "Substrate router URL (from a workstation: a port-forward to ate-system/atenet-router)")
 	axServer := fs.String("ax-server", "", "ax-server address (default in-cluster: ax-server.ax-system.svc.cluster.local:8080)")
+	routerCert := fs.String("router-cert", "", "for a router that requires mTLS: this pod's podidentity certificate (a podCertificate projection's credential bundle)")
+	routerTrust := fs.String("router-trust", "", "for a router that requires mTLS: the router signer's trust bundle (a clusterTrustBundle projection)")
+	routerName := fs.String("router-server-name", "", "with mTLS, the name to verify the router's certificate against (default "+scenario.RouterServerName+")")
 	keep := fs.Bool("keep", false, "leave the workload and task in place for inspection")
 	jsonOut := fs.String("json", "", "also write the result as JSON to this file")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -70,6 +79,15 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 	}
 	if fs.NArg() != 1 || *atespace == "" || (*inCluster == (*kubeContext != "")) {
 		fmt.Fprintln(stderr, "shipmind scenario run: want -atespace, exactly one of -context and -in-cluster, and one scenario directory")
+		return 2
+	}
+	useTLS := *routerCert != "" || *routerTrust != ""
+	if useTLS && (*routerCert == "" || *routerTrust == "") {
+		fmt.Fprintln(stderr, "shipmind scenario run: router mTLS wants both -router-cert and -router-trust")
+		return 2
+	}
+	if *routerName != "" && !useTLS {
+		fmt.Fprintln(stderr, "shipmind scenario run: -router-server-name is for mTLS (-router-cert and -router-trust)")
 		return 2
 	}
 	if *inCluster {
@@ -85,6 +103,9 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 		*kubeContext = cluster.InClusterContext
 		if *router == "" {
 			*router = inClusterRouter
+			if useTLS {
+				*router = inClusterRouterTLS
+			}
 		}
 		if *axServer == "" {
 			*axServer = "ax-server.ax-system.svc.cluster.local:8080"
@@ -118,6 +139,15 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	rt := &scenario.Router{Base: *router, Atespace: *atespace, Token: string(data["token"])}
+	if useTLS {
+		c, closeTLS, err := newRouterClient(scenario.RouterTLS{CredentialBundle: *routerCert, TrustBundle: *routerTrust, ServerName: *routerName})
+		if err != nil {
+			fmt.Fprintf(stderr, "shipmind scenario run: %v\n", err)
+			return 1
+		}
+		defer func() { _ = closeTLS() }()
+		rt.Client = c
+	}
 
 	res, runErr := scenario.Run(ctx, s, kube, newScenarioTasks(ax), newScenarioAgent(rt), scenario.Options{
 		Keep: *keep,

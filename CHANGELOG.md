@@ -19,6 +19,13 @@ release is a tested set of component versions (see "Cutting a release" in
   environment's new `slack` block. `versions.yaml` can now vendor
   components' non-Kubernetes files (`files`), checked like manifests.
 
+- `shipmind scenario run -router-cert -router-trust`: router mTLS for
+  Substrate v1.0, which accepts only mTLS clients. The runner presents
+  the pod's projected podidentity certificate, verifies the router
+  against the projected servicedns trust bundle, and reloads both as
+  they rotate (go-steer/purser v0.5.0). Without the flags nothing
+  changes, as v0.5 clusters need (#49).
+
 ### Fixed
 
 - `shipmind scenario run` no longer fails a correct diagnosis when

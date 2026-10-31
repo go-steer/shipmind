@@ -52,11 +52,14 @@ type Session struct {
 	Status string `json:"status"`
 }
 
+// routerTimeout is long enough for the router to wake a suspended task.
+const routerTimeout = 120 * time.Second
+
 func (r *Router) client() *http.Client {
 	if r.Client != nil {
 		return r.Client
 	}
-	return &http.Client{Timeout: 120 * time.Second}
+	return &http.Client{Timeout: routerTimeout}
 }
 
 func (r *Router) get(ctx context.Context, task, path string) (*http.Response, error) {
