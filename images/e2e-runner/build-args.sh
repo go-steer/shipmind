@@ -41,7 +41,8 @@ pin() {
   [[ -n "$v" && "$v" != null ]] || { echo "build-args.sh: versions.yaml has no ax $1" >&2; exit 1; }
   printf '%s' "$v"
 }
-AX_COMMIT=$(pin version)
+AX_COMMIT=${AX_COMMIT_OVERRIDE:-$(pin version)}
+[[ "$AX_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "build-args.sh: ax commit $AX_COMMIT: want a full SHA" >&2; exit 1; }
 AX_REPO="https://$(pin source).git"
 # ax's own Go version, from its go.mod at the pin.
 AX_GO_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/$(pin source | sed 's|github.com/||')/$AX_COMMIT/go.mod" | awk '$1 == "go" {print $2; exit}')
