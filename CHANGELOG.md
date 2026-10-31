@@ -26,6 +26,30 @@ release is a tested set of component versions (see "Cutting a release" in
   they rotate (go-steer/purser v0.5.0). Without the flags nothing
   changes, as v0.5 clusters need (#49).
 
+- **Substrate v1.0 and ax on upstream (#49).**
+  - Substrate moves to upstream v1.0.0-rc.1, with images from upstream's
+    registry by digest; the fork and its republished images are no
+    longer needed.
+  - ax and its runner move to the fork's port, 12dbe16, on upstream ax:
+    state in Postgres instead of Redis, one workspace per task, the
+    fork's task fields renumbered.
+  - ax-server, the agent image and the e2e-runner are rebuilt for it.
+    The images workflow's dispatch inputs build them before the pin
+    moves.
+  - `shipmind up` generates ax's Postgres password once (Secret
+    `ax-system/ax-postgres`), and `status` reports it missing.
+  - `up` patches Substrate's atelet to worker nodes and the router's
+    parked-request budget to 60s, which the installer can't set, and
+    `status` checks both.
+  - The task template binds one `workspace` and sets 500m CPU / 1Gi
+    limits; the WorkerPool is `ate.dev/v1` on `ateworker-gvisor`, sized
+    2 CPU / 4Gi a worker.
+  - The nightly scenario reaches the router over mTLS with its pod's
+    certificate.
+  - k8s-lookout v0.43.0 and substrate-scope v0.1.0 (d52a8aa): the ax
+    fork's v1 protos and router mTLS; lookout mounts its pod
+    certificate and the trust bundle, scope's own manifest does.
+
 ### Fixed
 
 - `shipmind scenario run` no longer fails a correct diagnosis when

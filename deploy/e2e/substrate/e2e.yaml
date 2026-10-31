@@ -121,13 +121,20 @@ spec:
               type: RuntimeDefault
           containers:
             - name: run
-              image: ghcr.io/go-steer/shipmind/e2e-runner:95cd6b8f259244777ea91facf5cc443aa097b6f5@sha256:0c7120fc586c204c130573e4ac896f48397057d8b9c7892b29eba0f61e6481e8
+              image: ghcr.io/go-steer/shipmind/e2e-runner:be40f0d15a1318f1e59cceb796a699918d265aa4-ax-12dbe163b207@sha256:472b6bb5751bf94ea34c99107d3161228dfc7b901e388096cd21b02ed1613f1a
               args:
                 - scenario
                 - run
                 - -in-cluster
                 # The agents' atespace; an overlay replaces it (arg 3).
                 - -atespace=ATESPACE
+                # Substrate's router takes only mTLS clients: this pod's
+                # podidentity certificate (its SPIFFE ID,
+                # spiffe://cluster.local/ns/shipmind-e2e/sa/shipmind-e2e,
+                # must be in the router's allowed list), and the
+                # router's trust bundle. Both rotate in place.
+                - -router-cert=/run/podidentity/credential-bundle.pem
+                - -router-trust=/run/servicedns-ca/trust-bundle.pem
                 - /scenarios/missing-env
               securityContext:
                 allowPrivilegeEscalation: false
@@ -140,3 +147,27 @@ spec:
                   memory: 64Mi
                 limits:
                   memory: 256Mi
+              volumeMounts:
+                - name: podidentity
+                  mountPath: /run/podidentity
+                  readOnly: true
+                - name: servicedns-ca
+                  mountPath: /run/servicedns-ca
+                  readOnly: true
+          volumes:
+            - name: podidentity
+              projected:
+                sources:
+                  - podCertificate:
+                      signerName: podidentity.podcert.ate.dev/identity
+                      keyType: ECDSAP256
+                      credentialBundlePath: credential-bundle.pem
+            - name: servicedns-ca
+              projected:
+                sources:
+                  - clusterTrustBundle:
+                      signerName: servicedns.podcert.ate.dev/identity
+                      labelSelector:
+                        matchLabels:
+                          podcert.ate.dev/canarying: live
+                      path: trust-bundle.pem

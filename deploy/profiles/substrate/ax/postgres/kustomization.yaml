@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# ax's Redis, from the fork's deploy/redis.yaml. The fork declares the
-# ax-system Namespace in both of its manifests; ax-server's copy is the
-# one kept.
+# ax's Postgres, from the fork's deploy/postgres.yaml (upstream's,
+# unchanged). Its password is the Secret ax-system/ax-postgres, which
+# `shipmind up` generates once. The fork declares the ax-system
+# Namespace in both of its manifests; ax-server's copy is the one kept.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - ../../../../vendor/ax/deploy/redis
+  - ../../../../vendor/ax/deploy/postgres
 patches:
   - target:
       kind: Namespace

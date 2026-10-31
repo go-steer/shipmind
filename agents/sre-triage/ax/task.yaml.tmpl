@@ -58,7 +58,14 @@ spec:
   # the next follow-up.
   idle:
     suspendAfter: 10m
-  workspaces:
-    - name: {{ printf "%q" .Workspace }}
-      path: /workspace/repo
+  # Substrate books these against the worker's limits (the WorkerPool in
+  # deploy/profiles/substrate/workers sizes workers for three agents);
+  # it requires both.
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  workspace:
+    name: {{ printf "%q" .Workspace }}
+    path: /workspace/repo
   debug: true

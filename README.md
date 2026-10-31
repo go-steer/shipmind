@@ -17,7 +17,7 @@ that they do.
 | [mast-web](https://github.com/go-steer/mast-web) | Web UI for agent sessions and approvals |
 | [switchboard](https://github.com/go-steer/switchboard) | Slack and Google Chat integration |
 | [k8s-lookout](https://github.com/go-steer/k8s-lookout) | Kubernetes event detection and diagnostics |
-| [ax](https://github.com/mastersingh24/ax) + [Agent Substrate](https://github.com/mastersingh24/substrate) | Agents as sandboxed tasks that suspend when idle and wake on demand |
+| [ax](https://github.com/mastersingh24/ax) + [Agent Substrate](https://github.com/agent-substrate/substrate) | Agents as sandboxed tasks that suspend when idle and wake on demand |
 | [substrate-scope](https://github.com/go-steer/substrate-scope) | 3D view of every agent on Substrate |
 
 ## Status

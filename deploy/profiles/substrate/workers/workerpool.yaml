@@ -15,17 +15,18 @@
 # The Substrate workers ax tasks run on: a WorkerPool of gVisor sandbox
 # hosts. Its pods select nodes of a ComputeClass named substrate-workers,
 # which the environment provides: it must label its nodes
-# ate.dev/worker-node=true (Substrate's atelet only runs there) and taint
-# them ate.dev/sandboxClass=gvisor:NoSchedule. A gVisor snapshot restores
-# only on a host with every CPU feature of the host the agent first
-# booted on, so the class must not mix CPU generations it hasn't proven
-# compatible.
+# ate.dev/worker-node=true (`shipmind up` patches Substrate's atelet to
+# run only there) and taint them
+# ate.dev/sandboxClass=gvisor:NoSchedule. The class may mix CPU
+# generations: since v1.0, Substrate restores a memory snapshot only on a
+# worker with the snapshot's CPU features, and otherwise falls back to
+# restoring files only.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: ax-workers
 ---
-apiVersion: ate.dev/v1alpha1
+apiVersion: ate.dev/v1
 kind: WorkerPool
 metadata:
   name: ax-pool
@@ -36,16 +37,23 @@ spec:
   replicas: 4
   sandboxClasses:
     - name: gvisor
-  # Substrate's ateom-gvisor at the pinned version, as shipmind
-  # publishes it. Changing it rolls every worker.
-  workerImage: ghcr.io/go-steer/shipmind/substrate/ateom-gvisor:b52296feb32525869befb16c7128ccafbb79cfe2@sha256:0aac2c562734d0bdaa6b786899a3c2afac156007c5494bb75b38d420d659c77d
+  # Substrate's gVisor worker at the pinned version, from upstream's
+  # registry. Changing it rolls every worker.
+  workerImage: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0-rc.1@sha256:02a31963cdfb1d250d205a55fb870385b1ba5bad1be1308d556a6296f76bf145
   template:
     nodeSelector:
       cloud.google.com/compute-class: substrate-workers
+    # Since v1.0, Substrate books every agent's limits against its
+    # worker's limits (less 64Mi the worker keeps), so the limits here
+    # decide how many agents run at once: an agent asks for 500m and
+    # 1Gi (agents/sre-triage/ax/task.yaml.tmpl), so three per worker,
+    # twelve across the pool. Requests are one agent's worth: an idle
+    # agent uses far less than its limit, and suspended agents book
+    # nothing.
     resources:
       requests:
-        cpu: 300m
-        memory: 384Mi
-      limits:
         cpu: 500m
         memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi

@@ -37,6 +37,7 @@ case "$*" in
   *" get secret "*) [ -f "$d/secret.json" ] && cat "$d/secret.json"; exit 0 ;;
   *" get deployments,daemonsets,statefulsets "*) [ -f "$d/workloads.json" ] && cat "$d/workloads.json"; exit 0 ;;
   *" get namespaces "*) printf 'default\nlab\n'; exit 0 ;;
+  *" get daemonset "*) [ -f "$d/object.json" ] && cat "$d/object.json"; exit 0 ;;
   *" get deployment "*) [ -f "$d/selector.json" ] && cat "$d/selector.json"; exit 0 ;;
   *" get pods "*) echo "$*" > "$d/pods.args"; [ -f "$d/starts.txt" ] && cat "$d/starts.txt"; exit 0 ;;
   *" apply --server-side "*) if [ -f "$d/ssa.fail" ]; then echo "error when applying patch: data: c2VjcmV0" >&2; exit 1; fi; echo applied ;;
@@ -389,5 +390,43 @@ func TestNamespacesError(t *testing.T) {
 	k := Kube{Context: "demo", Kubectl: filepath.Join(t.TempDir(), "no-kubectl")}
 	if _, err := k.Namespaces(context.Background()); err == nil {
 		t.Error("Namespaces with no kubectl succeeded")
+	}
+}
+
+func TestGetAndPatch(t *testing.T) {
+	k, dir := fake(t)
+	ctx := context.Background()
+	if _, found, err := k.Get(ctx, "daemonset", "ate-system", "atelet"); err != nil || found {
+		t.Errorf("absent: found=%v, %v", found, err)
+	}
+	put(t, filepath.Join(dir, "object.json"), `{"kind":"DaemonSet"}`)
+	b, found, err := k.Get(ctx, "daemonset", "ate-system", "atelet")
+	if err != nil || !found || string(b) != `{"kind":"DaemonSet"}` {
+		t.Errorf("Get = %s, %v, %v", b, found, err)
+	}
+	if got := lastArgs(t, dir); got != "--context demo get daemonset -n ate-system atelet --ignore-not-found -o json" {
+		t.Errorf("get args %q", got)
+	}
+	if _, _, err := k.Get(ctx, "Secret", "ns", "s"); err == nil {
+		t.Error("Get read a Secret")
+	}
+
+	if err := k.Patch(ctx, "daemonset", "ate-system", "atelet", "strategic", []byte(`{"spec":{}}`), true); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastArgs(t, dir); got != "--context demo patch daemonset atelet -n ate-system --type=strategic --patch-file=/dev/stdin --dry-run=server" {
+		t.Errorf("patch args %q", got)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "stdin.last")); string(b) != `{"spec":{}}` {
+		t.Errorf("patch stdin %q", b)
+	}
+	if err := k.Patch(ctx, "deployment", "ate-system", "atenet-router", "json", []byte(`[]`), false); err != nil || strings.Contains(lastArgs(t, dir), "dry-run") {
+		t.Errorf("patch: %v, args %q", err, lastArgs(t, dir))
+	}
+	if err := k.Patch(ctx, "deployment", "ns", "x", "merge", nil, false); err == nil {
+		t.Error("merge patch accepted")
+	}
+	if err := k.Patch(ctx, "deployment", "ns", "fail", "json", []byte(`[]`), false); err == nil {
+		t.Error("kubectl failure not returned")
 	}
 }

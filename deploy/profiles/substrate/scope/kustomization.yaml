@@ -33,4 +33,4 @@ patches:
         value: substrate-scope
       - op: replace
         path: /spec/template/spec/containers/0/image
-        value: ghcr.io/go-steer/shipmind/substrate-scope:c2e8f508caade95cfec42e4d54966ade5e7f222f@sha256:1f8c599a49b9806af7944773f9c10ce5dd76fac3e396e2c710fde18913d6825e
+        value: ghcr.io/go-steer/shipmind/substrate-scope:d52a8aab965cc5c4cf0d5e5e6e8e6480447e560a@sha256:751ca05d32a86f6cd8a785d78ae39c2ef2a697752903a4f25f6bec177d60552e

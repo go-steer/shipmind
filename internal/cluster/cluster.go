@@ -66,6 +66,12 @@ type Cluster interface {
 	// Workloads lists every Deployment, DaemonSet and StatefulSet in a
 	// namespace with its images and whether its rollout has finished.
 	Workloads(ctx context.Context, namespace string) ([]Workload, error)
+	// Get returns an object as JSON (kind as kubectl names it), or
+	// found=false. Never for a Secret: use Secret.
+	Get(ctx context.Context, kind, namespace, name string) (json []byte, found bool, err error)
+	// Patch patches an object in place (patchType "strategic" or
+	// "json"); with dryRun the server validates without persisting.
+	Patch(ctx context.Context, kind, namespace, name, patchType string, patch []byte, dryRun bool) error
 	// AxWorkspace returns an ax Workspace as YAML, or found=false.
 	AxWorkspace(ctx context.Context, atespace, name string) (yaml []byte, found bool, err error)
 	// AxApply applies ax resources in an atespace.
@@ -185,6 +191,34 @@ func (k Kube) ObjectUpdated(ctx context.Context, kind, namespace, name string) (
 		return time.Time{}, false, err
 	}
 	return latest(out)
+}
+
+// Get implements Cluster.
+func (k Kube) Get(ctx context.Context, kind, namespace, name string) ([]byte, bool, error) {
+	if strings.EqualFold(kind, "secret") || strings.EqualFold(kind, "secrets") {
+		return nil, false, errors.New("cluster: Get never reads Secrets")
+	}
+	out, _, err := k.run(ctx, k.kubectl(), nil, "get", kind, "-n", namespace, name, "--ignore-not-found", "-o", "json")
+	if err != nil {
+		return nil, false, err
+	}
+	if len(bytes.TrimSpace(out)) == 0 {
+		return nil, false, nil
+	}
+	return out, true, nil
+}
+
+// Patch implements Cluster.
+func (k Kube) Patch(ctx context.Context, kind, namespace, name, patchType string, patch []byte, dryRun bool) error {
+	if patchType != "strategic" && patchType != "json" {
+		return fmt.Errorf("cluster: patch type %q: want strategic or json", patchType)
+	}
+	args := []string{"patch", kind, name, "-n", namespace, "--type=" + patchType, "--patch-file=/dev/stdin"}
+	if dryRun {
+		args = append(args, "--dry-run=server")
+	}
+	_, _, err := k.run(ctx, k.kubectl(), patch, args...)
+	return err
 }
 
 func latest(out []byte) (time.Time, bool, error) {

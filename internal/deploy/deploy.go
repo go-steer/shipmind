@@ -24,6 +24,8 @@ package deploy
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"reflect"
 	"slices"
@@ -204,6 +206,18 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 			add(agentWhat, d)
 		}
 	}
+	for _, g := range generatedSecrets {
+		if !g.wanted(p.Objects) {
+			continue
+		}
+		ok, err := g.present(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			add(g.what(), "missing (up generates "+g.Why+")")
+		}
+	}
 	for _, sr := range startupReaders {
 		stale, err := sr.stale(ctx, c)
 		if err != nil {
@@ -218,6 +232,9 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		return nil, err
 	}
 	if err := substrateStatus(ctx, p, c, add); err != nil {
+		return nil, err
+	}
+	if err := substratePatchStatus(ctx, p, c, add); err != nil {
 		return nil, err
 	}
 
@@ -447,6 +464,52 @@ func sortedKeys(m map[string]render.Objects) []string {
 
 // startupReader is a Deployment that reads an object only when it
 // starts, so a change to the object needs a restart to take effect.
+// generatedSecret is a Secret the render references but no manifest
+// carries, because its value is secret: up creates it once, with a
+// random value, and never rotates it. Only when the render holds the
+// workload that reads it.
+type generatedSecret struct {
+	Namespace, Name, Key string
+	// For is the workload that reads it, as "<Kind>/<name>" in Namespace.
+	ForKind, ForName string
+	Why              string
+}
+
+var generatedSecrets = []generatedSecret{
+	// Postgres takes its password on first boot and keeps it in its
+	// volume, so a new value would lock ax-server out.
+	{Namespace: "ax-system", Name: "ax-postgres", Key: "password", ForKind: "StatefulSet", ForName: "ax-postgres",
+		Why: "ax's Postgres password"},
+}
+
+func (g generatedSecret) what() string { return "secret " + g.Namespace + "/" + g.Name }
+
+// wanted reports whether the render runs the workload that reads it.
+func (g generatedSecret) wanted(objs render.Objects) bool {
+	_, ok := objs.Find(g.ForKind, g.Namespace, g.ForName)
+	return ok
+}
+
+// present reports whether the cluster holds the Secret with its key set.
+func (g generatedSecret) present(ctx context.Context, c cluster.Cluster) (bool, error) {
+	data, ok, err := c.Secret(ctx, g.Namespace, g.Name)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", g.what(), err)
+	}
+	return ok && len(data[g.Key]) > 0, nil
+}
+
+// randomSecret is a new value for a generated Secret: 32 random bytes,
+// hex, so it needs no quoting anywhere it lands (a connection string, a
+// shell).
+func randomSecret() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 type startupReader struct {
 	Kind, Namespace, Name string // the object, kind as kubectl names it
 	Deployment            string // in Namespace
@@ -610,6 +673,23 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 		return err
 	}
 	templateChanged := compareAgentSecret(liveAgent, task, t) != ""
+	patches, err := neededPatches(ctx, p, c, log)
+	if err != nil {
+		return err
+	}
+	var generate []generatedSecret
+	for _, g := range generatedSecrets {
+		if !g.wanted(p.Objects) {
+			continue
+		}
+		ok, err := g.present(ctx, c)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			generate = append(generate, g)
+		}
+	}
 	// The Workspace is reconciled last, through ax, which on a fresh
 	// cluster only exists once the objects below have rolled out. When ax
 	// is already up, ask it now anyway, so a broken ax CLI or connection
@@ -658,12 +738,29 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 	} else if !secretsPending {
 		log("task template in secret %s/%s unchanged", Namespace, AgentSecret)
 	}
+	for _, g := range generate {
+		if opts.DryRun && nsPending[g.Namespace] != nil {
+			log("%s (%s) would be generated in namespace %s, which the run creates (not validated; dry run)", g.what(), g.Why, g.Namespace)
+			continue
+		}
+		v, err := randomSecret()
+		if err != nil {
+			return err
+		}
+		if err := c.ApplySecret(ctx, cluster.SecretManifest(g.Namespace, g.Name, map[string][]byte{g.Key: []byte(v)}), opts.DryRun); err != nil {
+			return fmt.Errorf("%s: %w", g.what(), err)
+		}
+		log("%s generated (%s)%s", g.what(), g.Why, dry(opts.DryRun))
+	}
 	if len(rest) > 0 {
 		out, err := c.Apply(ctx, []byte(restYAML), opts.DryRun)
 		if err != nil {
 			return err
 		}
 		log("applied %d objects%s\n%s", len(rest), dry(opts.DryRun), strings.TrimRight(out, "\n"))
+	}
+	if err := applyPatches(ctx, c, patches, opts.DryRun, log); err != nil {
+		return err
 	}
 	if opts.DryRun {
 		if templateChanged {

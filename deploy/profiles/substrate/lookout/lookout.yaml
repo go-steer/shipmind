@@ -77,7 +77,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: lookout
-          image: ghcr.io/go-steer/lookout:v0.36.0-gke@sha256:5b950c8fad9f5c2a61a532f99bf9a0b3da2a0c33cb0e52129f59cf93d9321cd8
+          image: ghcr.io/go-steer/lookout:v0.43.0-gke@sha256:71c1332f48311012e4194ebebca5a34b6c51f32160562a29d794a2a51207fe5e
           args:
             - --in-cluster
             # An environment overlay replaces these two (args 1 and 2).
@@ -103,6 +103,19 @@ spec:
             - name: agent
               mountPath: /etc/lookout-ax
               readOnly: true
+            # Substrate's router takes only mTLS clients: lookout presents
+            # this pod's podidentity certificate (its SPIFFE ID,
+            # spiffe://cluster.local/ns/lookout-ax/sa/lookout-ax, must be
+            # in the router's allowed list) and verifies the router
+            # against the servicedns trust bundle. lookout's
+            # --ax-router-* flags default to these paths, and it refuses
+            # to start without the files.
+            - name: podidentity
+              mountPath: /run/podidentity.podcert.ate.dev
+              readOnly: true
+            - name: servicedns-ca
+              mountPath: /run/servicedns-ca
+              readOnly: true
           resources:
             requests:
               cpu: 50m
@@ -117,3 +130,19 @@ spec:
             items:
               - key: task.yaml
                 path: task.yaml
+        - name: podidentity
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+        - name: servicedns-ca
+          projected:
+            sources:
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem

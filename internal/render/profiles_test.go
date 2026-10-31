@@ -130,48 +130,70 @@ func TestProfileImagesArePinned(t *testing.T) {
 	}
 }
 
-// ax keeps every task and workspace record in Redis. Without a volume
-// and an append-only log, a Redis restart erases them all (the
-// 2026-10-19 outage).
-func TestSubstrateAxRedisPersists(t *testing.T) {
+// ax keeps every task and workspace record in Postgres. Without a
+// volume, a Postgres restart erases them all (Redis did, on 2026-10-19).
+// Postgres and ax-server both read the password from the Secret `shipmind
+// up` generates (internal/deploy's generatedSecrets).
+func TestSubstrateAxPostgresPersists(t *testing.T) {
 	objs := build(t, filepath.Join(profilesDir, "substrate", "ax"))
 
-	if _, ok := objs.Find("PersistentVolumeClaim", "ax-system", "ax-redis-data"); !ok {
-		t.Error("no PersistentVolumeClaim ax-system/ax-redis-data")
-	}
-	d, ok := objs.Find("Deployment", "ax-system", "ax-redis")
+	sts, ok := objs.Find("StatefulSet", "ax-system", "ax-postgres")
 	if !ok {
-		t.Fatal("no Deployment ax-system/ax-redis")
+		t.Fatal("no StatefulSet ax-system/ax-postgres")
 	}
-	spec, err := d.Pipe(yaml.Lookup("spec", "template", "spec"))
+	templates, err := sts.Pipe(yaml.Lookup("spec", "volumeClaimTemplates"))
+	if err != nil || templates == nil {
+		t.Fatalf("no volume claim templates (%v)", err)
+	}
+	claims, err := templates.Elements()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range claims {
+		name, _ := c.Pipe(yaml.Lookup("metadata", "name"))
+		storage, _ := c.Pipe(yaml.Lookup("spec", "resources", "requests", "storage"))
+		if yaml.GetValue(name) == "data" && storage != nil && yaml.GetValue(storage) != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("no volume claim template data with a storage request")
+	}
+	spec, err := sts.Pipe(yaml.Lookup("spec", "template", "spec"))
 	if err != nil || spec == nil {
 		t.Fatalf("pod spec: %v", err)
 	}
+	mount, err := spec.Pipe(yaml.Lookup("containers", "[name=postgres]", "volumeMounts", "[name=data]", "mountPath"))
+	if err != nil || mount == nil || yaml.GetValue(mount) != "/var/lib/postgresql/data" {
+		t.Errorf("volume data is not mounted at /var/lib/postgresql/data (%v)", err)
+	}
+	pgdata, err := spec.Pipe(yaml.Lookup("containers", "[name=postgres]", "env", "[name=PGDATA]", "value"))
+	if err != nil || pgdata == nil || !strings.HasPrefix(yaml.GetValue(pgdata), "/var/lib/postgresql/data/") {
+		t.Errorf("PGDATA is not a directory on the data volume (%v)", err)
+	}
 
-	claim, err := spec.Pipe(yaml.Lookup("volumes", "[name=data]", "persistentVolumeClaim", "claimName"))
-	if err != nil || claim == nil || yaml.GetValue(claim) != "ax-redis-data" {
-		t.Errorf("volume data is not the ax-redis-data claim (%v)", err)
+	d, ok := objs.Find("Deployment", "ax-system", "ax-server")
+	if !ok {
+		t.Fatal("no Deployment ax-system/ax-server")
 	}
-	mount, err := spec.Pipe(yaml.Lookup("containers", "[name=redis]", "volumeMounts", "[name=data]", "mountPath"))
-	if err != nil || mount == nil || yaml.GetValue(mount) != "/data" {
-		t.Errorf("volume data is not mounted at /data (%v)", err)
-	}
-	argsNode, err := spec.Pipe(yaml.Lookup("containers", "[name=redis]", "args"))
-	if err != nil || argsNode == nil {
-		t.Fatalf("redis args: %v", err)
-	}
-	elems, err := argsNode.Elements()
-	if err != nil {
-		t.Fatalf("redis args: %v", err)
-	}
-	var args []string
-	for _, e := range elems {
-		args = append(args, yaml.GetValue(e))
-	}
-	joined := " " + strings.Join(args, " ") + " "
-	for _, want := range []string{" --appendonly yes ", " --dir /data "} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("redis args %v lack %q", args, strings.TrimSpace(want))
+	for _, c := range []struct {
+		obj       *yaml.RNode
+		container string
+		env       string
+	}{
+		{sts.RNode, "postgres", "POSTGRES_PASSWORD"},
+		{d.RNode, "ax-server", "PGPASSWORD"},
+	} {
+		ref, err := c.obj.Pipe(yaml.Lookup("spec", "template", "spec", "containers", "[name="+c.container+"]", "env", "[name="+c.env+"]", "valueFrom", "secretKeyRef"))
+		if err != nil || ref == nil {
+			t.Errorf("%s: %s is not from a Secret (%v)", c.container, c.env, err)
+			continue
+		}
+		name, _ := ref.Pipe(yaml.Lookup("name"))
+		key, _ := ref.Pipe(yaml.Lookup("key"))
+		if yaml.GetValue(name) != "ax-postgres" || yaml.GetValue(key) != "password" {
+			t.Errorf("%s: %s reads %s/%s, want ax-postgres/password", c.container, c.env, yaml.GetValue(name), yaml.GetValue(key))
 		}
 	}
 }
@@ -347,5 +369,43 @@ func TestProfileWorkerImagesArePinned(t *testing.T) {
 	}
 	if seen == 0 {
 		t.Error("no WorkerPool in any profile")
+	}
+}
+
+// Substrate's router takes only mTLS clients (v1.0). Each of its clients
+// in the substrate profile, and the nightly scenario, mounts the pod's
+// podidentity certificate and the servicedns trust bundle, both as
+// projected volumes, and its SPIFFE ID goes in the install's allowlist.
+func TestSubstrateRouterClientsMountMTLS(t *testing.T) {
+	type client struct{ dir, kind, ns, name string }
+	for _, c := range []client{
+		{filepath.Join(profilesDir, "substrate"), "Deployment", "ax-system", "ax-server"},
+		{filepath.Join(profilesDir, "substrate"), "Deployment", "lookout-ax", "lookout-ax"},
+		{filepath.Join(profilesDir, "substrate"), "Deployment", "substrate-scope", "substrate-scope"},
+		{filepath.Join(profilesDir, "..", "e2e", "substrate"), "CronJob", "shipmind-e2e", "missing-env"},
+	} {
+		o, ok := build(t, c.dir).Find(c.kind, c.ns, c.name)
+		if !ok {
+			t.Errorf("no %s %s/%s in %s", c.kind, c.ns, c.name, c.dir)
+			continue
+		}
+		path := []string{"spec", "template", "spec", "volumes"}
+		if c.kind == "CronJob" {
+			path = []string{"spec", "jobTemplate", "spec", "template", "spec", "volumes"}
+		}
+		vols, err := o.Pipe(yaml.Lookup(path...))
+		if err != nil || vols == nil {
+			t.Errorf("%s %s: no volumes (%v)", c.kind, c.name, err)
+			continue
+		}
+		s, err := vols.String()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"podCertificate:", "signerName: podidentity.podcert.ate.dev/identity", "clusterTrustBundle:", "signerName: servicedns.podcert.ate.dev/identity"} {
+			if !strings.Contains(s, want) {
+				t.Errorf("%s %s/%s: volumes lack %q", c.kind, c.ns, c.name, want)
+			}
+		}
 	}
 }
