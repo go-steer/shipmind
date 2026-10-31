@@ -798,7 +798,9 @@ func TestAxNotUpYet(t *testing.T) {
 		want      string
 	}{
 		{"absent", nil, "missing (ax is not deployed yet)"},
-		{"not ready", []cluster.Workload{{ID: "Deployment/ax-system/ax-server", Current: false}}, "unknown (ax-server's rollout hasn't finished)"},
+		{"not ready", []cluster.Workload{{ID: "Deployment/ax-system/ax-server", Current: false}}, "unknown (ax-server isn't serving: its rollout hasn't finished, or no pod is available)"},
+		// Scaled to zero, as a cutover leaves it: current, with no pod.
+		{"scaled to zero", []cluster.Workload{{ID: "Deployment/ax-system/ax-server", Current: true}}, "unknown (ax-server isn't serving: its rollout hasn't finished, or no pod is available)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := &fakeCluster{secrets: map[string]map[string][]byte{}, workloads: map[string][]cluster.Workload{"ax-system": tc.workloads}}
@@ -824,7 +826,7 @@ func TestAxNotUpYet(t *testing.T) {
 // With ax up, a broken ax fails up before anything is written; a
 // Workspace failure after the writes says where things stand.
 func TestUpAxFailures(t *testing.T) {
-	ready := map[string][]cluster.Workload{"ax-system": {{ID: "Deployment/ax-system/ax-server", Current: true}}}
+	ready := map[string][]cluster.Workload{"ax-system": {{ID: "Deployment/ax-system/ax-server", Current: true, Available: 1}}}
 	c := &fakeCluster{secrets: map[string]map[string][]byte{}, workloads: ready, failOn: "axget"}
 	err := Up(context.Background(), freshPlan(t), c, UpOptions{})
 	if err == nil || !strings.Contains(err.Error(), "nothing written yet") || len(writes(c.ops)) != 0 {

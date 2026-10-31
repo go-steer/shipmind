@@ -315,7 +315,10 @@ func TestWorkloads(t *testing.T) {
 	   "status":{"observedGeneration":5,"replicas":3,"updatedReplicas":2}},
 	  {"kind":"Deployment","metadata":{"name":"one","namespace":"ate-system","generation":1},
 	   "spec":{"template":{"spec":{"containers":[{"image":"one:1"}]}}},
-	   "status":{"observedGeneration":1,"replicas":1,"updatedReplicas":1}},
+	   "status":{"observedGeneration":1,"replicas":1,"updatedReplicas":1,"availableReplicas":1}},
+	  {"kind":"Deployment","metadata":{"name":"zero","namespace":"ate-system","generation":2},
+	   "spec":{"replicas":0,"template":{"spec":{"containers":[{"image":"zero:1"}]}}},
+	   "status":{"observedGeneration":2}},
 	  {"kind":"StatefulSet","metadata":{"name":"pg","namespace":"ate-system","generation":2},
 	   "spec":{"replicas":1,"template":{"spec":{"containers":[{"image":"pg:1"}]}}},
 	   "status":{"observedGeneration":1,"updatedReplicas":1,"currentRevision":"a","updateRevision":"a"}}]}`)
@@ -335,8 +338,12 @@ func TestWorkloads(t *testing.T) {
 		t.Errorf("api with an old pod left = %+v, want not current", w)
 	}
 	// replicas defaults to 1.
-	if w := got["Deployment/ate-system/one"]; !w.Current {
-		t.Errorf("one = %+v, want current", w)
+	if w := got["Deployment/ate-system/one"]; !w.Current || w.Available != 1 {
+		t.Errorf("one = %+v, want current with one available", w)
+	}
+	// Scaled to zero: current, and nothing available.
+	if w := got["Deployment/ate-system/zero"]; !w.Current || w.Available != 0 {
+		t.Errorf("zero = %+v, want current with none available", w)
 	}
 	// The controller hasn't seen generation 2.
 	if w := got["StatefulSet/ate-system/pg"]; w.Current {

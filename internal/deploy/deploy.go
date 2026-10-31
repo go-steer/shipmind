@@ -248,7 +248,7 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		add(wsWhat, "missing (ax is not deployed yet)")
 		return r, nil
 	case axNotReady:
-		add(wsWhat, "unknown (ax-server's rollout hasn't finished)")
+		add(wsWhat, "unknown (ax-server isn't serving: its rollout hasn't finished, or no pod is available)")
 		return r, nil
 	}
 	live, ok, err := c.AxWorkspace(ctx, p.Env.Agent.Atespace, p.Env.Agent.Workspace)
@@ -421,7 +421,7 @@ const AxServer = "ax-server"
 const (
 	axReady    = "ready"
 	axAbsent   = "absent"    // not deployed yet: a fresh cluster, or a first up that stopped early
-	axNotReady = "not ready" // deployed, but its rollout hasn't finished
+	axNotReady = "not ready" // deployed, but rolling out or with no available pod
 )
 
 // axState says whether ax can be asked anything: ax-server exists and
@@ -442,7 +442,9 @@ func axState(ctx context.Context, objs render.Objects, pending map[string]render
 		}
 		for _, w := range ws {
 			if w.ID == "Deployment/"+ns+"/"+AxServer {
-				if !w.Current {
+				// Scaled to zero (as a cutover leaves it), it is current
+				// with no pod to answer.
+				if !w.Current || w.Available == 0 {
 					return axNotReady, nil
 				}
 				return axReady, nil
@@ -462,8 +464,6 @@ func sortedKeys(m map[string]render.Objects) []string {
 	return keys
 }
 
-// startupReader is a Deployment that reads an object only when it
-// starts, so a change to the object needs a restart to take effect.
 // generatedSecret is a Secret the render references but no manifest
 // carries, because its value is secret: up creates it once, with a
 // random value, and never rotates it. Only when the render holds the
@@ -510,6 +510,8 @@ func randomSecret() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// startupReader is a Deployment that reads an object only when it
+// starts, so a change to the object needs a restart to take effect.
 type startupReader struct {
 	Kind, Namespace, Name string // the object, kind as kubectl names it
 	Deployment            string // in Namespace

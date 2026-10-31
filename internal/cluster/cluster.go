@@ -280,6 +280,9 @@ type Workload struct {
 	// A stuck rollout keeps the new template but runs the old pods, so
 	// the template alone can't say what runs.
 	Current bool
+	// Available is how many of a Deployment's pods are available (zero
+	// for other kinds): a Deployment scaled to zero is current with none.
+	Available int64
 }
 
 // Workloads implements Cluster.
@@ -314,6 +317,7 @@ func parseWorkloads(out []byte) ([]Workload, error) {
 				ObservedGeneration     int64  `json:"observedGeneration"`
 				Replicas               int64  `json:"replicas"`
 				UpdatedReplicas        int64  `json:"updatedReplicas"`
+				AvailableReplicas      int64  `json:"availableReplicas"`
 				DesiredNumberScheduled int64  `json:"desiredNumberScheduled"`
 				UpdatedNumberScheduled int64  `json:"updatedNumberScheduled"`
 				CurrentRevision        string `json:"currentRevision"`
@@ -342,6 +346,7 @@ func parseWorkloads(out []byte) ([]Workload, error) {
 		switch it.Kind {
 		case "Deployment":
 			w.Current = seen && st.UpdatedReplicas == want && st.Replicas == want
+			w.Available = st.AvailableReplicas
 		case "DaemonSet":
 			w.Current = seen && st.UpdatedNumberScheduled == st.DesiredNumberScheduled
 		case "StatefulSet":
