@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,10 @@ type fakeCluster struct {
 	rollouts      []string
 	deleted       string
 	failOn        string
+	// objects are what Get returns, "kind/ns/name" to JSON; patches
+	// records each Patch, applied to nothing.
+	objects map[string]string
+	patches []string
 }
 
 func (f *fakeCluster) fail(op string) error {
@@ -206,6 +211,27 @@ func (f *fakeCluster) Workloads(_ context.Context, ns string) ([]cluster.Workloa
 func (f *fakeCluster) AxWorkspace(context.Context, string, string) ([]byte, bool, error) {
 	f.ops = append(f.ops, "ax get")
 	return f.workspace, f.workspace != nil, f.fail("axget")
+}
+
+func (f *fakeCluster) Get(_ context.Context, kind, ns, name string) ([]byte, bool, error) {
+	if err := f.fail("get"); err != nil {
+		return nil, false, err
+	}
+	o, ok := f.objects[kind+"/"+ns+"/"+name]
+	return []byte(o), ok, nil
+}
+
+func (f *fakeCluster) Patch(_ context.Context, kind, ns, name, typ string, patch []byte, dryRun bool) error {
+	if err := f.fail("patch"); err != nil {
+		return err
+	}
+	if dryRun {
+		f.dryRuns++
+		return nil
+	}
+	f.patches = append(f.patches, kind+"/"+ns+"/"+name+" "+typ+" "+string(patch))
+	f.ops = append(f.ops, "patch "+kind+"/"+name)
+	return nil
 }
 
 func (f *fakeCluster) AxApply(_ context.Context, _ string, m []byte) error {
@@ -890,5 +916,231 @@ func TestCredentialProviderPolicy(t *testing.T) {
 	}
 	if !contains(c.ops, "restart ate-system/k8s-credential-provider") {
 		t.Errorf("a provider left stale by an interrupted up was not restarted: %v", c.ops)
+	}
+}
+
+func postgresPlan(t *testing.T) *Plan {
+	t.Helper()
+	p := plan(t)
+	objs, err := render.Build("testdata/postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Objects = objs
+	return p
+}
+
+// ax's Postgres password: generated once by up, reported missing by
+// status, and only when the render runs Postgres.
+func TestGeneratedSecret(t *testing.T) {
+	ctx := context.Background()
+	c := inSync(t)
+	r, err := Status(ctx, postgresPlan(t), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Changes) != 1 || r.Changes[0].What != "secret ax-system/ax-postgres" || !strings.Contains(r.Changes[0].Detail, "missing") {
+		t.Fatalf("changes %+v", r.Changes)
+	}
+	if r, err := Status(ctx, plan(t), c); err != nil || len(r.Changes) != 0 {
+		t.Errorf("without Postgres: %+v, %v", r, err)
+	}
+
+	if err := Up(ctx, postgresPlan(t), c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var secret string
+	for _, m := range c.applied {
+		if strings.Contains(m, "kind: Secret") && strings.Contains(m, "name: ax-postgres") {
+			secret = m
+		}
+	}
+	if !contains(writes(c.ops), "secret ax-postgres") || !strings.Contains(secret, "namespace: ax-system") {
+		t.Fatalf("ops %v\napplied %v", c.ops, c.applied)
+	}
+	// The value: 64 hex characters, base64 in the manifest.
+	var value string
+	for _, line := range strings.Split(secret, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "password: "); ok {
+			b, err := base64.StdEncoding.DecodeString(strings.Trim(v, `"`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			value = string(b)
+		}
+	}
+	if len(value) != 64 || strings.Trim(value, "0123456789abcdef") != "" {
+		t.Errorf("password %q", value)
+	}
+
+	// Present: never rewritten (a new value would lock ax-server out).
+	c = inSync(t)
+	c.secrets["ax-system/ax-postgres"] = map[string][]byte{"password": []byte("kept")}
+	if r, err := Status(ctx, postgresPlan(t), c); err != nil || len(r.Changes) != 0 {
+		t.Errorf("present: %+v, %v", r, err)
+	}
+	if err := Up(ctx, postgresPlan(t), c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if contains(writes(c.ops), "secret ax-postgres") {
+		t.Errorf("rewrote a present password: %v", c.ops)
+	}
+	// An empty key counts as missing.
+	c = inSync(t)
+	c.secrets["ax-system/ax-postgres"] = map[string][]byte{"password": nil}
+	if r, err := Status(ctx, postgresPlan(t), c); err != nil || len(r.Changes) != 1 {
+		t.Errorf("empty key: %+v, %v", r, err)
+	}
+
+	// A dry run into a namespace the run creates says so and writes nothing.
+	c = inSync(t)
+	c.missingNS = []string{"ax-system"}
+	var log []string
+	if err := Up(ctx, postgresPlan(t), c, UpOptions{DryRun: true, Log: func(f string, a ...any) { log = append(log, fmt.Sprintf(f, a...)) }}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(log, "\n"), "secret ax-system/ax-postgres (ax's Postgres password) would be generated in namespace ax-system") || c.dryRuns == 0 {
+		t.Errorf("dry run log %v", log)
+	}
+	// A dry run into an existing namespace validates the Secret.
+	c = inSync(t)
+	before := c.dryRuns
+	if err := Up(ctx, postgresPlan(t), c, UpOptions{DryRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	if c.dryRuns <= before || len(c.applied) != 0 {
+		t.Errorf("dry run: %d dry runs, applied %v", c.dryRuns, c.applied)
+	}
+
+	// Errors reading or writing it stop the run.
+	c = inSync(t)
+	c.failOn = "applysecret"
+	if err := Up(ctx, postgresPlan(t), c, UpOptions{}); err == nil || !strings.Contains(err.Error(), "secret ax-system/ax-postgres") {
+		t.Errorf("apply failure: %v", err)
+	}
+}
+
+const (
+	ateletBare   = `{"spec":{"template":{"spec":{"containers":[{"name":"atelet"}]}}}}`
+	ateletPinned = `{"spec":{"template":{"spec":{"nodeSelector":{"ate.dev/worker-node":"true"},"containers":[{"name":"atelet"}]}}}}`
+	routerBare   = `{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":60,"containers":[{"name":"atenet-router","args":["router","--drain-delay=13s"]}]}}}}`
+	routerParked = `{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":120,"containers":[{"name":"atenet-router","args":["router","--parked-request-budget=60s"]}]}}}}`
+)
+
+func substratePlan(t *testing.T) *Plan {
+	t.Helper()
+	p := plan(t)
+	p.Env.Substrate = &env.Substrate{Images: "r.example.com/substrate", Tag: "v1", Namespaces: []string{"ate-system"}}
+	return p
+}
+
+// Substrate's installer has no setting for atelet's node pin or the
+// router's parked-request budget: up patches them in, status checks them.
+func TestSubstratePatches(t *testing.T) {
+	ctx := context.Background()
+	patched := func(c *fakeCluster) []string {
+		t.Helper()
+		var w []string
+		r, err := Status(ctx, substratePlan(t), c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ch := range r.Changes {
+			if strings.Contains(ch.Detail, "lacks shipmind's patch") {
+				w = append(w, ch.What)
+			}
+		}
+		return w
+	}
+
+	c := inSync(t)
+	c.objects = map[string]string{"daemonset/ate-system/atelet": ateletBare, "deployment/ate-system/atenet-router": routerBare}
+	if got := patched(c); strings.Join(got, ",") != "substrate DaemonSet/ate-system/atelet,substrate Deployment/ate-system/atenet-router" {
+		t.Errorf("status before: %v", got)
+	}
+	// Without a substrate section, Substrate isn't shipmind's to check.
+	if r, err := Status(ctx, plan(t), c); err != nil || len(r.Changes) != 0 {
+		t.Errorf("no substrate section: %+v, %v", r, err)
+	}
+
+	if err := Up(ctx, substratePlan(t), c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.patches) != 2 || !strings.HasPrefix(c.patches[0], "daemonset/ate-system/atelet strategic ") ||
+		!strings.Contains(c.patches[1], `"value":"--parked-request-budget=60s"`) || !strings.Contains(c.patches[1], `"op":"test"`) {
+		t.Errorf("patches %v", c.patches)
+	}
+	// Patched after the rendered objects, before the rollouts are awaited.
+	if w := writes(c.ops); slices.Index(w, "apply Deployment") >= slices.Index(w, "patch daemonset/atelet") {
+		t.Errorf("order %v", c.ops)
+	}
+
+	// Applied: nothing to do, nothing reported (the router's check
+	// keeps the JSON patch from adding the argument twice).
+	c = inSync(t)
+	c.objects = map[string]string{"daemonset/ate-system/atelet": ateletPinned, "deployment/ate-system/atenet-router": routerParked}
+	if got := patched(c); len(got) != 0 {
+		t.Errorf("status after: %v", got)
+	}
+	if err := Up(ctx, substratePlan(t), c, UpOptions{}); err != nil || len(c.patches) != 0 {
+		t.Errorf("up after: %v, %v", c.patches, err)
+	}
+	// Half applied (argument there, grace period not): patched again.
+	c.objects["deployment/ate-system/atenet-router"] = strings.Replace(routerParked, ":120,", ":60,", 1)
+	if got := patched(c); len(got) != 1 {
+		t.Errorf("half applied: %v", got)
+	}
+
+	// Not installed: nothing to patch, and status leaves it to the
+	// workload check.
+	c = inSync(t)
+	var log []string
+	if err := Up(ctx, substratePlan(t), c, UpOptions{Log: func(f string, a ...any) { log = append(log, fmt.Sprintf(f, a...)) }}); err != nil || len(c.patches) != 0 {
+		t.Errorf("not installed: %v, %v", c.patches, err)
+	}
+	if !strings.Contains(strings.Join(log, "\n"), "substrate DaemonSet/ate-system/atelet: not installed, so not patched") {
+		t.Errorf("log %v", log)
+	}
+
+	// A dry run validates the patches and writes nothing.
+	c = inSync(t)
+	c.objects = map[string]string{"daemonset/ate-system/atelet": ateletBare}
+	if err := Up(ctx, substratePlan(t), c, UpOptions{DryRun: true}); err != nil || len(c.patches) != 0 || c.dryRuns == 0 {
+		t.Errorf("dry run: %v, %d, %v", c.patches, c.dryRuns, err)
+	}
+
+	// A conflicting budget needs a person: refused before anything is
+	// written.
+	c = inSync(t)
+	c.objects = map[string]string{"deployment/ate-system/atenet-router": strings.Replace(routerBare, `"--drain-delay=13s"`, `"--parked-request-budget=30s"`, 1)}
+	if err := Up(ctx, substratePlan(t), c, UpOptions{}); err == nil || !strings.Contains(err.Error(), "already sets --parked-request-budget=30s") || len(writes(c.ops)) != 0 {
+		t.Errorf("conflict: %v, ops %v", err, c.ops)
+	}
+	if _, err := Status(ctx, substratePlan(t), c); err == nil {
+		t.Error("status with a conflicting budget succeeded")
+	}
+	// So does a router whose first container isn't the router.
+	c.objects["deployment/ate-system/atenet-router"] = strings.Replace(routerBare, `"name":"atenet-router"`, `"name":"envoy"`, 1)
+	if _, err := Status(ctx, substratePlan(t), c); err == nil || !strings.Contains(err.Error(), "first container is not atenet-router") {
+		t.Errorf("wrong container: %v", err)
+	}
+	// Unreadable objects and failed patches stop the run.
+	c.objects["deployment/ate-system/atenet-router"] = "{"
+	if _, err := Status(ctx, substratePlan(t), c); err == nil {
+		t.Error("bad JSON accepted")
+	}
+	c.objects = map[string]string{"daemonset/ate-system/atelet": "{"}
+	if _, err := Status(ctx, substratePlan(t), c); err == nil {
+		t.Error("bad atelet JSON accepted")
+	}
+	c = inSync(t)
+	c.objects = map[string]string{"daemonset/ate-system/atelet": ateletBare}
+	c.failOn = "patch"
+	if err := Up(ctx, substratePlan(t), c, UpOptions{}); err == nil || !strings.Contains(err.Error(), "substrate DaemonSet/ate-system/atelet") {
+		t.Errorf("patch failure: %v", err)
+	}
+	c.failOn = "get"
+	if _, err := Status(ctx, substratePlan(t), c); err == nil {
+		t.Error("get failure not returned")
 	}
 }

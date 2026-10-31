@@ -54,11 +54,14 @@ func TestTask(t *testing.T) {
 	var task struct {
 		Metadata struct{ Atespace string } `yaml:"metadata"`
 		Spec     struct {
-			Image      string
-			Command    []string
-			Env        []struct{ Name, Value string }
-			Workspaces []struct{ Name, Path string }
-			HTTP       struct{ Port int } `yaml:"http"`
+			Image     string
+			Command   []string
+			Env       []struct{ Name, Value string }
+			Workspace struct{ Name, Path string }
+			Resources struct {
+				Limits struct{ CPU, Memory string } `yaml:"limits"`
+			} `yaml:"resources"`
+			HTTP struct{ Port int } `yaml:"http"`
 		} `yaml:"spec"`
 	}
 	if err := yaml.Unmarshal(b, &task); err != nil {
@@ -77,8 +80,11 @@ func TestTask(t *testing.T) {
 		t.Errorf("project %q", envs["GOOGLE_CLOUD_PROJECT"])
 	case envs["MAST_INJECT_TOKEN"] != tok.Inject || envs["MAST_ATTACH_TOKEN"] != tok.Attach:
 		t.Errorf("tokens %v", envs)
-	case len(task.Spec.Workspaces) != 1 || task.Spec.Workspaces[0].Name != "demo-ws":
-		t.Errorf("workspaces %v", task.Spec.Workspaces)
+	case task.Spec.Workspace.Name != "demo-ws" || task.Spec.Workspace.Path != "/workspace/repo":
+		t.Errorf("workspace %+v", task.Spec.Workspace)
+	case task.Spec.Resources.Limits.CPU == "" || task.Spec.Resources.Limits.Memory == "":
+		// Substrate v1.0 refuses an actor without both.
+		t.Errorf("resources %+v", task.Spec.Resources)
 	case task.Spec.HTTP.Port != 8484:
 		t.Errorf("http.port %d", task.Spec.HTTP.Port)
 	}

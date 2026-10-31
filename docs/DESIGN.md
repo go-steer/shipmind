@@ -59,7 +59,7 @@ site. A monorepo was considered and rejected (see
 | switchboard | go-steer/switchboard | Chat integration (Slack, Google Chat): digests, approvals, and, with ax, starting agents per thread. |
 | k8s-lookout | go-steer/k8s-lookout | Kubernetes event detection and diagnostics. Opens an incident and hands it to an agent. |
 | ax | mastersingh24/ax (fork of google/ax) | Task orchestrator: one task per agent, run as an Agent Substrate actor, suspended when idle. |
-| Agent Substrate | mastersingh24/substrate (fork) | gVisor sandboxes with snapshot, suspend and wake; per-actor egress policy and credential injection. |
+| Agent Substrate | agent-substrate/substrate | gVisor sandboxes with snapshot, suspend and wake; per-actor egress policy and credential injection. Upstream releases since v1.0; v0.5 ran from a fork. |
 | substrate-scope | go-steer/substrate-scope | 3D view of every agent running or suspended on Substrate. |
 | core-models | go-steer/core-models | Shared model-provider layer. A library inside mast and core-agent, not deployed on its own, so it is not pinned here. |
 
@@ -86,9 +86,24 @@ Pieces this profile owns beyond the components: the ax Workspace (its
 AGENTS.md maps cluster names to GKE paths and carries the "not every
 signal is new work" rule), the task template, per-task egress policies,
 the token refresher that keeps a Google access token in the credential
-provider's Secret, and the worker ComputeClass (C4 first, N4 fallback,
-because a gVisor snapshot only restores on a host with every CPU feature
-of the host where the agent first booted).
+provider's Secret, the WorkerPool (sized so each worker holds three
+agents at their limits, which Substrate books against it), and the
+worker ComputeClass, which may mix CPU generations: Substrate restores a
+memory snapshot only on a worker with the snapshot's CPU features, and
+otherwise restores files only.
+
+Substrate itself is installed by its own installer (`ate-setup`), per
+cluster, not rendered. Two settings the profile needs have no installer
+option, so `shipmind up` patches them in after the install and `status`
+checks them, so an installer run that drops them shows as drift:
+atelet runs only on worker nodes (`nodeSelector
+ate.dev/worker-node=true`), and the router holds a request for a
+resuming actor up to 60s (`--parked-request-budget=60s`; the default
+5s is shorter than a cold resume). Since v1.0, the router takes only
+mTLS clients whose SPIFFE ID the install allows: ax-server, lookout,
+substrate-scope and the nightly scenario each present their pod's
+podidentity certificate and verify the router against the servicedns
+trust bundle, both projected volumes.
 
 ### standalone (second)
 
@@ -191,7 +206,7 @@ over the vendored bases with the profile's patches: images pinned by
 digest from `versions.yaml`, settings every deployment of the profile
 needs. Tests render every profile in-process and hold them to
 invariants: every image is pinned in `versions.yaml`, no remote bases, and
-component-specific rules such as ax's Redis keeping its volume.
+component-specific rules such as ax's Postgres keeping its volume.
 
 **Environments.** An environment is an overlay directory: a
 `kustomization.yaml` that references a profile at a full shipmind commit
@@ -208,7 +223,11 @@ secret references for env), so it lives in a Secret rendered at deploy
 time, never in a repository. The tokens live in their own Secret
 (`lookout-ax/agent-tokens`); a deployment made before shipmind has them
 only in its task template, and `up` adopts them from there. Tokens are
-never rotated by a deploy: every existing task has them baked in. The
+never rotated by a deploy: every existing task has them baked in. ax's
+Postgres password is the same kind of value: a Secret
+(`ax-system/ax-postgres`) that `up` generates once, when the render runs
+Postgres, and never rotates, because Postgres keeps the password it
+first booted with; `status` reports it if it is missing. The
 Workspace (AGENTS.md: the cluster table and the repeat rule) is an ax
 object, applied with the ax CLI. Both are rendered from templates in
 `agents/sre-triage/ax/`.

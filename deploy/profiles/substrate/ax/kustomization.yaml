@@ -12,31 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# ax-server and its Redis, from the ax fork's manifests at the version
-# versions.yaml pins, with ax-server's image as shipmind publishes it. An
-# environment overlay sets the snapshot bucket (AX_SNAPSHOTS_BUCKET).
+# ax-server and its Postgres, from the ax fork's manifests at the version
+# versions.yaml pins, with ax-server's image as shipmind publishes it.
+# Snapshot storage is Substrate's (--snapshot-location at install), not
+# ax's, since Substrate v1.0.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../../vendor/ax/deploy/ax-server
-  - redis
+  - postgres
 images:
-  - name: ko://github.com/google/ax/cmd/ax-server
-    newName: ghcr.io/go-steer/shipmind/ax-server
-    newTag: 685b160d614122daea13d9fa56de1781a9d210f7
-    digest: sha256:89f82c0106dfa1579eff1ff1537fad04b0a263faffca8b54227799acb023c000
-  - name: redis
-    newName: docker.io/library/redis
-    newTag: 7-alpine
-    digest: sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+  - name: postgres
+    newName: docker.io/library/postgres
+    newTag: 17-alpine
+    digest: sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
 patches:
-  # The Substrate egress gateway runs with credential injection, which
-  # intercepts TLS, so every task needs the gateway's CA. The fork mounts
-  # it into each task's template when this is set.
-  # A JSON patch, not a strategic merge: a merge moves the patched entry
-  # to the front of env, and a reordered env is a change that restarts
-  # ax-server. The test op fails the build if the fork's container order
-  # changes, instead of patching the wrong container.
+  # JSON patches, not strategic merges: a merge moves a patched env entry
+  # to the front, and a reordered env is a change that restarts
+  # ax-server. Each test op fails the build if the fork's manifest moves,
+  # instead of patching the wrong thing.
   - target:
       kind: Deployment
       name: ax-server
@@ -44,6 +38,24 @@ patches:
       - op: test
         path: /spec/template/spec/containers/0/name
         value: ax-server
+      # Upstream leaves the image to `make deploy` (${AX_SERVER_IMAGE}).
+      - op: test
+        path: /spec/template/spec/containers/0/image
+        value: ${AX_SERVER_IMAGE}
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: ghcr.io/go-steer/shipmind/ax-server:12dbe163b207888b743b10705d5ce26c8f5c2697@sha256:8e21fe2f61e964e7b2652cddd81ddb2bd29f91e44cd77723955f7704ab78102e
+      # The image for tasks without spec.image, also left to `make
+      # deploy`. Every task here sets its image, so ax-server's built-in
+      # default stands.
+      - op: test
+        path: /spec/template/spec/containers/0/env/2/name
+        value: AX_DEFAULT_TASK_IMAGE
+      - op: remove
+        path: /spec/template/spec/containers/0/env/2
+      # The Substrate egress gateway runs with credential injection,
+      # which intercepts TLS, so every task needs the gateway's CA. The
+      # fork mounts it into each task's template when this is set.
       - op: add
         path: /spec/template/spec/containers/0/env/-
         value:

@@ -19,17 +19,16 @@
 #   e2e-runner        images/e2e-runner (shipmind, the ax CLI, kubectl and
 #                     the scenarios), tagged with the shipmind commit
 #   ax-server         the ax fork at versions.yaml's ax pin, with the fork's
-#                     Dockerfile.server (or its .ko.yaml, before the
-#                     Substrate v1.0 port), tagged with that commit
+#                     Dockerfile.server, tagged with that commit
 #   substrate-scope   go-steer/substrate-scope at its pin, with its own
 #                     Dockerfile, tagged with that commit
-#   substrate/*       the Substrate fork at its pin, every release image,
-#                     with the fork's own publisher, tagged with that commit
 #
 # Images built from another repository are tagged with the source commit,
 # so a main build skips any image that already exists for its pin, and a
 # versions.yaml change rebuilds only what moved. PRs build without
-# pushing (Substrate's full set only on main or by hand: it is long).
+# pushing. Substrate's images come from upstream's registry since v1.0;
+# the substrate/* images this workflow once built from the fork stay
+# published for clusters still on v0.5.
 # The job summary lists each digest to pin in versions.yaml.
 #
 # Run by hand on main with `ax-commit` (a full SHA in the ax fork) to
@@ -204,34 +203,24 @@ jobs:
         with:
           go-version-file: src/go.mod
       - if: steps.exists.outputs.skip != 'true'
-        uses: ko-build/setup-ko@v0.10
-      - if: steps.exists.outputs.skip != 'true'
         uses: docker/setup-buildx-action@v4
-      # Upstream ax dropped ko (google/ax#508): from the Substrate v1.0
-      # port on, the fork builds with Dockerfile.server, as upstream's
-      # `make images` does. Earlier pins still carry a .ko.yaml.
+      # Upstream ax dropped ko (google/ax#508); the fork builds with
+      # Dockerfile.server, as upstream's `make images` does.
       - if: steps.exists.outputs.skip != 'true'
         working-directory: src
         env:
-          KO_DOCKER_REPO: ${{ env.REGISTRY }}/ax-server
           IMAGE: ${{ env.REGISTRY }}/ax-server
           COMMIT: ${{ steps.pin.outputs.commit }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f Dockerfile.server ]]; then
-            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/linux_amd64/ax-server ./cmd/ax-server
-            push=false
-            [[ "$PUSH" == true ]] && push=true
-            docker buildx build --platform linux/amd64 --build-arg TARGETARCH=amd64 -f Dockerfile.server \
-              --tag "$IMAGE:$COMMIT" --label "org.opencontainers.image.revision=$COMMIT" \
-              --provenance=false --output "type=image,push=$push" --metadata-file "$RUNNER_TEMP/meta.json" .
-            ref="$IMAGE:$COMMIT@$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/meta.json")"
-          else
-            push=--push=false
-            [[ "$PUSH" == true ]] && push=--push=true
-            ref=$(ko build ./cmd/ax-server --bare --platform=linux/amd64 --tags "$COMMIT" $push)
-          fi
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/linux_amd64/ax-server ./cmd/ax-server
+          push=false
+          [[ "$PUSH" == true ]] && push=true
+          docker buildx build --platform linux/amd64 --build-arg TARGETARCH=amd64 -f Dockerfile.server \
+            --tag "$IMAGE:$COMMIT" --label "org.opencontainers.image.revision=$COMMIT" \
+            --provenance=false --output "type=image,push=$push" --metadata-file "$RUNNER_TEMP/meta.json" .
+          ref="$IMAGE:$COMMIT@$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/meta.json")"
           echo "ax-server \`$ref\` (pushed: $PUSH)" >> "$GITHUB_STEP_SUMMARY"
 
   substrate-scope:
@@ -284,80 +273,3 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           echo "substrate-scope \`$REGISTRY/substrate-scope@$DIGEST\` (pushed: $PUSH)" >> "$GITHUB_STEP_SUMMARY"
-
-  substrate:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v7
-      - id: pin
-        run: |
-          echo "source=$(yq '.components[] | select(.name == "substrate") | .source' versions.yaml)" >> "$GITHUB_OUTPUT"
-          echo "commit=$(yq '.components[] | select(.name == "substrate") | .version' versions.yaml)" >> "$GITHUB_OUTPUT"
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: exists
-        env:
-          IMAGE: ${{ env.REGISTRY }}/substrate/ateapi:${{ steps.pin.outputs.commit }}
-        run: |
-          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "substrate images for \`${{ steps.pin.outputs.commit }}\` already published; skipped" >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - if: steps.exists.outputs.skip != 'true'
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ steps.pin.outputs.source == 'github.com/mastersingh24/substrate' && 'mastersingh24/substrate' || 'invalid/source' }}
-          ref: ${{ steps.pin.outputs.commit }}
-          path: src
-      - if: steps.exists.outputs.skip != 'true'
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: src/go.mod
-      - if: steps.exists.outputs.skip != 'true'
-        uses: ko-build/setup-ko@v0.10
-      - if: steps.exists.outputs.skip != 'true'
-        uses: docker/setup-buildx-action@v4
-      - if: steps.exists.outputs.skip != 'true'
-        working-directory: src
-        env:
-          VERSION: ${{ steps.pin.outputs.commit }}
-          KO_DEFAULTPLATFORMS: linux/amd64
-          NO_DEV_ENV: "1"
-        # bash with pipefail: the publisher's exit status must survive tee.
-        shell: bash
-        run: |
-          set -euo pipefail
-          # ate-setup builds a Kubernetes client before every command,
-          # publish included, though publishing never talks to a cluster.
-          # Give it a placeholder kubeconfig to load.
-          kubeconfig="$RUNNER_TEMP/kubeconfig"
-          cat > "$kubeconfig" <<'KUBECONFIG'
-          apiVersion: v1
-          kind: Config
-          clusters:
-            - name: none
-              cluster: {server: "https://127.0.0.1:1"}
-          contexts:
-            - name: none
-              context: {cluster: none, user: none}
-          users:
-            - name: none
-              user: {}
-          current-context: none
-          KUBECONFIG
-          export KUBECONFIG="$kubeconfig"
-          go run ./cmd/ate-setup publish release-images --ko-docker-repo "$REGISTRY/substrate" | tee /tmp/publish.log
-          {
-            echo "### substrate release images for \`$VERSION\`"
-            echo '```'
-            grep -E "$REGISTRY/substrate/" /tmp/publish.log || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"

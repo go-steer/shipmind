@@ -189,6 +189,12 @@ func (deployFake) AxWorkspace(context.Context, string, string) ([]byte, bool, er
 	return nil, false, nil
 }
 func (deployFake) AxApply(context.Context, string, []byte) error { return nil }
+func (deployFake) Get(context.Context, string, string, string) ([]byte, bool, error) {
+	return nil, false, nil
+}
+func (deployFake) Patch(context.Context, string, string, string, string, []byte, bool) error {
+	return nil
+}
 
 // deployRoot makes a committed shipmind checkout with one profile and the
 // real agent templates, and an environment that pins it.
