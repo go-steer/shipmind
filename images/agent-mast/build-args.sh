@@ -42,11 +42,14 @@ pin() {
   printf '%s' "$v"
 }
 
+AX_RUNNER_COMMIT=${AX_RUNNER_COMMIT_OVERRIDE:-$(pin ax-runner version)}
+[[ "$AX_RUNNER_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "build-args.sh: ax-runner commit $AX_RUNNER_COMMIT: want a full SHA" >&2; exit 1; }
+
 args=(
   "MAST_REPO=https://$(pin mast source).git"
   "MAST_COMMIT=$(pin mast version)"
   "AX_RUNNER_REPO=https://$(pin ax-runner source).git"
-  "AX_RUNNER_COMMIT=$(pin ax-runner version)"
+  "AX_RUNNER_COMMIT=$AX_RUNNER_COMMIT"
 )
 for a in "${args[@]}"; do
   case "${1:-}" in

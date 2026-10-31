@@ -19,7 +19,8 @@
 #   e2e-runner        images/e2e-runner (shipmind, the ax CLI, kubectl and
 #                     the scenarios), tagged with the shipmind commit
 #   ax-server         the ax fork at versions.yaml's ax pin, with the fork's
-#                     own .ko.yaml, tagged with that commit
+#                     Dockerfile.server (or its .ko.yaml, before the
+#                     Substrate v1.0 port), tagged with that commit
 #   substrate-scope   go-steer/substrate-scope at its pin, with its own
 #                     Dockerfile, tagged with that commit
 #   substrate/*       the Substrate fork at its pin, every release image,
@@ -30,6 +31,12 @@
 # versions.yaml change rebuilds only what moved. PRs build without
 # pushing (Substrate's full set only on main or by hand: it is long).
 # The job summary lists each digest to pin in versions.yaml.
+#
+# Run by hand on main with `ax-commit` (a full SHA in the ax fork) to
+# publish ax-server and the e2e-runner for a commit versions.yaml doesn't
+# pin yet, so the pull request that moves the pin can pin their digests
+# too. The e2e-runner built that way is tagged
+# <shipmind commit>-ax-<12 characters of the ax commit>.
 #
 # Path-filtered and deliberately not a required check.
 name: images
@@ -59,6 +66,11 @@ on:
       - versions.yaml
       - .github/workflows/images.yml
   workflow_dispatch:
+    inputs:
+      ax-commit:
+        description: Build ax-server and the e2e-runner for this ax fork commit (full SHA) instead of versions.yaml's ax pin
+        required: false
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -112,6 +124,8 @@ jobs:
       - name: build arguments
         id: args
         shell: bash
+        env:
+          AX_COMMIT_OVERRIDE: ${{ inputs.ax-commit }}
         run: |
           set -euo pipefail
           {
@@ -119,6 +133,9 @@ jobs:
             images/e2e-runner/build-args.sh --lines
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
+          tag=$GITHUB_SHA
+          [[ -z "$AX_COMMIT_OVERRIDE" ]] || tag="$GITHUB_SHA-ax-${AX_COMMIT_OVERRIDE:0:12}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v4
       - if: env.PUSH == 'true'
         uses: docker/login-action@v4
@@ -133,14 +150,15 @@ jobs:
           file: images/e2e-runner/Dockerfile
           build-args: ${{ steps.args.outputs.list }}
           push: ${{ env.PUSH == 'true' }}
-          tags: ${{ env.REGISTRY }}/e2e-runner:${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/e2e-runner:${{ steps.args.outputs.tag }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
           provenance: false
       - name: summary
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
+          TAG: ${{ steps.args.outputs.tag }}
         run: |
-          echo "e2e-runner \`$REGISTRY/e2e-runner:$GITHUB_SHA@$DIGEST\` (pushed: $PUSH)" >> "$GITHUB_STEP_SUMMARY"
+          echo "e2e-runner \`$REGISTRY/e2e-runner:$TAG@$DIGEST\` (pushed: $PUSH)" >> "$GITHUB_STEP_SUMMARY"
 
   ax-server:
     runs-on: ubuntu-latest
@@ -150,9 +168,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: pin
+        env:
+          AX_COMMIT_OVERRIDE: ${{ inputs.ax-commit }}
         run: |
+          commit=${AX_COMMIT_OVERRIDE:-$(yq '.components[] | select(.name == "ax") | .version' versions.yaml)}
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "ax commit $commit: want a full SHA" >&2; exit 1; }
           echo "source=$(yq '.components[] | select(.name == "ax") | .source' versions.yaml)" >> "$GITHUB_OUTPUT"
-          echo "commit=$(yq '.components[] | select(.name == "ax") | .version' versions.yaml)" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
       - if: env.PUSH == 'true'
         uses: docker/login-action@v4
         with:
@@ -180,14 +202,32 @@ jobs:
       - if: steps.exists.outputs.skip != 'true'
         uses: ko-build/setup-ko@v0.10
       - if: steps.exists.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v4
+      # Upstream ax dropped ko (google/ax#508): from the Substrate v1.0
+      # port on, the fork builds with Dockerfile.server, as upstream's
+      # `make images` does. Earlier pins still carry a .ko.yaml.
+      - if: steps.exists.outputs.skip != 'true'
         working-directory: src
         env:
           KO_DOCKER_REPO: ${{ env.REGISTRY }}/ax-server
+          IMAGE: ${{ env.REGISTRY }}/ax-server
           COMMIT: ${{ steps.pin.outputs.commit }}
+        shell: bash
         run: |
-          push=--push=false
-          [[ "$PUSH" == true ]] && push=--push=true
-          ref=$(ko build ./cmd/ax-server --bare --platform=linux/amd64 --tags "$COMMIT" $push)
+          set -euo pipefail
+          if [[ -f Dockerfile.server ]]; then
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/linux_amd64/ax-server ./cmd/ax-server
+            push=false
+            [[ "$PUSH" == true ]] && push=true
+            docker buildx build --platform linux/amd64 --build-arg TARGETARCH=amd64 -f Dockerfile.server \
+              --tag "$IMAGE:$COMMIT" --label "org.opencontainers.image.revision=$COMMIT" \
+              --provenance=false --output "type=image,push=$push" --metadata-file "$RUNNER_TEMP/meta.json" .
+            ref="$IMAGE:$COMMIT@$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/meta.json")"
+          else
+            push=--push=false
+            [[ "$PUSH" == true ]] && push=--push=true
+            ref=$(ko build ./cmd/ax-server --bare --platform=linux/amd64 --tags "$COMMIT" $push)
+          fi
           echo "ax-server \`$ref\` (pushed: $PUSH)" >> "$GITHUB_STEP_SUMMARY"
 
   substrate-scope:

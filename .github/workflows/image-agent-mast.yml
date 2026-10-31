@@ -35,7 +35,16 @@ on:
       - agents/sre-triage/**
       - versions.yaml
       - .github/workflows/image-agent-mast.yml
+  # By hand on main, `ax-runner-commit` (a full SHA in the ax fork)
+  # builds the image with that runner instead of versions.yaml's pin, so
+  # the pull request that moves the pin can pin the image too. It is
+  # tagged <shipmind commit>-runner-<12 characters of the runner commit>.
   workflow_dispatch:
+    inputs:
+      ax-runner-commit:
+        description: Build with this ax fork commit's runner (full SHA) instead of versions.yaml's ax-runner pin
+        required: false
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -59,12 +68,17 @@ jobs:
       # The pins come from versions.yaml; the Dockerfile has no defaults.
       - name: build arguments from versions.yaml
         id: args
+        env:
+          AX_RUNNER_COMMIT_OVERRIDE: ${{ inputs.ax-runner-commit }}
         run: |
           {
             echo 'list<<EOF'
             images/agent-mast/build-args.sh --lines
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
+          tag=$GITHUB_SHA
+          [[ -z "$AX_RUNNER_COMMIT_OVERRIDE" ]] || tag="$GITHUB_SHA-runner-${AX_RUNNER_COMMIT_OVERRIDE:0:12}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v4
       - if: env.PUSH == 'true'
         uses: docker/login-action@v4
@@ -80,18 +94,20 @@ jobs:
           file: images/agent-mast/Dockerfile
           build-args: ${{ steps.args.outputs.list }}
           push: ${{ env.PUSH == 'true' }}
-          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          tags: ${{ env.IMAGE }}:${{ steps.args.outputs.tag }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
           provenance: false
       - name: summary
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
+          TAG: ${{ steps.args.outputs.tag }}
+          AX_RUNNER_COMMIT_OVERRIDE: ${{ inputs.ax-runner-commit }}
         run: |
           {
             echo "### agent-mast"
             echo
             if [[ "$PUSH" == true ]]; then
-              echo "Pushed \`$IMAGE:$GITHUB_SHA\`"
+              echo "Pushed \`$IMAGE:$TAG\`"
               echo
               echo "Pin in versions.yaml: \`$IMAGE@$DIGEST\`"
             else
