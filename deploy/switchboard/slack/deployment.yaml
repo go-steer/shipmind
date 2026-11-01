@@ -1,0 +1,122 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# JSON patches, each guarded by a test op, so a change in switchboard's
+# base fails the build instead of patching the wrong entry.
+#
+# The base's one env entry is the token for a daemon agent; this gateway
+# has only ax agents.
+- op: test
+  path: /spec/template/spec/containers/0/env/0/name
+  value: SWITCHBOARD_DAEMON_TOKEN
+- op: remove
+  path: /spec/template/spec/containers/0/env/0
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: SWITCHBOARD_SLACK_APP_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: switchboard-slack
+        key: app-token
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: SWITCHBOARD_SLACK_BOT_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: switchboard-slack
+        key: bot-token
+# The agent's attach token, the template's MAST_ATTACH_TOKEN.
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: SWITCHBOARD_AGENT_TOKEN_TRIAGE
+    valueFrom:
+      secretKeyRef:
+        name: switchboard-agent
+        key: token
+# durable-state: threads, sessions and task names survive a restart.
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: SWITCHBOARD_STATE_DIR
+    value: /var/lib/switchboard
+- op: add
+  path: /spec/template/spec/securityContext/fsGroup
+  value: 65532
+# The configuration and the task template, rendered by shipmind up into
+# one Secret, instead of the base's ConfigMap.
+- op: test
+  path: /spec/template/spec/volumes/1/name
+  value: config
+- op: replace
+  path: /spec/template/spec/volumes/1
+  value:
+    name: config
+    secret:
+      secretName: switchboard-agent
+      items:
+        - key: config.json
+          path: config.json
+        - key: triage.yaml
+          path: triage.yaml
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
+    name: state
+    persistentVolumeClaim:
+      claimName: switchboard-state
+# ax-router-mtls: the pod's certificate (its SPIFFE ID must be on the
+# router's allowlist) and the router's trust bundle, where switchboard's
+# ax.router_* settings look by default.
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
+    name: podidentity
+    projected:
+      sources:
+        - podCertificate:
+            signerName: podidentity.podcert.ate.dev/identity
+            keyType: ECDSAP256
+            credentialBundlePath: credential-bundle.pem
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
+    name: servicedns-ca
+    projected:
+      sources:
+        - clusterTrustBundle:
+            signerName: servicedns.podcert.ate.dev/identity
+            labelSelector:
+              matchLabels:
+                podcert.ate.dev/canarying: live
+            path: trust-bundle.pem
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value:
+    name: state
+    mountPath: /var/lib/switchboard
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value:
+    name: podidentity
+    mountPath: /run/podidentity.podcert.ate.dev
+    readOnly: true
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value:
+    name: servicedns-ca
+    mountPath: /run/servicedns-ca
+    readOnly: true

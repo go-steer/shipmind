@@ -201,6 +201,25 @@ for each environment and paste the result into each app's App Manifest
 page; Slack shows the scope changes, and the app is reinstalled.
 Creating the app and storing its tokens: [`slack.md`](./slack.md).
 
+**switchboard.** `deploy/switchboard/slack` runs switchboard's Slack
+gateway in front of the SRE triage agent as an ax agent: each Slack
+thread gets an agent task of its own, started from the same task template
+lookout uses, suspended when idle, woken by the next message and deleted
+once the thread is dormant, reached through Substrate's router over mTLS.
+An environment opts in by referencing it, as with the nightly scenario.
+switchboard takes no variables in its configuration, so `up` renders the
+configuration (the environment's atespace) and the task template into one
+Secret, `switchboard/switchboard-agent`, as it does lookout's, and
+switchboard is a startup reader of it.
+
+**Secrets from Secret Manager.** Values no one should handle, such as a
+Slack app's tokens, stay in Secret Manager. An environment's
+`shipmind.yaml` names them (`secrets`: a Kubernetes Secret, each key's
+Secret Manager secret, and the Deployments that read it at startup); `up`
+copies the latest versions in, and `status` compares them key by key.
+Neither prints a value, and a failed read reports the secret's name, not
+gcloud's output.
+
 **Profiles.** `deploy/profiles/<profile>/<component>/` is a kustomization
 over the vendored bases with the profile's patches: images pinned by
 digest from `versions.yaml`, settings every deployment of the profile

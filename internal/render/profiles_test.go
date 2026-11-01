@@ -36,9 +36,14 @@ const profilesDir = "../../deploy/profiles"
 // (deploy/e2e/<profile>), held to the same invariants as profiles.
 const e2eDir = "../../deploy/e2e"
 
+// switchboardDir holds switchboard's gateways environments opt into
+// (deploy/switchboard/<platform>), held to the same invariants.
+const switchboardDir = "../../deploy/switchboard"
+
 // profileParts returns every profile (deploy/profiles/<profile>), every
-// part directly under one (deploy/profiles/<profile>/<part>), and every
-// end-to-end deployment (deploy/e2e/<profile>).
+// part directly under one (deploy/profiles/<profile>/<part>), every
+// end-to-end deployment (deploy/e2e/<profile>) and every switchboard
+// gateway (deploy/switchboard/<platform>).
 func profileParts(t *testing.T) []string {
 	t.Helper()
 	var dirs []string
@@ -47,6 +52,7 @@ func profileParts(t *testing.T) []string {
 		filepath.Join(profilesDir, "*", "*", "kustomization.yaml"),
 		filepath.Join(e2eDir, "*", "kustomization.yaml"),
 		filepath.Join(e2eDir, "*", "*", "kustomization.yaml"),
+		filepath.Join(switchboardDir, "*", "kustomization.yaml"),
 	} {
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
@@ -204,7 +210,7 @@ func TestSubstrateAxPostgresPersists(t *testing.T) {
 // kustomization is named kustomization.yaml, so nothing hides from this
 // check (or from profileParts) under another name kustomize accepts.
 func TestProfilesHaveNoRemoteResources(t *testing.T) {
-	for _, root := range []string{profilesDir, e2eDir} {
+	for _, root := range []string{profilesDir, e2eDir, switchboardDir} {
 		testNoRemote(t, root)
 	}
 }
@@ -383,6 +389,7 @@ func TestSubstrateRouterClientsMountMTLS(t *testing.T) {
 		{filepath.Join(profilesDir, "substrate"), "Deployment", "lookout-ax", "lookout-ax"},
 		{filepath.Join(profilesDir, "substrate"), "Deployment", "substrate-scope", "substrate-scope"},
 		{filepath.Join(profilesDir, "..", "e2e", "substrate"), "CronJob", "shipmind-e2e", "missing-env"},
+		{filepath.Join(switchboardDir, "slack"), "Deployment", "switchboard", "switchboard"},
 	} {
 		o, ok := build(t, c.dir).Find(c.kind, c.ns, c.name)
 		if !ok {

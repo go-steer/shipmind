@@ -50,6 +50,16 @@ release is a tested set of component versions (see "Cutting a release" in
     fork's v1 protos and router mTLS; lookout mounts its pod
     certificate and the trust bundle, scope's own manifest does.
 
+- **switchboard on the substrate profile (#39).** switchboard v0.9.0,
+  and `deploy/switchboard/slack`: its Slack gateway in front of the SRE
+  triage agent as an ax agent, a task per thread, reaching the router
+  over mTLS. `up` renders its configuration and the agent's task template
+  into `switchboard/switchboard-agent`, and switchboard is a startup
+  reader of it.
+- `shipmind.yaml` `secrets`: Kubernetes Secrets whose values live in
+  Secret Manager, copied in by `up` and compared by `status`, never
+  printed.
+
 ### Fixed
 
 - `shipmind scenario run` no longer fails a correct diagnosis when

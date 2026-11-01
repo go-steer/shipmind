@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -212,5 +213,53 @@ func TestTemplatesSurviveYAML11(t *testing.T) {
 		if v, ok := md["atespace"].(string); !ok || v != "on" {
 			t.Errorf("%s: atespace = %#v, want the string \"on\"", name, md["atespace"])
 		}
+	}
+}
+
+func TestSwitchboardConfig(t *testing.T) {
+	b, err := SwitchboardConfig(root, testEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Platform     string `json:"platform"`
+		DefaultAgent string `json:"default_agent"`
+		Agents       []struct {
+			Name     string `json:"name"`
+			Kind     string `json:"kind"`
+			TokenEnv string `json:"token_env"`
+			AX       struct {
+				Atespace         string `json:"atespace"`
+				TaskTemplateFile string `json:"task_template_file"`
+				Scope            string `json:"scope"`
+			} `json:"ax"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("%v\n%s", err, b)
+	}
+	if cfg.Platform != "slack" || len(cfg.Agents) != 1 || cfg.DefaultAgent != "triage" {
+		t.Fatalf("config %+v", cfg)
+	}
+	a := cfg.Agents[0]
+	if a.Kind != "ax" || a.AX.Atespace != "agents" || a.AX.Scope != "thread" ||
+		a.AX.TaskTemplateFile != "/etc/switchboard/triage.yaml" || a.TokenEnv != "SWITCHBOARD_AGENT_TOKEN_TRIAGE" {
+		t.Errorf("agent %+v", a)
+	}
+}
+
+func TestSwitchboardConfigErrors(t *testing.T) {
+	if _, err := SwitchboardConfig(t.TempDir(), testEnv()); err == nil {
+		t.Error("missing template accepted")
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, Dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, Dir, "switchboard.json.tmpl"), []byte(`{"atespace": {{ .Atespace }}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SwitchboardConfig(dir, testEnv()); err == nil || !strings.Contains(err.Error(), "not JSON") {
+		t.Errorf("broken template: %v", err)
 	}
 }

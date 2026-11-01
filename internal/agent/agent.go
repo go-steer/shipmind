@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // Package agent renders the SRE agent's ax objects for an environment:
-// the task template lookout stamps an incident task from, and the
-// Workspace every task mounts. The templates live in
+// the task template lookout (and switchboard) stamp a task from, the
+// Workspace every task mounts, and switchboard's configuration. The templates live in
 // agents/sre-triage/ax/ in a shipmind checkout.
 package agent
 
@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -91,6 +92,22 @@ func Task(root string, e *env.Env, t Tokens) ([]byte, error) {
 		"InjectToken": t.Inject,
 		"AttachToken": t.Attach,
 	})
+}
+
+// SwitchboardConfig renders switchboard's configuration for e: its Slack
+// gateway fronting the agent as an ax agent, a task per thread, started
+// from the task template at /etc/switchboard/triage.yaml. switchboard
+// takes no variables in its configuration, so the environment's values
+// are rendered in, as for the task template.
+func SwitchboardConfig(root string, e *env.Env) ([]byte, error) {
+	b, err := render(root, "switchboard.json.tmpl", map[string]string{"Atespace": e.Agent.Atespace})
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(b) {
+		return nil, fmt.Errorf("%s: not JSON once rendered", filepath.Join(root, Dir, "switchboard.json.tmpl"))
+	}
+	return b, nil
 }
 
 // AgentsMD renders the Workspace's AGENTS.md for e.

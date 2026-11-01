@@ -17,6 +17,7 @@ package deploy
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -98,7 +99,7 @@ func (f *fakeCluster) Diff(_ context.Context, m []byte) ([]string, error) {
 }
 
 func (f *fakeCluster) Namespaces(context.Context) ([]string, error) {
-	all := []string{"ns", "lookout-ax", "default", "ax-system"}
+	all := []string{"ns", "lookout-ax", "default", "ax-system", "switchboard"}
 	var have []string
 	for _, n := range all {
 		if !contains(f.missingNS, n) {
@@ -169,10 +170,10 @@ func (f *fakeCluster) ObjectUpdated(_ context.Context, kind, ns, name string) (t
 	if err := f.fail("objectupdated"); err != nil {
 		return time.Time{}, false, err
 	}
-	if kind == "secret" {
+	t, ok := f.objectTimes[kind+"/"+ns+"/"+name]
+	if !ok && kind == "secret" {
 		return f.secretUpdated, !f.secretUpdated.IsZero(), nil
 	}
-	t, ok := f.objectTimes[kind+"/"+ns+"/"+name]
 	return t, ok, nil
 }
 
@@ -1144,5 +1145,234 @@ func TestSubstratePatches(t *testing.T) {
 	c.failOn = "get"
 	if _, err := Status(ctx, substratePlan(t), c); err == nil {
 		t.Error("get failure not returned")
+	}
+}
+
+// fakeSource is Secret Manager: "project/name" to a value.
+type fakeSource map[string]string
+
+func (f fakeSource) Access(_ context.Context, project, name string) ([]byte, error) {
+	v, ok := f[project+"/"+name]
+	if !ok {
+		return nil, fmt.Errorf("secret manager: %s/%s: NOT_FOUND", project, name)
+	}
+	return []byte(v), nil
+}
+
+func slackPlan(t *testing.T) *Plan {
+	t.Helper()
+	p := plan(t)
+	p.Env.Secrets = []env.ManagedSecret{{
+		Secret:  "switchboard/switchboard-slack",
+		Keys:    map[string]string{"app-token": "stage-app", "bot-token": "stage-bot"},
+		Restart: []string{"switchboard"},
+	}}
+	p.Secrets = fakeSource{"example-project/stage-app": "xapp-1", "example-project/stage-bot": "xoxb-1"}
+	return p
+}
+
+// Secrets kept in Secret Manager: up copies them in, status compares them
+// by key, and neither ever shows a value.
+func TestManagedSecrets(t *testing.T) {
+	ctx := context.Background()
+	c := inSync(t)
+	r, err := Status(ctx, slackPlan(t), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Changes) != 1 || r.Changes[0].What != "secret switchboard/switchboard-slack" || r.Changes[0].Detail != "missing against Secret Manager" {
+		t.Fatalf("changes %+v", r.Changes)
+	}
+	if err := Up(ctx, slackPlan(t), c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var written string
+	for _, m := range c.applied {
+		if strings.Contains(m, "name: switchboard-slack") {
+			written = m
+		}
+	}
+	if !strings.Contains(written, "app-token: "+base64.StdEncoding.EncodeToString([]byte("xapp-1"))) ||
+		!strings.Contains(written, "bot-token: "+base64.StdEncoding.EncodeToString([]byte("xoxb-1"))) {
+		t.Fatalf("applied %v", c.applied)
+	}
+
+	// Equal: nothing to do. One key off: named, its value not shown.
+	c = inSync(t)
+	c.secrets["switchboard/switchboard-slack"] = map[string][]byte{"app-token": []byte("xapp-1"), "bot-token": []byte("xoxb-1")}
+	if r, err := Status(ctx, slackPlan(t), c); err != nil || len(r.Changes) != 0 {
+		t.Errorf("equal: %+v, %v", r, err)
+	}
+	if err := Up(ctx, slackPlan(t), c, UpOptions{}); err != nil || contains(writes(c.ops), "secret switchboard-slack") {
+		t.Errorf("equal up: %v, %v", c.ops, err)
+	}
+	c.secrets["switchboard/switchboard-slack"]["bot-token"] = []byte("xoxb-old")
+	c.secrets["switchboard/switchboard-slack"]["stray"] = []byte("x")
+	r, err = Status(ctx, slackPlan(t), c)
+	if err != nil || len(r.Changes) != 1 || r.Changes[0].Detail != "differs (keys bot-token, stray) against Secret Manager" ||
+		strings.Contains(fmt.Sprint(r), "xoxb") {
+		t.Errorf("differs: %+v, %v", r, err)
+	}
+
+	// The Deployments it names are startup readers: restarted when they run
+	// on an older copy.
+	c = inSync(t)
+	c.secrets["switchboard/switchboard-slack"] = map[string][]byte{"app-token": []byte("xapp-1"), "bot-token": []byte("xoxb-1")}
+	now := time.Now()
+	c.objectTimes = map[string]time.Time{"secret/switchboard/switchboard-slack": now}
+	c.podStarts = []time.Time{now.Add(-time.Hour)}
+	p := slackPlan(t)
+	objs, err := render.Build("testdata/switchboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Objects = objs
+	p.Env.Secrets[0].Restart = []string{"switchboard"}
+	r, err = Status(ctx, p, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := false
+	for _, ch := range r.Changes {
+		stale = stale || (ch.What == "deployment switchboard/switchboard" && strings.Contains(ch.Detail, "secret switchboard-slack"))
+	}
+	if !stale {
+		t.Errorf("stale reader not reported: %+v", r.Changes)
+	}
+
+	// A project of its own; and errors.
+	p = slackPlan(t)
+	p.Env.Secrets[0].Project = "other-project"
+	if _, err := Status(ctx, p, inSync(t)); err == nil || !strings.Contains(err.Error(), "other-project/stage-app") {
+		t.Errorf("own project: %v", err)
+	}
+	p = slackPlan(t)
+	p.Secrets = nil
+	if err := Up(ctx, p, inSync(t), UpOptions{}); err == nil || !strings.Contains(err.Error(), "nothing reads Secret Manager") {
+		t.Errorf("no source: %v", err)
+	}
+	c = inSync(t)
+	c.failOn = "applysecret"
+	if err := Up(ctx, slackPlan(t), c, UpOptions{}); err == nil || !strings.Contains(err.Error(), "secret switchboard/switchboard-slack") {
+		t.Errorf("apply failure: %v", err)
+	}
+	// A dry run into a namespace the run creates says so.
+	c = inSync(t)
+	c.missingNS = []string{"switchboard"}
+	p = slackPlan(t)
+	p.Objects = objs
+	var log []string
+	if err := Up(ctx, p, c, UpOptions{DryRun: true, Log: func(f string, a ...any) { log = append(log, fmt.Sprintf(f, a...)) }}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(log, "\n"), "secret switchboard/switchboard-slack would be written (missing against Secret Manager), in namespace switchboard, which the run creates") {
+		t.Errorf("dry run log %v", log)
+	}
+}
+
+// switchboard's agent Secret: its configuration, the agent's task template
+// and its bearer, rendered when the render runs switchboard.
+func TestSwitchboardSecret(t *testing.T) {
+	ctx := context.Background()
+	p := plan(t)
+	objs, err := render.Build("testdata/switchboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Objects = objs
+	c := inSync(t)
+	r, err := Status(ctx, p, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ch := range r.Changes {
+		found = found || (ch.What == "secret switchboard/switchboard-agent" && ch.Detail == "missing against the render")
+	}
+	if !found {
+		t.Fatalf("changes %+v", r.Changes)
+	}
+	if err := Up(ctx, p, c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var written string
+	for _, m := range c.applied {
+		if strings.Contains(m, "name: switchboard-agent") {
+			written = m
+		}
+	}
+	for _, key := range []string{"config.json: ", "triage.yaml: ", "token: " + base64.StdEncoding.EncodeToString([]byte(tok.Attach))} {
+		if !strings.Contains(written, key) {
+			t.Errorf("switchboard-agent lacks %q:\n%s", key, written)
+		}
+	}
+	// Up to date: nothing; the template changing (a new agent image) shows.
+	cfg, _ := agent.SwitchboardConfig(root, testEnv())
+	task, _ := agent.Task(root, testEnv(), tok)
+	c = inSync(t)
+	c.secrets["switchboard/switchboard-agent"] = map[string][]byte{"config.json": cfg, "triage.yaml": task, "token": []byte(tok.Attach)}
+	if r, err := Status(ctx, p, c); err != nil || len(r.Changes) != 0 {
+		t.Errorf("in sync: %+v, %v", r, err)
+	}
+	p.Env.Agent.Image = "registry.example.com/agent@sha256:" + strings.Repeat("1", 64)
+	r, err = Status(ctx, p, c)
+	if err != nil || len(r.Changes) == 0 || !strings.Contains(fmt.Sprint(r.Changes), "differs (keys triage.yaml) against the render") {
+		t.Errorf("new image: %+v, %v", r, err)
+	}
+	// Without switchboard in the render, nothing.
+	if r, err := Status(ctx, plan(t), inSync(t)); err != nil || len(r.Changes) != 0 {
+		t.Errorf("no switchboard: %+v, %v", r, err)
+	}
+}
+
+// The Deployment in deploy/switchboard/slack and what up renders agree:
+// the agent Secret's name and keys, where the configuration points for the
+// template, and the environment variables the configuration names.
+func TestSwitchboardWiring(t *testing.T) {
+	objs, err := render.Build(root + "/deploy/switchboard/slack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, ok := objs.Find("Deployment", SwitchboardNamespace, Switchboard)
+	if !ok {
+		t.Fatal("no switchboard Deployment")
+	}
+	y, err := d.String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := agent.SwitchboardConfig(root, testEnv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		AppEnv string `json:"slack_app_token_env"`
+		BotEnv string `json:"slack_bot_token_env"`
+		Agents []struct {
+			TokenEnv string `json:"token_env"`
+			AX       struct {
+				TaskTemplateFile string `json:"task_template_file"`
+			} `json:"ax"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(cfg, &c); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"secretName: " + SwitchboardSecret,
+		"key: config.json", "path: config.json", "key: triage.yaml", "path: triage.yaml",
+		"mountPath: /etc/switchboard\n",
+		"--config=/etc/switchboard/config.json",
+		"name: " + c.AppEnv, "name: " + c.BotEnv, "name: " + c.Agents[0].TokenEnv,
+	} {
+		if !strings.Contains(y, want) {
+			t.Errorf("switchboard Deployment lacks %q", want)
+		}
+	}
+	if c.Agents[0].AX.TaskTemplateFile != "/etc/switchboard/triage.yaml" {
+		t.Errorf("template file %q", c.Agents[0].AX.TaskTemplateFile)
+	}
+	if strings.Contains(y, "switchboard-daemon-token") || strings.Contains(y, "switchboard-config") {
+		t.Error("the base's daemon token or ConfigMap survived")
 	}
 }
