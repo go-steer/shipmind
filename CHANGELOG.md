@@ -57,6 +57,13 @@ release is a tested set of component versions (see "Cutting a release" in
   over mTLS. `up` renders its configuration and the agent's task template
   into `switchboard/switchboard-agent`, and switchboard is a startup
   reader of it.
+- `agents/sre-triage/gke-chat`: the agent's conversation bundle, which
+  switchboard's thread tasks run. Budgets per turn (50 model calls, 10
+  minutes) and one $10 ceiling per thread instead of `gke-triage-f`'s
+  12-call specialist cap, which mast counts for a session's whole life
+  and so ended a Slack thread after a question or two; no approval
+  pause after every finding (changes still park at the write gate); a
+  specialist that answers the person and follows through.
 - `shipmind.yaml` `secrets`: Kubernetes Secrets whose values live in
   Secret Manager, copied in by `up` and compared by `status`, never
   printed.

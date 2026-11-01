@@ -206,6 +206,13 @@ gateway in front of the SRE triage agent as an ax agent: each Slack
 thread gets an agent task of its own, started from the same task template
 lookout uses, suspended when idle, woken by the next message and deleted
 once the thread is dormant, reached through Substrate's router over mTLS.
+A thread's task runs the conversation bundle, `gke-chat`, not lookout's
+`gke-triage-f`: mast meters a session's budget for its whole life, and a
+thread is one session, so `gke-chat` caps work per turn (calls, wall
+clock) with one cost ceiling per thread, where `gke-triage-f` caps calls
+per incident. It also answers questions rather than closing an incident,
+and doesn't pause for approval after every finding; a change to the
+cluster still parks at the write gate.
 An environment opts in by referencing it, as with the nightly scenario.
 switchboard takes no variables in its configuration, so `up` renders the
 configuration (the environment's atespace) and the task template into one

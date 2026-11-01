@@ -1,0 +1,162 @@
+# Copyright 2026 Google LLC
+# Licensed under the Apache License, Version 2.0. See LICENSE for details.
+#
+# The SRE agent in a conversation: switchboard starts one task per Slack
+# thread with this bundle (agents/sre-triage/ax/switchboard.json.tmpl).
+# gke-triage-f, lookout's incident bundle, with what a conversation needs
+# instead of an incident: budgets that don't run out over a long thread,
+# no approval pause after every finding, and a specialist that answers
+# questions rather than closing one incident. The same tools, the same
+# tool classification and the same write gate.
+
+name: gke-chat
+description: Answers questions about GKE clusters and investigates them, in a conversation.
+mode: single_session
+
+tool_catalog:
+  mcp:
+    - server: gke
+
+  # Every tool this workload can reach, classified. mast's predicate is
+  # default-deny-unknown, and ADK's mcptoolset drops MCP's own
+  # annotations, so this list is the only place a tool can be declared
+  # safe to run without an operator: anything absent from it is treated
+  # as mutating and parks at the write gate. The writes are listed
+  # explicitly rather than left to the default so that reading this
+  # block tells you the workload's whole write surface.
+  #
+  # These are the 23 tools the hosted GKE MCP server
+  # (https://container.googleapis.com/mcp) offers as of 2026-08-14, and
+  # the classification mirrors each tool's own readOnlyHint annotation —
+  # verified against a live tools/list, not transcribed from docs. Names
+  # here must match the server exactly: the per-specialist allowlists
+  # below are applied with a stock ADK name predicate, which drops a
+  # name the server does not offer *silently*, so a typo reads as a
+  # specialist that simply holds fewer tools.
+  tools:
+    # The classifier specialist is called like a tool, not as a sub-agent
+    # delegation, so without this the write gate's default-deny parks it
+    # (seen when lookout reports reason=BackOff, which routes through it).
+    - name: triage-classifier
+      mutating: false
+    # Kubernetes reads.
+    - name: get_k8s_resource
+      mutating: false
+    - name: describe_k8s_resource
+      mutating: false
+    - name: list_k8s_events
+      mutating: false
+    - name: get_k8s_logs
+      mutating: false
+    - name: get_k8s_rollout_status
+      mutating: false
+    - name: list_k8s_api_resources
+      mutating: false
+    - name: get_k8s_cluster_info
+      mutating: false
+    - name: get_k8s_version
+      mutating: false
+    - name: check_k8s_auth
+      mutating: false
+    # Control-plane reads.
+    - name: list_clusters
+      mutating: false
+    - name: get_cluster
+      mutating: false
+    - name: list_node_pools
+      mutating: false
+    - name: get_node_pool
+      mutating: false
+    - name: list_operations
+      mutating: false
+    - name: get_operation
+      mutating: false
+    # Kubernetes writes — the workload's actual remediation surface.
+    - name: patch_k8s_resource
+      mutating: true
+    - name: apply_k8s_manifest
+      mutating: true
+    - name: delete_k8s_resource
+      mutating: true
+    # Control-plane writes. No specialist allowlists these; they are
+    # declared so the block is the whole surface, and so that reaching
+    # one is a gate event rather than an unknown-tool default.
+    - name: create_cluster
+      mutating: true
+    - name: update_cluster
+      mutating: true
+    - name: create_node_pool
+      mutating: true
+    - name: update_node_pool
+      mutating: true
+    - name: cancel_operation
+      mutating: true
+
+specialists:
+  - _fallback
+  # The one specialist that can change the cluster. Everything above it
+  # diagnoses and stops — mast refuses to start this roster if a
+  # diagnoser holds a write tool (internal/compose.CheckCapabilitySplit).
+  - change-executor
+
+# A thread is one mast session, and mast meters budgets per session for
+# its whole life (durably, across suspend), so a call cap here would end
+# a conversation part-way. Instead: guards per turn against a runaway,
+# and one cost ceiling per thread as a backstop. A new thread starts a
+# new meter.
+budget:
+  # Per turn: one question's work. A healthy incident has taken at most
+  # 35 tool calls (mast's parity runs); runaways took 99 or more.
+  max_wallclock_seconds: 600
+  max_model_calls_per_turn: 50
+  # Per thread. Answers have cost about $0.05 each, so this allows a long
+  # conversation; when it trips, the agent says so and a new thread
+  # starts afresh.
+  max_cost_usd: 10
+  # A specialist stopped by a ceiling gets one tool-less call to report
+  # what it already found (go-steer/mast#280).
+  final_report: true
+
+# No pause after every finding: a person is in the thread, asking. Any
+# call that would change the cluster still parks at the write gate for
+# approval (on_mutation's default, require_approval), which switchboard
+# shows as buttons in the thread.
+hitl:
+  require_approval: false
+
+# The provider's own server-side tools (Gemini's google_search /
+# url_context / code_execution, Anthropic's web_search). All three are
+# off unless a bundle turns one on, on every provider, so this block is
+# spelled out only to record that the choice was made rather than
+# skipped: a triage roster reads the cluster in front of it, and reach
+# that the permissions gate, the write gate and the effect outbox
+# structurally cannot see is not reach this workload wants (#324).
+# A built-in never comes back as a tool call, so there is nothing
+# downstream to gate it with — the key is the whole gate.
+builtin_tools:
+  web_search: false
+  url_context: false
+  code_execution: false
+
+# Supervisor-body planner (docs/orchestration-design.md "The planner",
+# v0.1 scaffold). When enabled, the root agent becomes a Task-mode
+# planner whose invoke_specialist roster is the specialists list above,
+# and --dispatch is ignored. run_shape_* vocabulary tools are declared
+# but return not_implemented until v0.2 wires the reference-graph
+# library.
+#
+# Uncommenting this on THIS roster is refused at startup, deliberately.
+# invoke_specialist runs each specialist on a runner of its own, and the
+# write gate is a runner plugin, so change-executor's mutating calls
+# would fire without the approval `hitl:` above asks for and without a
+# durable record of what they did (go-steer/mast#235). Drop
+# change-executor from the roster, or set `hitl.on_mutation: apply` if
+# those writes are genuinely meant to fire unattended. Coordinator and
+# graph dispatch are unaffected.
+# planner:
+#   enabled: true
+
+edge_trigger:
+  http:
+    path: /inject
+    auth: bearer

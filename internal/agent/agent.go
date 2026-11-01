@@ -79,12 +79,33 @@ func NewTokens() (Tokens, error) {
 	return Tokens{Inject: inject, Attach: attach}, nil
 }
 
-// Task renders the ax task template for e with tokens t.
+// The bundles the agent image carries (images/agent-mast) that a task
+// runs: one incident per task for lookout, a conversation per task for
+// switchboard. Budgets differ most: mast meters a session for its life,
+// and a conversation is one long session.
+const (
+	IncidentBundle = "gke-triage-f"
+	ChatBundle     = "gke-chat"
+)
+
+// Task renders the ax task template lookout stamps an incident task
+// from, for e with tokens t.
 func Task(root string, e *env.Env, t Tokens) ([]byte, error) {
+	return task(root, e, t, IncidentBundle)
+}
+
+// ChatTask renders the task template switchboard starts a thread's task
+// from: the same agent, image and tokens, with the conversation bundle.
+func ChatTask(root string, e *env.Env, t Tokens) ([]byte, error) {
+	return task(root, e, t, ChatBundle)
+}
+
+func task(root string, e *env.Env, t Tokens, bundle string) ([]byte, error) {
 	if err := t.Check(); err != nil {
 		return nil, err
 	}
 	return render(root, "task.yaml.tmpl", map[string]string{
+		"Bundle":      bundle,
 		"Atespace":    e.Agent.Atespace,
 		"Image":       e.Agent.Image,
 		"Project":     e.Agent.Project,
