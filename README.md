@@ -37,7 +37,7 @@ decisions so far.
 Everything here is generic. A deployment's own values (project, hostnames,
 registry paths, sizing) live in a private overlay that builds on this
 repository at a pinned commit. The agent-substrate demo cluster's overlay
-is `go-steer/shipmind-agent-substrate`.
+is `go-steer/shipmind-deploy`.
 
 ## Try it
 
