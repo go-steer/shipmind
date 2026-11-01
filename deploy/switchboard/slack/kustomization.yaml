@@ -39,8 +39,8 @@ resources:
   - ../../vendor/switchboard/deploy/components/durable-state/pvc
 images:
   - name: ghcr.io/go-steer/switchboard
-    newTag: 0.9.0
-    digest: sha256:94a417d11eb1f2fc19339e5879e49fb0d0b085a4c6eb7ed822a366fe469529ed
+    newTag: 0.9.1
+    digest: sha256:985c50f0ac11d47adc0f35742ea6f7410b18b84da8e8583c784896f152bf09e9
 patches:
   - path: deployment.yaml
     target:
