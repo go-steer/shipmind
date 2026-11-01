@@ -70,6 +70,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Fixed
 
+- k8s-lookout v0.43.1: an unchanged Event re-delivered by a relist no
+  longer re-opens a resolved incident, which kept staging's nightly
+  incident task awake past its suspend and re-created it after the
+  scenario deleted it (#60).
+
 - `shipmind scenario run` no longer fails a correct diagnosis when
   lookout sends an update about the incident (a restart burst) while the
   agent is still investigating: a message before the answer joins the
