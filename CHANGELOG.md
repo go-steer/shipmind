@@ -50,7 +50,7 @@ release is a tested set of component versions (see "Cutting a release" in
     fork's v1 protos and router mTLS; lookout mounts its pod
     certificate and the trust bundle, scope's own manifest does.
 
-- **switchboard on the substrate profile (#39).** switchboard v0.9.1
+- **switchboard on the substrate profile (#39).** switchboard v0.9.2
   (v0.9.0 asserted the chat user to mast, which refuses it),
   and `deploy/switchboard/slack`: its Slack gateway in front of the SRE
   triage agent as an ax agent, a task per thread, reaching the router
