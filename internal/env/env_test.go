@@ -94,6 +94,13 @@ func TestParseErrors(t *testing.T) {
 		{"slack command", withSlack(strings.Replace(slackOK, "command: /shipmind-stage", "command: shipmind", 1)), "slack.command"},
 		{"slack command case", withSlack(strings.Replace(slackOK, "command: /shipmind-stage", "command: /Shipmind", 1)), "slack.command"},
 		{"slack description", withSlack(slackOK + "  description: " + strings.Repeat("x", 141) + "\n"), "slack.description"},
+		{"secret name", withSecrets("  - secret: switchboard\n    keys: {a: b}\n"), "secrets[0].secret"},
+		{"secret no keys", withSecrets("  - secret: switchboard/slack\n    keys: {}\n"), "want at least one key"},
+		{"secret key", withSecrets("  - secret: switchboard/slack\n    keys: {'a b': c}\n"), "key \"a b\""},
+		{"secret manager name", withSecrets("  - secret: switchboard/slack\n    keys: {a: 'projects/x/secrets/y'}\n"), "Secret Manager secret name"},
+		{"secret project", withSecrets("  - secret: switchboard/slack\n    project: X\n    keys: {a: b}\n"), "secrets[0].project"},
+		{"secret restart", withSecrets("  - secret: switchboard/slack\n    keys: {a: b}\n    restart: [Switchboard]\n"), "restart \"Switchboard\""},
+		{"secret twice", withSecrets("  - secret: switchboard/slack\n    keys: {a: b}\n  - secret: switchboard/slack\n    keys: {a: b}\n"), "listed twice"},
 		{"duplicate expect", good + "  - object: apps.v1.Deployment.ns.name\n    reason: again\n", `"apps.v1.Deployment.ns.name" listed twice`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,6 +134,21 @@ func TestParseSlack(t *testing.T) {
 	if err != nil || e.Slack == nil || e.Slack.App != "shipmind-stage" || e.Slack.Command != "/shipmind-stage" ||
 		e.Slack.Description != "Chat with the staging agents" {
 		t.Fatalf("Parse = %+v, %v", e, err)
+	}
+}
+
+func withSecrets(list string) string {
+	return strings.Replace(good, "expect:", "secrets:\n"+list+"expect:", 1)
+}
+
+func TestParseSecrets(t *testing.T) {
+	e, err := Parse(strings.NewReader(withSecrets("  - secret: switchboard/switchboard-slack\n    keys:\n      app-token: shipmind-stage-slack-app-token\n      bot-token: shipmind-stage-slack-bot-token\n    restart: [switchboard]\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := e.Secrets[0]
+	if m.Namespace() != "switchboard" || m.Name() != "switchboard-slack" || m.Keys["bot-token"] != "shipmind-stage-slack-bot-token" || m.Restart[0] != "switchboard" {
+		t.Errorf("secret %+v", m)
 	}
 }
 

@@ -1,0 +1,27 @@
+{
+  "platform": "slack",
+  "agents": [
+    {
+      "name": "triage",
+      "display_name": "SRE triage",
+      "description": "Investigates the clusters it knows: workloads, events, incidents",
+      "kind": "ax",
+      "token_env": "SWITCHBOARD_AGENT_TOKEN_TRIAGE",
+      "ax": {
+        "server": "ax-server.ax-system.svc.cluster.local:8080",
+        "atespace": {{ printf "%q" .Atespace }},
+        "task_template_file": "/etc/switchboard/triage.yaml",
+        "scope": "thread"
+      }
+    }
+  ],
+  "default_agent": "triage",
+  "caller_id": "email",
+  "metrics_addr": ":9090",
+  "defaults": {
+    "progress_mode": "indicator",
+    "approvals": true
+  },
+  "slack_app_token_env": "SWITCHBOARD_SLACK_APP_TOKEN",
+  "slack_bot_token_env": "SWITCHBOARD_SLACK_BOT_TOKEN"
+}

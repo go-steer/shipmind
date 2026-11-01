@@ -54,6 +54,10 @@ type Env struct {
 	// Slack, when set, names the environment's Slack app, which
 	// `shipmind slack-app` prints switchboard's app manifest for.
 	Slack *Slack `yaml:"slack,omitempty"`
+	// Secrets are Kubernetes Secrets whose values live in Secret Manager:
+	// `shipmind up` copies them in, and `status` compares them, never
+	// printing a value.
+	Secrets []ManagedSecret `yaml:"secrets,omitempty"`
 	// Expect lists changes `shipmind status` reports as expected rather
 	// than as drift, each with the reason: Kubernetes objects by the ID
 	// kubectl diff gives them ("apps.v1.Deployment.ax-system.ax-redis"),
@@ -114,6 +118,25 @@ type Slack struct {
 	Description string `yaml:"description,omitempty"`
 }
 
+// ManagedSecret is a Kubernetes Secret copied from Secret Manager.
+type ManagedSecret struct {
+	// Secret is the Kubernetes Secret, "<namespace>/<name>".
+	Secret string `yaml:"secret"`
+	// Project holds the Secret Manager secrets; empty means agent.project.
+	Project string `yaml:"project,omitempty"`
+	// Keys maps each of the Secret's keys to a Secret Manager secret,
+	// whose latest version is its value.
+	Keys map[string]string `yaml:"keys"`
+	// Restart names Deployments in the Secret's namespace that read it
+	// only at startup (as environment variables), restarted when up
+	// changes it.
+	Restart []string `yaml:"restart,omitempty"`
+}
+
+// Namespace and Name split Secret.
+func (m ManagedSecret) Namespace() string { ns, _, _ := strings.Cut(m.Secret, "/"); return ns }
+func (m ManagedSecret) Name() string      { _, n, _ := strings.Cut(m.Secret, "/"); return n }
+
 // Cluster maps a bare cluster name to its full GKE resource name.
 type Cluster struct {
 	Name string `yaml:"name"`
@@ -133,6 +156,8 @@ var (
 	digestRef   = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 	digestOnly  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	kubectlID   = regexp.MustCompile(`^[A-Za-z0-9.-]+\.[A-Za-z0-9]+\.[A-Za-z0-9-.]*\.[a-z0-9.-]+$`)
+	secretKey   = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
+	smName      = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,255}$`)
 	slackApp    = regexp.MustCompile(`^[^\x00-\x1f]{1,35}$`)
 	slashCmd    = regexp.MustCompile(`^/[a-z0-9][a-z0-9_-]{0,30}$`)
 	agentID     = regexp.MustCompile(`^((secret|workspace|deployment) [a-z0-9-]+/[a-z0-9.-]+|(substrate|rollout) [A-Za-z]+/[a-z0-9-]+/[a-z0-9.-]+)$`)
@@ -253,6 +278,33 @@ func (e *Env) check() error {
 		}
 		if len([]rune(sl.Description)) > 140 || strings.ContainsAny(sl.Description, "\n\r") {
 			fail("slack.description: want one line of at most 140 characters")
+		}
+	}
+	managed := map[string]bool{}
+	for i, m := range e.Secrets {
+		ns, name, ok := strings.Cut(m.Secret, "/")
+		if !ok || !dnsLabel.MatchString(ns) || !dnsLabel.MatchString(name) {
+			fail("secrets[%d].secret %q: want <namespace>/<name>", i, m.Secret)
+		}
+		if managed[m.Secret] {
+			fail("secrets: %q listed twice", m.Secret)
+		}
+		managed[m.Secret] = true
+		if m.Project != "" && !projectRE.MatchString(m.Project) {
+			fail("secrets[%d].project %q: want a Google Cloud project ID", i, m.Project)
+		}
+		if len(m.Keys) == 0 {
+			fail("secrets[%d] (%s): want at least one key", i, m.Secret)
+		}
+		for k, v := range m.Keys {
+			if !secretKey.MatchString(k) || !smName.MatchString(v) {
+				fail("secrets[%d] (%s): key %q: %q, want <Secret key>: <Secret Manager secret name>", i, m.Secret, k, v)
+			}
+		}
+		for _, d := range m.Restart {
+			if !dnsLabel.MatchString(d) {
+				fail("secrets[%d] (%s): restart %q: want a Deployment name", i, m.Secret, d)
+			}
 		}
 	}
 	objs := map[string]bool{}

@@ -37,6 +37,7 @@ import (
 	"github.com/go-steer/shipmind/internal/cluster"
 	"github.com/go-steer/shipmind/internal/env"
 	"github.com/go-steer/shipmind/internal/render"
+	"github.com/go-steer/shipmind/internal/secrets"
 )
 
 // Where the agent's Secrets live. The task template Secret's name and
@@ -60,6 +61,9 @@ type Plan struct {
 	// SubstrateExtra are the third-party images versions.yaml pins for
 	// Substrate (its database, its proxy), which run beside its own.
 	SubstrateExtra []string
+	// Secrets reads the values of shipmind.yaml's `secrets` from Secret
+	// Manager; needed only when the environment lists any.
+	Secrets secrets.Source
 }
 
 // Change is one difference between the environment and the cluster.
@@ -218,7 +222,23 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 			add(g.what(), "missing (up generates "+g.Why+")")
 		}
 	}
-	for _, sr := range startupReaders {
+	managed, err := managedSecrets(ctx, p, c)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range managed {
+		add(w.what(), w.Why)
+	}
+	if found {
+		sw, err := switchboardSecret(ctx, p, c, t)
+		if err != nil {
+			return nil, err
+		}
+		if sw != nil {
+			add(sw.what(), sw.Why)
+		}
+	}
+	for _, sr := range readers(p) {
 		stale, err := sr.stale(ctx, c)
 		if err != nil {
 			return nil, err
@@ -692,6 +712,17 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 			generate = append(generate, g)
 		}
 	}
+	secretWrites, err := managedSecrets(ctx, p, c)
+	if err != nil {
+		return err
+	}
+	sw, err := switchboardSecret(ctx, p, c, t)
+	if err != nil {
+		return err
+	}
+	if sw != nil {
+		secretWrites = append(secretWrites, *sw)
+	}
 	// The Workspace is reconciled last, through ax, which on a fresh
 	// cluster only exists once the objects below have rolled out. When ax
 	// is already up, ask it now anyway, so a broken ax CLI or connection
@@ -754,6 +785,13 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 		}
 		log("%s generated (%s)%s", g.what(), g.Why, dry(opts.DryRun))
 	}
+	pendingNS := map[string]bool{}
+	for ns := range nsPending {
+		pendingNS[ns] = true
+	}
+	if err := writeSecrets(ctx, c, secretWrites, pendingNS, opts.DryRun, log); err != nil {
+		return err
+	}
 	if len(rest) > 0 {
 		out, err := c.Apply(ctx, []byte(restYAML), opts.DryRun)
 		if err != nil {
@@ -768,7 +806,7 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 		if templateChanged {
 			log("deployment %s/%s would be restarted (dry run)", Namespace, Lookout)
 		}
-		for _, sr := range startupReaders {
+		for _, sr := range readers(p) {
 			if sr.Deployment != Lookout {
 				log("deployment %s/%s would be restarted if it then runs on an older %s (dry run)", sr.Namespace, sr.Deployment, strings.TrimPrefix(sr.What, "its "))
 			}
@@ -791,7 +829,7 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 	// from the cluster's state, not from what this run changed, so an up
 	// that stopped between writing an object and restarting its reader is
 	// put right by the next one.
-	for _, sr := range startupReaders {
+	for _, sr := range readers(p) {
 		if sr.Deployment == Lookout {
 			continue // restarted on templateChanged, above
 		}

@@ -46,6 +46,7 @@ import (
 	"github.com/go-steer/shipmind/internal/env"
 	"github.com/go-steer/shipmind/internal/manifests"
 	"github.com/go-steer/shipmind/internal/overlay"
+	"github.com/go-steer/shipmind/internal/secrets"
 )
 
 // fetcher is how `vendor` reads source repositories; tests replace it.
@@ -53,6 +54,10 @@ var fetcher manifests.Fetcher = manifests.Git{}
 
 // newCluster is how the deploy commands reach a cluster; tests replace it.
 var newCluster = func(kubeContext string) cluster.Cluster { return cluster.Kube{Context: kubeContext} }
+
+// secretSource is how the deploy commands read Secret Manager; tests
+// replace it.
+var secretSource secrets.Source = secrets.Gcloud{}
 
 const usage = `usage: shipmind <command> [-f versions.yaml] [args]
 
@@ -215,7 +220,7 @@ func runDeploy(cmd string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "shipmind %s: %v\n", cmd, err)
 		return 1
 	}
-	plan := &deploy.Plan{Env: e, Root: *root, Objects: res.Objects, Ref: res.Ref}
+	plan := &deploy.Plan{Env: e, Root: *root, Objects: res.Objects, Ref: res.Ref, Secrets: secretSource}
 	if f, err := bom.Load(filepath.Join(*root, "versions.yaml")); err == nil {
 		if sub, ok := f.Component("substrate"); ok {
 			for _, img := range sub.Images {

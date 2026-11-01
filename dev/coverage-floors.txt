@@ -60,3 +60,5 @@ github.com/go-steer/shipmind/internal/render    85.0  # 86.2
 github.com/go-steer/shipmind/internal/scenario  91.0  # 92.1
 
 github.com/go-steer/shipmind/internal/slackapp  94.0  # 95.4
+
+github.com/go-steer/shipmind/internal/secrets  89.0  # 90.0

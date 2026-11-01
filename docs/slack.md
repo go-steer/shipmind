@@ -33,7 +33,18 @@ slack:
 
    To replace a token later, use `gcloud secrets versions add` with the same name.
 
-Deploying switchboard copies them into the cluster's `switchboard-slack` Secret (keys `app-token` and `bot-token`), which switchboard's Slack overlay reads.
+Deploying switchboard copies them into the cluster's `switchboard-slack` Secret (keys `app-token` and `bot-token`). The environment's `shipmind.yaml` names them:
+
+```yaml
+secrets:
+  - secret: switchboard/switchboard-slack
+    keys:
+      app-token: example-stage-slack-app-token
+      bot-token: example-stage-slack-bot-token
+    restart: [switchboard]
+```
+
+and its overlay references `deploy/switchboard/slack` at the same shipmind commit as its profile. The router must allow switchboard's identity, `spiffe://cluster.local/ns/switchboard/sa/switchboard` (Substrate's `ingressAllowedSPIFFEIDs`).
 
 ## After a switchboard bump
 

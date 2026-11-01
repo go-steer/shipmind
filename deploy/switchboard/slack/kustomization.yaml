@@ -1,0 +1,48 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# switchboard's Slack gateway in front of the SRE triage agent, as an ax
+# agent: each Slack thread gets an agent task of its own, started from the
+# agent's task template, suspended when idle and woken by the next
+# message, reached through Substrate's router over mTLS (switchboard
+# docs/ax-backend.md). An environment opts in by referencing this at the
+# same shipmind commit as its profile, once its Slack app exists
+# (docs/slack.md).
+#
+# What isn't here, because it is the environment's:
+#   - Secret switchboard/switchboard-slack (app-token, bot-token): copied
+#     from Secret Manager by `shipmind up` (shipmind.yaml `secrets`).
+#   - Secret switchboard/switchboard-agent (config.json, triage.yaml,
+#     token): rendered by `shipmind up` from shipmind.yaml, like lookout's
+#     task template, since the template carries the agent's token.
+#   - The router allowlist entry for this pod's identity,
+#     spiffe://cluster.local/ns/switchboard/sa/switchboard.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: switchboard
+resources:
+  - namespace.yaml
+  - ../../vendor/switchboard/deploy/base/11-serviceaccount
+  - ../../vendor/switchboard/deploy/base/16-networkpolicy
+  - ../../vendor/switchboard/deploy/base/51-deployment
+  - ../../vendor/switchboard/deploy/components/durable-state/pvc
+images:
+  - name: ghcr.io/go-steer/switchboard
+    newTag: 0.9.0
+    digest: sha256:94a417d11eb1f2fc19339e5879e49fb0d0b085a4c6eb7ed822a366fe469529ed
+patches:
+  - path: deployment.yaml
+    target:
+      kind: Deployment
+      name: switchboard
