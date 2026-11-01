@@ -173,11 +173,11 @@ components:
 
   - name: switchboard
     source: github.com/go-steer/switchboard
-    version: v0.9.0
+    version: v0.9.1
     profiles: [standalone, substrate]
     images:
       - name: switchboard
-        ref: ghcr.io/go-steer/switchboard:0.9.0@sha256:94a417d11eb1f2fc19339e5879e49fb0d0b085a4c6eb7ed822a366fe469529ed
+        ref: ghcr.io/go-steer/switchboard:0.9.1@sha256:985c50f0ac11d47adc0f35742ea6f7410b18b84da8e8583c784896f152bf09e9
     manifests:
       - deploy/base/11-serviceaccount.yaml
       - deploy/base/16-networkpolicy.yaml
@@ -186,7 +186,10 @@ components:
     files:
       - deploy/slack/app-manifest.yaml
     note: >-
-      The chat gateway. v0.9.0 starts agents as ax tasks (switchboard
+      The chat gateway. v0.9.0 started agents as ax tasks; v0.9.1 stops
+      asserting the chat user to them by default (mast's attach surface
+      refuses X-Asserted-Caller; per-agent `assert_caller`, for core-agent
+      later, shipmind#48). It starts agents as ax tasks (switchboard
       docs/ax-backend.md): one per Slack thread, reached through
       Substrate's router over mTLS. deploy/switchboard/slack runs its Slack
       gateway in front of the SRE triage agent; an environment opts in by
