@@ -104,18 +104,18 @@ components:
 
   - name: agent-mast
     source: github.com/go-steer/shipmind
-    version: be40f0d15a1318f1e59cceb796a699918d265aa4
+    version: bd1b6a78b303857993b0389c10fdbe85690f0736
     profiles: [substrate]
     images:
       - name: agent-mast
-        ref: ghcr.io/go-steer/shipmind/agent-mast:be40f0d15a1318f1e59cceb796a699918d265aa4-runner-12dbe163b207@sha256:0ae29556a980c1a5d012066e914a4bb5b6ab157258f350a3bdd47683a4ad50a5
+        ref: ghcr.io/go-steer/shipmind/agent-mast:bd1b6a78b303857993b0389c10fdbe85690f0736@sha256:4190739cb04320d3f9d37e6ab90af7399af2df291381e5dcb9b9b0d8ad495e6a
     note: >-
       The agent image, built by this repository (images/agent-mast) at the
       commit in version: the mast and ax-runner pins above plus
-      agents/sre-triage. CI publishes a new build from every main commit
-      that touches those inputs; move this pin to one deliberately. This
-      build was dispatched with ax-runner-commit 12dbe16, ahead of the pin
-      moving (hence the -runner- tag).
+      agents/sre-triage's bundles (gke-triage-f for lookout's incidents,
+      gke-chat for switchboard's threads). CI publishes a new build from
+      every main commit that touches those inputs; move this pin to one
+      deliberately.
 
   - name: k8s-lookout
     source: github.com/go-steer/k8s-lookout
