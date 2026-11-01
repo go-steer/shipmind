@@ -116,8 +116,9 @@ func fromSecretManager(ctx context.Context, p *Plan, m env.ManagedSecret) (map[s
 
 // switchboardSecret returns switchboard's agent Secret if the render runs
 // switchboard and the cluster's copy is missing or differs: its
-// configuration and the agent's task template, rendered with the agent's
-// tokens like lookout's, and the attach token as its bearer.
+// configuration and the agent's task template for conversations (the
+// chat bundle), rendered with the agent's tokens like lookout's, and the
+// attach token as its bearer.
 func switchboardSecret(ctx context.Context, p *Plan, c cluster.Cluster, t agent.Tokens) (*secretWrite, error) {
 	if _, ok := p.Objects.Find("Deployment", SwitchboardNamespace, Switchboard); !ok {
 		return nil, nil
@@ -126,7 +127,7 @@ func switchboardSecret(ctx context.Context, p *Plan, c cluster.Cluster, t agent.
 	if err != nil {
 		return nil, err
 	}
-	task, err := agent.Task(p.Root, p.Env, t)
+	task, err := agent.ChatTask(p.Root, p.Env, t)
 	if err != nil {
 		return nil, err
 	}

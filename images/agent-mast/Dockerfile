@@ -78,5 +78,6 @@ COPY --from=ax-runner /out/ax-task-runner /usr/local/bin/ax-task-runner
 COPY --from=mast /out/mast /out/ax-mast-entry /usr/local/bin/
 COPY agents/sre-triage/gke-triage /opt/mast/workloads/gke-triage
 COPY agents/sre-triage/gke-triage-f /opt/mast/workloads/gke-triage-f
+COPY agents/sre-triage/gke-chat /opt/mast/workloads/gke-chat
 
 ENTRYPOINT ["/usr/local/bin/ax-task-runner"]

@@ -263,3 +263,36 @@ func TestSwitchboardConfigErrors(t *testing.T) {
 		t.Errorf("broken template: %v", err)
 	}
 }
+
+// lookout's tasks run the incident bundle and switchboard's the chat
+// bundle; both are in the repository and baked into the agent image, so a
+// template can't name a bundle the image lacks.
+func TestBundles(t *testing.T) {
+	inc, err := Task(root, testEnv(), tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, err := ChatTask(root, testEnv(), tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(inc), "--workload=/opt/mast/workloads/"+IncidentBundle+"\n") ||
+		!strings.Contains(string(chat), "--workload=/opt/mast/workloads/"+ChatBundle+"\n") {
+		t.Errorf("incident template:\n%s\nchat template:\n%s", inc, chat)
+	}
+	if strings.Replace(string(chat), "workloads/"+ChatBundle+"\n", "workloads/"+IncidentBundle+"\n", 1) != string(inc) {
+		t.Error("the two templates differ in more than the bundle")
+	}
+	dockerfile, err := os.ReadFile(filepath.Join(root, "images/agent-mast/Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []string{IncidentBundle, ChatBundle} {
+		if _, err := os.Stat(filepath.Join(root, "agents/sre-triage", b, "workload.yaml")); err != nil {
+			t.Errorf("bundle %s: %v", b, err)
+		}
+		if !strings.Contains(string(dockerfile), "COPY agents/sre-triage/"+b+" /opt/mast/workloads/"+b+"\n") {
+			t.Errorf("the agent image doesn't carry bundle %s", b)
+		}
+	}
+}

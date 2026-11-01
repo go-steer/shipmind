@@ -1308,7 +1308,7 @@ func TestSwitchboardSecret(t *testing.T) {
 	}
 	// Up to date: nothing; the template changing (a new agent image) shows.
 	cfg, _ := agent.SwitchboardConfig(root, testEnv())
-	task, _ := agent.Task(root, testEnv(), tok)
+	task, _ := agent.ChatTask(root, testEnv(), tok)
 	c = inSync(t)
 	c.secrets["switchboard/switchboard-agent"] = map[string][]byte{"config.json": cfg, "triage.yaml": task, "token": []byte(tok.Attach)}
 	if r, err := Status(ctx, p, c); err != nil || len(r.Changes) != 0 {
