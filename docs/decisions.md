@@ -4,6 +4,17 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-01: The private repository is go-steer/shipmind-deploy
+
+The private companion repository (2026-10-20, "Public repository,
+private environment overlay") is renamed from
+`go-steer/shipmind-agent-substrate` to `go-steer/shipmind-deploy`.
+
+**Why:** it was named after its first environment, the agent-substrate
+cluster, and now holds all of ours (agent-substrate, shipmind-stage,
+shipmind-prod) with their setup scripts and runbooks. GitHub redirects
+the old name.
+
 ## 2026-10-21: switchboard's ax backend targets v0.9, not v0.8
 
 Milestone 3's switchboard ax backend now targets switchboard v0.9.

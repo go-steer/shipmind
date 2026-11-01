@@ -27,7 +27,7 @@ deployment manifests. It holds no component source code.
   pinned by digest, never by tag alone. `shipmind check` enforces both.
 - **Nothing environment-specific in this repository.** Project IDs,
   domains, registry paths and cluster names belong in the private overlay
-  (`go-steer/shipmind-agent-substrate`). This repository is public.
+  (`go-steer/shipmind-deploy`). This repository is public.
 - **No secrets anywhere.** Not in this repository and not in the overlay.
   Keys and tokens live in Secret Manager or Kubernetes Secrets; manifests
   refer to them.
@@ -107,7 +107,7 @@ force-push `main`. Full contributor flow + DCO in
 
 **Milestone 1 done (2026-10-20).** The agent-substrate demo cluster is
 deployed with `shipmind up` from the substrate profile plus its private
-overlay (go-steer/shipmind-agent-substrate); `shipmind status` reports
+overlay (go-steer/shipmind-deploy); `shipmind status` reports
 no drift, Substrate included. Every image the profile renders is pinned
 in `versions.yaml` and built by this repository's CI. The nightly
 scenario (`deploy/e2e/substrate`, missing-env) runs in the cluster at

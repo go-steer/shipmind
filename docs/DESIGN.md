@@ -138,7 +138,7 @@ docs/
 
 Environment-specific values (project IDs, domains, registry paths, the
 agent-substrate cluster's overlay) live in a private companion repository,
-`go-steer/shipmind-agent-substrate`, the same split as supercargo and
+`go-steer/shipmind-deploy`, the same split as supercargo and
 supercargo-nstech. It holds kustomize overlays that reference this
 repository's profiles at a full commit SHA, so moving the overlay to a new
 shipmind is a reviewed commit there, as moving a component pin is here. Nothing in
