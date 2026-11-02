@@ -92,7 +92,6 @@ specialists:
   # The one specialist that can change the cluster. Everything above it
   # diagnoses and stops — mast refuses to start this roster if a
   # diagnoser holds a write tool (internal/compose.CheckCapabilitySplit).
-  - change-executor
 
 budget:
   max_wallclock_seconds: 300
@@ -127,14 +126,9 @@ builtin_tools:
 # but return not_implemented until v0.2 wires the reference-graph
 # library.
 #
-# Uncommenting this on THIS roster is refused at startup, deliberately.
-# invoke_specialist runs each specialist on a runner of its own, and the
-# write gate is a runner plugin, so change-executor's mutating calls
-# would fire without the approval `hitl:` above asks for and without a
-# durable record of what they did (go-steer/mast#235). Drop
-# change-executor from the roster, or set `hitl.on_mutation: apply` if
-# those writes are genuinely meant to fire unattended. Coordinator and
-# graph dispatch are unaffected.
+# The roster has no specialist that changes the cluster (the GKE MCP
+# endpoint is read-only), so the planner's separate runners have no write
+# gate to bypass here.
 # planner:
 #   enabled: true
 
