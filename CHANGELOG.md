@@ -68,6 +68,15 @@ release is a tested set of component versions (see "Cutting a release" in
   Secret Manager, copied in by `up` and compared by `status`, never
   printed.
 
+### Changed
+
+- `gke-triage-f` and `gke-chat` drop the `change-executor` specialist.
+  The agent reads clusters through GKE's read-only MCP endpoint, so it
+  had no write tools to run and every proposed change was already left
+  empty (go-steer/mast#503); a person applies the fix the finding names.
+  core-agent refuses a specialist naming tools its server lacks, so this
+  is also what lets the bundles import (go-steer/core-agent#1483, #48).
+
 ### Fixed
 
 - k8s-lookout v0.43.1: an unchanged Event re-delivered by a relist no
