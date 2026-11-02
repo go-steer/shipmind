@@ -5,7 +5,7 @@ go 1.26.10
 require (
 	github.com/go-steer/purser v0.5.0
 	go.yaml.in/yaml/v2 v2.4.4
-	go.yaml.in/yaml/v3 v3.0.5
+	go.yaml.in/yaml/v3 v3.0.6
 	sigs.k8s.io/kustomize/api v0.21.2
 	sigs.k8s.io/kustomize/kyaml v0.21.2
 )
