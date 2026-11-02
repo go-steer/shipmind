@@ -104,11 +104,11 @@ components:
 
   - name: agent-mast
     source: github.com/go-steer/shipmind
-    version: bd1b6a78b303857993b0389c10fdbe85690f0736
+    version: 57db3c533c28b77a9ad9c447c1b63ca4029d5761
     profiles: [substrate]
     images:
       - name: agent-mast
-        ref: ghcr.io/go-steer/shipmind/agent-mast:bd1b6a78b303857993b0389c10fdbe85690f0736@sha256:4190739cb04320d3f9d37e6ab90af7399af2df291381e5dcb9b9b0d8ad495e6a
+        ref: ghcr.io/go-steer/shipmind/agent-mast:57db3c533c28b77a9ad9c447c1b63ca4029d5761@sha256:a37c1199fb76c4be74faeac96c2180ed40f644745a1cd61711df4594aa044574
     note: >-
       The agent image, built by this repository (images/agent-mast) at the
       commit in version: the mast and ax-runner pins above plus
