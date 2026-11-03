@@ -26,6 +26,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -107,8 +108,13 @@ func tokens(ctx context.Context, c cluster.Cluster) (t agent.Tokens, source stri
 	if err != nil {
 		return t, "", false, err
 	}
+	// A template whose tokens can't be read is an error even with the
+	// tokens Secret present: deploying over it would cut lookout off
+	// from the tasks that carry whatever it holds. One naming no tokens
+	// carries none a task could hold, so with the Secret present it is
+	// simply replaced; without it there is nothing to adopt.
 	live, inTemplate, err := templateTokens(ctx, c)
-	if err != nil && !inStore {
+	if err != nil && (!inStore || !errors.Is(err, errNoTemplateTokens)) {
 		return t, "", false, err
 	}
 	if inStore {
@@ -134,6 +140,9 @@ func tokens(ctx context.Context, c cluster.Cluster) (t agent.Tokens, source stri
 	return live, "adopted from the live task template (secret " + Namespace + "/" + AgentSecret + ")", true, nil
 }
 
+// errNoTemplateTokens is a live task template that names no tokens.
+var errNoTemplateTokens = fmt.Errorf("tokens in secret %s/%s: the task template names none", Namespace, AgentSecret)
+
 // templateTokens reads the tokens out of the live task template, if
 // there is one: mast's carries both, core-agent's (agent.incidentImage)
 // only the attach token, and Inject comes back empty.
@@ -150,20 +159,22 @@ func templateTokens(ctx context.Context, c cluster.Cluster) (t agent.Tokens, fou
 	if err := yaml.Unmarshal(data["task.yaml"], &task); err != nil {
 		return t, false, fmt.Errorf("secret %s/%s task.yaml: %w", Namespace, AgentSecret, err)
 	}
-	coreAgent := false
+	coreAgent, named := false, false
 	for _, e := range task.Spec.Env {
 		switch e.Name {
 		case "MAST_INJECT_TOKEN":
-			t.Inject = e.Value
+			t.Inject, named = e.Value, true
 		case "MAST_ATTACH_TOKEN":
-			t.Attach = e.Value
+			t.Attach, named = e.Value, true
 		case "CORE_AGENT_ATTACH_TOKEN":
-			t.Attach, coreAgent = e.Value, true
+			t.Attach, coreAgent, named = e.Value, true, true
 		}
 	}
+	if !named {
+		return t, false, errNoTemplateTokens
+	}
 	if coreAgent && t.Inject == "" {
-		// Check with a stand-in inject token: only the attach token is here.
-		if err := (agent.Tokens{Inject: strings.Repeat("0", 32), Attach: t.Attach}).Check(); err != nil {
+		if err := t.CheckAttach(); err != nil {
 			return t, false, fmt.Errorf("tokens in secret %s/%s: %w", Namespace, AgentSecret, err)
 		}
 		return t, true, nil

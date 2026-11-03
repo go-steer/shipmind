@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	yaml11 "go.yaml.in/yaml/v2"
 	"go.yaml.in/yaml/v3"
@@ -436,6 +437,23 @@ func TestCoreAgentImage(t *testing.T) {
 	ms := o.Attach.MultiSession
 	if !ms.Enabled || ms.Auth.TokenIdentity == "" || len(ms.ProxyIdentities) != 0 {
 		t.Errorf("attach overlay %+v: want multi-session on the token's identity, and no proxies", ms)
+	}
+	// No one approves an incident's tool calls: they're bounded.
+	b, err = os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inc struct {
+		Permissions struct {
+			ApprovalTimeout string `json:"approval_timeout"`
+		} `json:"permissions"`
+		Attach any `json:"attach"`
+	}
+	if err := json.Unmarshal(b, &inc); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := time.ParseDuration(inc.Permissions.ApprovalTimeout); err != nil || d <= 0 || d > 2*time.Minute || inc.Attach != nil {
+		t.Errorf("incident overlay %s: want a short approval_timeout and no attach settings", b)
 	}
 	for _, step := range []string{`jq -s '.[0] * .[1]'`, "/in/ax/core-agent-$b.json", "--attach-token=SMOKE_TOKEN"} {
 		if !strings.Contains(string(dockerfile), step) {

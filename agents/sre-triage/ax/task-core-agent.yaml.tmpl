@@ -30,9 +30,13 @@
 # user instead (switchboard's assert_caller, plus proxy_identities there)
 # waits: core-agent's sessions belong to their creator, and switchboard
 # adds no contributors, so a thread would answer only the person who
-# started it. gke-triage-f has no overlay: core-agent serves sessions on
-# the token alone, owned by its default identity, and lookout asserts no
-# one.
+# started it. gke-triage-f's overlay has no attach block: core-agent
+# serves sessions on the token alone, owned by its default identity, and
+# lookout asserts no one. It bounds approvals instead
+# (permissions.approval_timeout): no one approves an incident's tool
+# calls, so a call outside the allow list fails after 30s rather than
+# holding the turn until its wall-clock budget. switchboard relays
+# approvals to Slack, so a thread's calls wait for the person.
 apiVersion: ax.io/v1alpha1
 kind: Task
 metadata:

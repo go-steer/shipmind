@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -163,5 +164,95 @@ func TestRouter(t *testing.T) {
 	}
 	if _, err := (&Router{Base: "::bad"}).Sessions(ctx, "x"); err == nil {
 		t.Error("bad URL accepted")
+	}
+}
+
+// A real core-agent v3.1.0-dev.3 stream (testdata/core-agent-incident.sse,
+// lookout's inject of an incident as captured from /events): the message
+// arrives wrapped in core-agent's inbox bundle, and the incident is still
+// found in it.
+func TestCoreAgentIncident(t *testing.T) {
+	f, err := os.Open("testdata/core-agent-incident.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	tr, err := ParseEvents(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(tr.Events[0].Texts[0], inboxHeader) {
+		t.Fatalf("fixture's first event isn't an inbox bundle: %q", tr.Events[0].Texts[0])
+	}
+	in, ok := tr.FirstIncident()
+	if !ok || !in.About("triage-lab", "missing-env-1103-120000") {
+		t.Errorf("FirstIncident = %+v, %v", in, ok)
+	}
+}
+
+func TestMessageText(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`{"kind":"pod.crashloop"}`, `{"kind":"pod.crashloop"}`},                                         // mast: as sent
+		{"[Inbox]\n- from anon: {\"kind\":\"x\"}\n\nHow to handle", "{\"kind\":\"x\"}\n\nHow to handle"}, // core-agent
+		{"[Inbox]\n- from sa:lookout: hello\n- from bob: hi\n", "hello\n- from bob: hi\n"},               // first bullet
+		{"[Inbox]\n- {\"kind\":\"x\",\"a\":\"b: c\"}\n", "{\"kind\":\"x\",\"a\":\"b: c\"}\n"},            // no sender
+		{"[Inbox]\n- from a b: c", "from a b: c"},                                                        // not a sender
+	} {
+		if got := messageText(tc.in); got != tc.want {
+			t.Errorf("messageText(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A subagent started in the background reports in a later "[Background
+// reports]" turn; that is not a new message, and the answer is what the
+// agent says after it.
+func TestAnswerAfterBackgroundReport(t *testing.T) {
+	tr := &Transcript{Events: []Event{
+		{Seq: 1, Author: "user", Role: "user", Texts: []string{"[Inbox]\n- from anon: {\"kind\":\"pod.crashloop\"}"}},
+		{Seq: 2, Author: "core_agent", Role: "model", Texts: []string{"Delegated to _fallback; waiting for its finding."}},
+		{Seq: 3, Author: "user", Role: "user", Texts: []string{"[Background reports]\n- _fallback (completed): DATABASE_URL is missing"}},
+		{Seq: 4, Author: "core_agent", Role: "model", Texts: []string{"The pod crashes because DATABASE_URL is unset in demo-config."}},
+	}}
+	answer, superseded := tr.Answer()
+	if superseded || !strings.Contains(answer, "DATABASE_URL is unset") {
+		t.Errorf("Answer = %q, superseded %v", answer, superseded)
+	}
+}
+
+// core-agent's /status says idle while a background subagent still
+// works; State reports that as working, and mast's missing /agents
+// route (404) as nothing running.
+func TestStateWithSubagents(t *testing.T) {
+	agents := `{"agents":[{"id":"a1","name":"_fallback","status":"running"}]}`
+	agentsCode := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sessions/s1/status":
+			fmt.Fprint(w, `{"state":"idle"}`)
+		case "/sessions/s1/agents":
+			w.WriteHeader(agentsCode)
+			fmt.Fprint(w, agents)
+		default:
+			http.Error(w, "no such session", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	r := &Router{Base: srv.URL, Atespace: "agents", Token: "tok"}
+	ctx := context.Background()
+	if s, err := r.State(ctx, "t", "s1"); err != nil || s != "working" {
+		t.Errorf("running subagent: State = %q, %v", s, err)
+	}
+	agents = `{"agents":[{"id":"a1","name":"_fallback","status":"completed"}]}`
+	if s, err := r.State(ctx, "t", "s1"); err != nil || s != "idle" {
+		t.Errorf("finished subagent: State = %q, %v", s, err)
+	}
+	agentsCode, agents = http.StatusInternalServerError, "boom"
+	if _, err := r.State(ctx, "t", "s1"); err == nil {
+		t.Error("a failing /agents read reported a state")
+	}
+	agentsCode, agents = http.StatusNotFound, "not found"
+	if s, err := r.State(ctx, "t", "s1"); err != nil || s != "idle" {
+		t.Errorf("no /agents route (mast): State = %q, %v", s, err)
 	}
 }

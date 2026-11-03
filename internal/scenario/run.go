@@ -211,6 +211,10 @@ type Sweeper interface {
 	DeleteLabeled(ctx context.Context, namespace, kinds, selector string) (string, error)
 }
 
+// coreAgentDefaultSession is core-agent's own startup session, which no
+// incident lands in; reading its stream would cost EventsWait per task.
+const coreAgentDefaultSession = "default"
+
 // cleanupTimeout bounds cleanup, which runs even after ctx is cancelled
 // (a SIGTERM, a Job's deadline).
 const cleanupTimeout = 3 * time.Minute
@@ -376,11 +380,12 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	r.SuspendAfter = o.Now().Sub(removedAt).Round(time.Second).String()
 	o.Log("suspended after %s", r.SuspendAfter)
 
-	// 4. Wake it through the router. mast lists only the sessions in its
-	// memory (a restarted mast lists none until one is used), and this is
-	// the first request since the suspend, so a listed session with its
-	// history means the task resumed from its snapshot rather than
-	// restarting.
+	// 4. Wake it through the router. The agent lists a session in its
+	// memory as "active" (a restarted mast lists none until one is used;
+	// a restarted core-agent lists its stored sessions as "idle"), and
+	// this is the first request since the suspend, so an active session
+	// with its history means the task resumed from its snapshot rather
+	// than restarting.
 	sessions, err := agent.Sessions(ctx, r.Task)
 	if err != nil {
 		failf("waking task %s: %v", r.Task, err)
@@ -389,9 +394,9 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	i := slices.IndexFunc(sessions, func(s Session) bool { return s.ID == r.Session })
 	switch {
 	case i < 0:
-		failf("after waking, task %s does not list session %s: mast restarted instead of resuming", r.Task, r.Session)
+		failf("after waking, task %s does not list session %s: the agent restarted instead of resuming", r.Task, r.Session)
 	case sessions[i].Status != "active":
-		failf("after waking, session %s is %q, not active: mast restarted instead of resuming", r.Session, sessions[i].Status)
+		failf("after waking, session %s is %q, not active: the agent restarted instead of resuming", r.Session, sessions[i].Status)
 	default:
 		woken, err := agent.Events(ctx, r.Task, r.Session)
 		if err != nil || len(woken.Events) < events {
@@ -432,6 +437,9 @@ func findIncident(ctx context.Context, tasks Tasks, agent Agent, before map[stri
 			continue // still booting
 		}
 		for _, sess := range sessions {
+			if sess.ID == coreAgentDefaultSession {
+				continue
+			}
 			tr, err := agent.Events(ctx, t, sess.ID)
 			if err != nil {
 				continue
@@ -476,6 +484,9 @@ func sweep(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o
 			continue
 		}
 		for _, sess := range sessions {
+			if sess.ID == coreAgentDefaultSession {
+				continue
+			}
 			tr, err := agent.Events(ctx, t, sess.ID)
 			if err != nil {
 				continue

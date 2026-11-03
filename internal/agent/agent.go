@@ -50,11 +50,20 @@ func (t Tokens) Check() error {
 	if !tokenRE.MatchString(t.Inject) {
 		return fmt.Errorf("inject token: want 32 to 128 lowercase hex characters")
 	}
-	if !tokenRE.MatchString(t.Attach) {
-		return fmt.Errorf("attach token: want 32 to 128 lowercase hex characters")
+	if err := t.CheckAttach(); err != nil {
+		return err
 	}
 	if t.Inject == t.Attach {
 		return fmt.Errorf("inject and attach tokens are the same")
+	}
+	return nil
+}
+
+// CheckAttach checks the attach token alone: all a core-agent task
+// template carries.
+func (t Tokens) CheckAttach() error {
+	if !tokenRE.MatchString(t.Attach) {
+		return fmt.Errorf("attach token: want 32 to 128 lowercase hex characters")
 	}
 	return nil
 }

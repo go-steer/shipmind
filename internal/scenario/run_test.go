@@ -240,7 +240,7 @@ func TestRunFailures(t *testing.T) {
 		{"unsettled answer", func(w *world) { w.neverIdle = true }, "no settled answer within"},
 		{"wrong answer", func(w *world) { w.answer = "The pod is crash-looping." }, "the answer lacks DATABASE_URL"},
 		{"no suspend", func(w *world) { w.suspendAfter = -1 }, "did not suspend"},
-		{"restarted", func(w *world) { w.wokeStatus = "idle" }, "mast restarted instead of resuming"},
+		{"restarted", func(w *world) { w.wokeStatus = "idle" }, "the agent restarted instead of resuming"},
 		{"lost history", func(w *world) { w.wokeEvents = 1 }, "lost history"},
 		{"cleanup fails", func(w *world) { w.failDelete = true }, "deleting task lookout-0123456789abcdef"},
 	} {

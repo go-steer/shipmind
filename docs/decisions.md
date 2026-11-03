@@ -15,7 +15,11 @@ the mast template and `agent-mast` are deleted.
 **Why:** an environment can move each use on its own and back, and the
 nightly scenario, which drives an incident end to end, is the check for
 this one. lookout needed no change: its ax sink was written against
-core-agent's session API.
+core-agent's session API. The scenario did: core-agent wraps an injected
+message in an `[Inbox]` bundle and can finish an investigation in a
+later turn. Moving either way applies to new incident tasks only: ax
+tasks are immutable, and lookout reuses an incident's task when it
+reopens, so delete old ones to move them.
 
 **Rejected:** switching `agent.image` itself to core-agent (it would
 move every environment's incidents and threads together, and prod and

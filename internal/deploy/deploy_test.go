@@ -1450,3 +1450,35 @@ func TestIncidentImage(t *testing.T) {
 		t.Errorf("no tokens Secret: err = %v", err)
 	}
 }
+
+// The live template is checked against the stored tokens token by token:
+// a mast template that differs only in its inject token is refused, and
+// a template whose tokens are malformed is an error even with the tokens
+// Secret present, rather than silently overwritten.
+func TestTemplateTokenChecks(t *testing.T) {
+	ctx := context.Background()
+	c := inSync(t)
+	other := agent.Tokens{Inject: strings.Repeat("c", 32), Attach: tok.Attach}
+	task, err := agent.Task(root, testEnv(), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = task
+	if _, err := Status(ctx, plan(t), c); err == nil || !strings.Contains(err.Error(), "disagree") {
+		t.Errorf("inject token differs: err = %v", err)
+	}
+
+	c = inSync(t)
+	e := testEnv()
+	e.Agent.IncidentImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("3", 64)
+	good, err := agent.Task(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = []byte(strings.Replace(string(good), tok.Attach, strings.ToUpper(tok.Attach), 1))
+	p := plan(t)
+	p.Env.Agent.IncidentImage = e.Agent.IncidentImage
+	if err := Up(ctx, p, c, UpOptions{}); err == nil || len(writes(c.ops)) != 0 {
+		t.Errorf("malformed attach token: err = %v, writes %v; want a refusal before any write", err, c.ops)
+	}
+}
