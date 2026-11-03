@@ -76,10 +76,18 @@ func (r *Router) get(ctx context.Context, task, path string) (*http.Response, er
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("GET %s on %s: %s: %s", path, task, resp.Status, strings.TrimSpace(string(b)))
+		return nil, &statusError{code: resp.StatusCode, msg: fmt.Sprintf("GET %s on %s: %s: %s", path, task, resp.Status, strings.TrimSpace(string(b)))}
 	}
 	return resp, nil
 }
+
+// statusError is a non-200 answer from the agent.
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return e.msg }
 
 func (r *Router) getJSON(ctx context.Context, task, path string, v any) error {
 	resp, err := r.get(ctx, task, path)
@@ -102,12 +110,39 @@ func (r *Router) Sessions(ctx context.Context, task string) ([]Session, error) {
 }
 
 // State returns a session's agent state ("idle" when not working).
+//
+// core-agent reports "idle" between turns even while a subagent the
+// model started in the background (spawn_agent) is still investigating;
+// its result arrives later and starts another turn. So an idle session
+// with a running subagent is reported as "working". mast has no
+// /agents route, and its 404 means none.
 func (r *Router) State(ctx context.Context, task, session string) (string, error) {
 	var out struct {
 		State string `json:"state"`
 	}
 	if err := r.getJSON(ctx, task, "/sessions/"+url.PathEscape(session)+"/status", &out); err != nil {
 		return "", err
+	}
+	if out.State != "idle" {
+		return out.State, nil
+	}
+	var agents struct {
+		Agents []struct {
+			Status string `json:"status"`
+		} `json:"agents"`
+	}
+	err := r.getJSON(ctx, task, "/sessions/"+url.PathEscape(session)+"/agents", &agents)
+	var se *statusError
+	switch {
+	case errors.As(err, &se) && se.code == http.StatusNotFound:
+		return out.State, nil
+	case err != nil:
+		return "", err
+	}
+	for _, a := range agents.Agents {
+		if a.Status == "running" {
+			return "working", nil
+		}
 	}
 	return out.State, nil
 }
@@ -150,7 +185,8 @@ type Event struct {
 	Texts  []string
 }
 
-// ParseEvents reads mast's server-sent events: "data:" lines carrying an
+// ParseEvents reads the agent's server-sent events (mast's and
+// core-agent's share the shape): "data:" lines carrying an
 // object with a seq are session events; one carrying cost_usd_total is a
 // usage update. Other lines are ignored. It returns what it parsed when
 // the stream fails, along with the error.
@@ -203,7 +239,42 @@ func ParseEvents(r io.Reader) (*Transcript, error) {
 // "user" and carrying text. Tool results carry role "user" too, from the
 // specialist that called the tool, and function responses come from
 // "user" with no text; neither is a new message.
-func isUser(e Event) bool { return e.Author == "user" && len(e.Texts) > 0 }
+//
+// A core-agent "[Background reports]" turn isn't one either: it carries
+// a background subagent's result back to the agent that started it, and
+// the agent's answer comes after it.
+func isUser(e Event) bool {
+	return e.Author == "user" && len(e.Texts) > 0 && !strings.HasPrefix(e.Texts[0], backgroundReports)
+}
+
+// backgroundReports heads the turn core-agent delivers background
+// subagent results in.
+const backgroundReports = "[Background reports]"
+
+// inboxHeader heads every message core-agent's daemon queues for a turn
+// ("[Inbox]\n- from <sender>: <message>\n...\n\nHow to handle the
+// bundle: ..."); mast stores the message as sent.
+const inboxHeader = "[Inbox]\n- "
+
+// messageText returns the message a person or lookout sent, from the
+// text of the event that carries it: core-agent's first inbox bullet
+// without its sender, or mast's text as is. What follows the message in
+// an inbox bundle (more bullets, core-agent's guidance) is left on; a
+// caller decoding JSON reads only the first value.
+func messageText(text string) string {
+	rest, ok := strings.CutPrefix(text, inboxHeader)
+	if !ok {
+		return text
+	}
+	// "from <sender>: ", where a sender (a caller identity) has no
+	// whitespace; an unattributed message has no prefix.
+	if head, after, ok := strings.Cut(rest, ": "); ok {
+		if sender, ok := strings.CutPrefix(head, "from "); ok && sender != "" && !strings.ContainsAny(sender, " \t\n") {
+			rest = after
+		}
+	}
+	return rest
+}
 
 // Answer returns the agent's answer to the first message a person or
 // lookout sent: the coordinator's last text before the next such message
@@ -289,7 +360,7 @@ func mentionsRun(text, prefix string) bool {
 func (t *Transcript) FirstMessage() string {
 	for _, e := range t.Events {
 		if isUser(e) {
-			return strings.Join(e.Texts, "\n")
+			return messageText(strings.Join(e.Texts, "\n"))
 		}
 	}
 	return ""
@@ -309,8 +380,9 @@ type Incident struct {
 // cluster), lives across storms and lists many members, so it is never
 // a scenario run's own task.
 func (t *Transcript) FirstIncident() (Incident, bool) {
+	// The first JSON value: core-agent's inbox bundle goes on after it.
 	var in Incident
-	if err := json.Unmarshal([]byte(t.FirstMessage()), &in); err != nil || in.Name == "" || in.Kind == "" || in.Kind == "storm" {
+	if err := json.NewDecoder(strings.NewReader(t.FirstMessage())).Decode(&in); err != nil || in.Name == "" || in.Kind == "" || in.Kind == "storm" {
 		return Incident{}, false
 	}
 	return in, true

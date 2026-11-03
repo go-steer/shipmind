@@ -75,6 +75,19 @@ release is a tested set of component versions (see "Cutting a release" in
   on mast. Setting or changing it changes switchboard's task template,
   so each Slack thread starts a fresh task, and conversation, on its
   next message.
+- `agent.incidentImage`, the same for lookout's incidents: set, each
+  incident runs core-agent's template with `gke-triage-f` (#48), whose
+  tool calls outside the allow list now fail after 30s instead of
+  waiting for an approver no incident has. `up` and `status` read the
+  attach token from a core-agent template too, so the check that refuses
+  to deploy over tokens the running tasks carry keeps working once the
+  template has no inject token. An incident task created before the
+  switch keeps the harness it started with: ax tasks are immutable, and
+  lookout reuses a task when its incident reopens.
+- The nightly scenario reads core-agent: it finds lookout's incident
+  inside core-agent's `[Inbox]` bundle, doesn't count a background
+  subagent's `[Background reports]` turn as a new message, and doesn't
+  settle while a subagent is still running.
 
 ### Changed
 
@@ -87,6 +100,9 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Fixed
 
+- `up` and `status` no longer ignore a live task template whose tokens
+  are malformed when the tokens Secret exists; they refuse, as for any
+  other disagreement, instead of overwriting it.
 - k8s-lookout v0.43.1: an unchanged Event re-delivered by a relist no
   longer re-opens a resolved incident, which kept staging's nightly
   incident task awake past its suspend and re-created it after the

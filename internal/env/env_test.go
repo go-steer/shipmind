@@ -78,6 +78,7 @@ func TestParseErrors(t *testing.T) {
 		{"project", strings.Replace(good, "project: example-project", "project: x", 1), "agent.project"},
 		{"workspace", strings.Replace(good, "workspace: demo-ws", "workspace: demo_ws", 1), "agent.workspace"},
 		{"image", strings.Replace(good, "@"+digest, ":latest", 1), "pinned by digest"},
+		{"incident image", strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent:latest\n  clusters:\n", 1), "agent.incidentImage"},
 		{"chat image", strings.Replace(good, "  clusters:\n", "  chatImage: registry.example.com/agent:latest\n  clusters:\n", 1), "agent.chatImage"},
 		{"no clusters", strings.Replace(good, "  clusters:\n    - name: demo\n      path: projects/example-project/locations/us-central1/clusters/demo\n", "  clusters: []\n", 1), "at least one cluster"},
 		{"cluster path", strings.Replace(good, "clusters/demo\n", "clusters/other\n", 1), "agent.clusters[0].path"},

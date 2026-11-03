@@ -50,11 +50,20 @@ func (t Tokens) Check() error {
 	if !tokenRE.MatchString(t.Inject) {
 		return fmt.Errorf("inject token: want 32 to 128 lowercase hex characters")
 	}
-	if !tokenRE.MatchString(t.Attach) {
-		return fmt.Errorf("attach token: want 32 to 128 lowercase hex characters")
+	if err := t.CheckAttach(); err != nil {
+		return err
 	}
 	if t.Inject == t.Attach {
 		return fmt.Errorf("inject and attach tokens are the same")
+	}
+	return nil
+}
+
+// CheckAttach checks the attach token alone: all a core-agent task
+// template carries.
+func (t Tokens) CheckAttach() error {
+	if !tokenRE.MatchString(t.Attach) {
+		return fmt.Errorf("attach token: want 32 to 128 lowercase hex characters")
 	}
 	return nil
 }
@@ -89,8 +98,12 @@ const (
 )
 
 // Task renders the ax task template lookout stamps an incident task
-// from, for e with tokens t.
+// from, for e with tokens t. With agent.incidentImage set, it is
+// core-agent's template and image instead of mast's (#48).
 func Task(root string, e *env.Env, t Tokens) ([]byte, error) {
+	if e.Agent.IncidentImage != "" {
+		return coreAgentTask(root, e, t, IncidentBundle, e.Agent.IncidentImage)
+	}
 	return task(root, e, t, IncidentBundle)
 }
 
@@ -100,19 +113,24 @@ func Task(root string, e *env.Env, t Tokens) ([]byte, error) {
 // instead (#48).
 func ChatTask(root string, e *env.Env, t Tokens) ([]byte, error) {
 	if e.Agent.ChatImage != "" {
-		if err := t.Check(); err != nil {
-			return nil, err
-		}
-		return render(root, "task-core-agent.yaml.tmpl", map[string]string{
-			"Bundle":      ChatBundle,
-			"Atespace":    e.Agent.Atespace,
-			"Image":       e.Agent.ChatImage,
-			"Project":     e.Agent.Project,
-			"Workspace":   e.Agent.Workspace,
-			"AttachToken": t.Attach,
-		})
+		return coreAgentTask(root, e, t, ChatBundle, e.Agent.ChatImage)
 	}
 	return task(root, e, t, ChatBundle)
+}
+
+// coreAgentTask renders core-agent's task template for bundle from image.
+func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image string) ([]byte, error) {
+	if err := t.Check(); err != nil {
+		return nil, err
+	}
+	return render(root, "task-core-agent.yaml.tmpl", map[string]string{
+		"Bundle":      bundle,
+		"Atespace":    e.Agent.Atespace,
+		"Image":       image,
+		"Project":     e.Agent.Project,
+		"Workspace":   e.Agent.Workspace,
+		"AttachToken": t.Attach,
+	})
 }
 
 func task(root string, e *env.Env, t Tokens, bundle string) ([]byte, error) {
