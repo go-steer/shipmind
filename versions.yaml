@@ -131,6 +131,22 @@ components:
       every main commit that touches those inputs; move this pin to one
       deliberately.
 
+  - name: agent
+    source: github.com/go-steer/shipmind
+    version: 8631a522c86d1f89ce85665b09c62bfd45a43380
+    profiles: [substrate]
+    images:
+      - name: agent
+        ref: ghcr.io/go-steer/shipmind/agent:8631a522c86d1f89ce85665b09c62bfd45a43380@sha256:86072a766b66028da4dd513ffd9bfdd9b668bfce53472b7e1651a6bbbd47222b
+    note: >-
+      The agent image on core-agent (#48), built by this repository
+      (images/agent) at the commit in version: the core-agent and
+      ax-runner pins above plus agents/sre-triage's bundles, converted at
+      build time. An environment's agent.chatImage runs switchboard's
+      threads on it; lookout's incidents stay on agent-mast. CI publishes
+      a new build from every main commit that touches those inputs; move
+      this pin to one deliberately.
+
   - name: k8s-lookout
     source: github.com/go-steer/k8s-lookout
     version: v0.43.1
