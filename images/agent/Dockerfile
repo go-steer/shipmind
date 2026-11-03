@@ -18,7 +18,8 @@
 #
 #   ax-task-runner  ax's runner contract, built from the ax fork at the
 #                   ax-runner pin in versions.yaml
-#   core-agent      built from core-agent at the core-agent pin
+#   core-agent      built from core-agent at the core-agent pin, a full
+#                   commit SHA, checked after the fetch
 #   /opt/core-agent/recipes/<bundle>  agents/sre-triage's mast bundles,
 #                   converted at build time by that same core-agent
 #                   (`core-agent config import-workload`), so the image
@@ -28,7 +29,10 @@
 #                   build. agents/sre-triage/ax/core-agent-<bundle>.json,
 #                   when present, is merged over the converted config:
 #                   the deployment's attach settings, which a mast bundle
-#                   has no place for.
+#                   has no place for. Each converted recipe is then booted
+#                   once (echo provider, no network needed) until its
+#                   attach listener answers, so a config core-agent would
+#                   refuse at task start fails the build instead.
 #
 # The pins arrive as build arguments read from versions.yaml
 # (build-args.sh); this file has no defaults for them, so they can't
@@ -57,28 +61,26 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS core-agent
 ARG CORE_AGENT_REPO
-ARG CORE_AGENT_VERSION
+ARG CORE_AGENT_COMMIT
 ARG TARGETOS
 ARG TARGETARCH
-RUN test -n "$CORE_AGENT_REPO" && test -n "$CORE_AGENT_VERSION" && apk add --no-cache git
+RUN test -n "$CORE_AGENT_REPO" && test -n "$CORE_AGENT_COMMIT" && apk add --no-cache git
 WORKDIR /src
-# The version is a release tag or a full commit SHA (versions.yaml's
-# rule); either can be fetched by name.
 RUN git init -q . \
- && git fetch -q --depth=1 "$CORE_AGENT_REPO" "$CORE_AGENT_VERSION" \
+ && git fetch -q --depth=1 "$CORE_AGENT_REPO" "$CORE_AGENT_COMMIT" \
  && git checkout -q FETCH_HEAD \
- && git rev-parse HEAD > /out-commit
+ && test "$(git rev-parse HEAD)" = "$CORE_AGENT_COMMIT"
 RUN go mod download
 # One binary for the image, built for the target, and one for this
-# stage, to run the importer below.
-RUN commit=$(cat /out-commit) \
- && ldflags="-s -w -X github.com/go-steer/core-agent/v3/internal/version.Version=${CORE_AGENT_VERSION} -X github.com/go-steer/core-agent/v3/internal/version.Commit=${commit}" \
+# stage, to run the importer below. --version reports the commit;
+# versions.yaml's note names the release it is.
+RUN ldflags="-s -w -X github.com/go-steer/core-agent/v3/internal/version.Version=${CORE_AGENT_COMMIT} -X github.com/go-steer/core-agent/v3/internal/version.Commit=${CORE_AGENT_COMMIT}" \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags "$ldflags" -o /out/core-agent ./cmd/core-agent \
  && CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o /usr/local/bin/core-agent ./cmd/core-agent
 
 FROM --platform=$BUILDPLATFORM alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f AS recipes
-RUN apk add --no-cache jq
+RUN apk add --no-cache jq curl
 COPY --from=core-agent /usr/local/bin/core-agent /usr/local/bin/core-agent
 COPY agents/sre-triage /in
 RUN set -e; \
@@ -90,6 +92,21 @@ RUN set -e; \
         mv /tmp/config.json "/out/$b/.agents/config.json"; \
       fi; \
       mkdir -p "/out/$b/.agents/plans"; \
+    done
+RUN set -e; mkdir -p /tmp/content; \
+    for b in gke-triage-f gke-chat; do \
+      SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \
+        core-agent -c "/out/$b/.agents/config.json" --provider=echo --no-repl --no-pricing-refresh \
+          --attach-listen=127.0.0.1:8484 --attach-token=SMOKE_TOKEN \
+          --session-db --session-db-path="/tmp/smoke-$b.db" --agents-content-dir=/tmp/content \
+          >"/tmp/smoke-$b.log" 2>&1 & pid=$!; \
+      up=; for i in $(seq 1 60); do \
+        if curl -s -o /dev/null http://127.0.0.1:8484/; then up=1; break; fi; \
+        kill -0 "$pid" 2>/dev/null || break; sleep 0.5; \
+      done; \
+      kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
+      if [ -z "$up" ]; then echo "recipe $b: core-agent did not start:"; cat "/tmp/smoke-$b.log"; exit 1; fi; \
+      echo "recipe $b: core-agent starts"; \
     done
 
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587

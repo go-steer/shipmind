@@ -89,7 +89,7 @@ components:
     version: 12dbe163b207888b743b10705d5ce26c8f5c2697
     profiles: [substrate]
     note: >-
-      The task runner baked into the agent image, at ax's commit. The v1
+      The task runner baked into both agent images, at ax's commit. The v1
       port's runner reads one workspace (AX_WORKSPACE_YAML), so it rolls
       with ax-server: an older runner finds no workspace.
 
@@ -104,12 +104,14 @@ components:
 
   - name: core-agent
     source: github.com/go-steer/core-agent
-    version: v3.1.0-dev.3
+    version: 5bdde618d8b746ea31e04027917f32ca208dd6f5
     profiles: [substrate]
     note: >-
-      The harness replacing mast (#48), built into images/agent with the
-      ax-runner pin above; its own `config import-workload` converts
-      agents/sre-triage's bundles at build time. v3.1.0-dev.3 is the first
+      v3.1.0-dev.3, pinned by commit because images/agent builds it from
+      source and checks what it fetched. The harness replacing mast (#48),
+      built into images/agent with the ax-runner pin above; its own
+      `config import-workload` converts agents/sre-triage's bundles at
+      build time. v3.1.0-dev.3 is the first
       release where an ax task can serve sessions on its attach token
       alone and a proxy can assert callers the token's one-row table
       doesn't list (go-steer/core-agent#1483, #1485).

@@ -43,11 +43,13 @@ pin() {
 }
 
 AX_RUNNER_COMMIT=${AX_RUNNER_COMMIT_OVERRIDE:-$(pin ax-runner version)}
+CORE_AGENT_COMMIT=$(pin core-agent version)
+[[ "$CORE_AGENT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "build-args.sh: core-agent version $CORE_AGENT_COMMIT: want a full SHA (name the release in its note)" >&2; exit 1; }
 [[ "$AX_RUNNER_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "build-args.sh: ax-runner commit $AX_RUNNER_COMMIT: want a full SHA" >&2; exit 1; }
 
 args=(
   "CORE_AGENT_REPO=https://$(pin core-agent source).git"
-  "CORE_AGENT_VERSION=$(pin core-agent version)"
+  "CORE_AGENT_COMMIT=$CORE_AGENT_COMMIT"
   "AX_RUNNER_REPO=https://$(pin ax-runner source).git"
   "AX_RUNNER_COMMIT=$AX_RUNNER_COMMIT"
 )

@@ -2,8 +2,7 @@
   "attach": {
     "multi_session": {
       "enabled": true,
-      "auth": { "token_identity": "switchboard" },
-      "proxy_identities": ["switchboard"]
+      "auth": { "token_identity": "switchboard" }
     }
   }
 }

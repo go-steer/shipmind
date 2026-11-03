@@ -348,6 +348,21 @@ func TestChatTaskCoreAgent(t *testing.T) {
 	for _, v := range got.Env {
 		envs[v.Name] = v.Value
 	}
+	// The whole command line: core-agent's flag forms differ from mast's
+	// (--session-db is a bool, --attach-token names an env var), and a
+	// mast-style flag fails core-agent's parse at task start.
+	wantCmd := []string{
+		"core-agent",
+		"-c", "/opt/core-agent/recipes/" + ChatBundle + "/.agents/config.json",
+		"--provider=vertex", "--model=gemini-3.8-flash", "--no-repl",
+		"--attach-listen=127.0.0.1:8484", "--attach-token=CORE_AGENT_ATTACH_TOKEN",
+		"--session-db", "--session-db-path=/workspace/.core-agent/sessions.db",
+		"--checkpoint=operator", "--no-pricing-refresh",
+		"--agents-content-dir=/workspace/repo",
+	}
+	if !slices.Equal(got.Command, wantCmd) {
+		t.Errorf("command\n got %q\nwant %q", got.Command, wantCmd)
+	}
 	cmd := strings.Join(got.Command, " ")
 	switch {
 	case atespace != "agents":
@@ -390,8 +405,8 @@ func TestChatTaskCoreAgent(t *testing.T) {
 }
 
 // images/agent converts the bundles the tasks name, and the chat bundle's
-// attach overlay makes the attach token's holder the proxy switchboard
-// asserts callers as.
+// attach overlay names the attach token's holder without letting it
+// assert anyone: switchboard's assert_caller is off (docs/decisions.md).
 func TestCoreAgentImage(t *testing.T) {
 	dockerfile, err := os.ReadFile(filepath.Join(root, "images/agent/Dockerfile"))
 	if err != nil {
@@ -419,7 +434,12 @@ func TestCoreAgentImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	ms := o.Attach.MultiSession
-	if !ms.Enabled || ms.Auth.TokenIdentity == "" || !slices.Equal(ms.ProxyIdentities, []string{ms.Auth.TokenIdentity}) {
-		t.Errorf("attach overlay %+v: want multi-session with the token's identity as the one proxy", ms)
+	if !ms.Enabled || ms.Auth.TokenIdentity == "" || len(ms.ProxyIdentities) != 0 {
+		t.Errorf("attach overlay %+v: want multi-session on the token's identity, and no proxies", ms)
+	}
+	for _, step := range []string{`jq -s '.[0] * .[1]'`, "/in/ax/core-agent-$b.json", "--attach-token=SMOKE_TOKEN"} {
+		if !strings.Contains(string(dockerfile), step) {
+			t.Errorf("images/agent lacks %q (the overlay merge or the boot check)", step)
+		}
 	}
 }

@@ -67,6 +67,14 @@ release is a tested set of component versions (see "Cutting a release" in
 - `shipmind.yaml` `secrets`: Kubernetes Secrets whose values live in
   Secret Manager, copied in by `up` and compared by `status`, never
   printed.
+- `images/agent`, the agent on core-agent (#48): core-agent
+  v3.1.0-dev.3 and the ax runner, with `agents/sre-triage`'s bundles
+  converted by core-agent's importer at build time and each booted once
+  as a check. `agent.chatImage` in an environment runs switchboard's
+  threads on it (`task-core-agent.yaml.tmpl`); lookout's incidents stay
+  on mast. Setting or changing it changes switchboard's task template,
+  so each Slack thread starts a fresh task, and conversation, on its
+  next message.
 
 ### Changed
 

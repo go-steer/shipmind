@@ -20,11 +20,12 @@
 #
 # The attach token is switchboard's credential and, through
 # auth.token_identity in agents/sre-triage/ax/core-agent-gke-chat.json,
-# the identity "switchboard", which proxy_identities lets assert the
-# Slack user (X-Asserted-Caller). switchboard sends that only with
-# assert_caller, which shipmind leaves off for now: core-agent's sessions
-# belong to their creator, and switchboard adds no contributors, so with
-# it on a thread would answer only the person who started it.
+# the identity "switchboard" that owns every thread's session. Asserting
+# the Slack user instead (switchboard's assert_caller, plus
+# proxy_identities here) waits: core-agent's sessions belong to their
+# creator, and switchboard adds no contributors, so a thread would answer
+# only the person who started it. Until then the token can't assert
+# anyone.
 apiVersion: ax.io/v1alpha1
 kind: Task
 metadata:
@@ -50,6 +51,10 @@ spec:
     # A long-lived service: the model doesn't declare task boundaries;
     # /done and core-agent's heuristic still can.
     - --checkpoint=operator
+    # No startup fetch of LiteLLM's price list (raw.githubusercontent.com
+    # is outside the egress below, and the fetch blocks the listener for
+    # up to 30s); the built-in table prices Gemini.
+    - --no-pricing-refresh
     # The Workspace's AGENTS.md: known clusters and the repeat rule.
     - --agents-content-dir=/workspace/repo
   env:

@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 # Builds the substrate profile's core-agent agent image (images/agent). Every
-# Builds the substrate profile's agent image (images/agent). Every
 # PR that touches it builds it without pushing; main builds it and pushes
 # ghcr.io/go-steer/shipmind/agent:<shipmind commit>, and the job
 # summary records the digest to pin in versions.yaml.
