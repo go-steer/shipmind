@@ -66,21 +66,26 @@ components:
 
   - name: ax
     source: github.com/mastersingh24/ax
-    version: 12dbe163b207888b743b10705d5ce26c8f5c2697
+    version: 04de9135a27b2c8a63e80d58d2d72ffc3867f439
     profiles: [substrate]
     images:
       - name: ax-server
-        ref: ghcr.io/go-steer/shipmind/ax-server:12dbe163b207888b743b10705d5ce26c8f5c2697@sha256:8e21fe2f61e964e7b2652cddd81ddb2bd29f91e44cd77723955f7704ab78102e
+        ref: ghcr.io/go-steer/shipmind/ax-server:04de9135a27b2c8a63e80d58d2d72ffc3867f439@sha256:3aa706143e4127cd88304f92dbb7277ca559fe21c4edb53e65558350f6fcf9f7
       - name: postgres
         ref: docker.io/library/postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     manifests:
       - deploy/ax-server.yaml
       - deploy/postgres.yaml
     note: >-
-      ax-server, tag substrate-v1-12dbe16. Fork of google/ax: upstream
-      main f0228f1 plus the fork's own task fields (egress, HTTP
-      pass-through, idle suspend, on completion; proto numbers 100 and
-      up), built against Substrate v1.0.0-rc.1. State in Postgres; its
+      ax-server, tag substrate-v1-04de913 (branch substrate-v1-r2). Fork
+      of google/ax: upstream main 6e970c5 (Substrate rc.1 upstream #553,
+      router TLS cache honouring cert expiry #541, ax ssh fixes #544,
+      workspace refs validated #461) plus the fork's own task fields
+      (egress, HTTP pass-through, idle suspend, on completion; proto
+      numbers 100 and up, ax.proto unchanged from 12dbe16) and a stable
+      Ready updateTime (google/ax#539), built against Substrate
+      v1.0.0-rc.1. The runner is unchanged, so ax-runner stays at
+      12dbe16. State in Postgres; its
       password is a Secret `shipmind up` generates. google/ax does not
       take PRs, so the fork is the source.
 
