@@ -54,6 +54,13 @@ func TestParseGood(t *testing.T) {
 			t.Errorf("expect %q rejected: %v", id, err)
 		}
 	}
+	withChat := strings.Replace(good, "  clusters:\n", "  chatImage: registry.example.com/agent-core@"+digest+"\n  clusters:\n", 1)
+	if c, err := Parse(strings.NewReader(withChat)); err != nil || c.Agent.ChatImage != "registry.example.com/agent-core@"+digest {
+		t.Errorf("chatImage: %+v, %v", c, err)
+	}
+	if e.Agent.ChatImage != "" {
+		t.Errorf("chatImage %q without one set", e.Agent.ChatImage)
+	}
 	if _, ok := e.Expected("v1.Secret.ns.other"); ok {
 		t.Error("Expected(other) = true")
 	}
@@ -71,6 +78,7 @@ func TestParseErrors(t *testing.T) {
 		{"project", strings.Replace(good, "project: example-project", "project: x", 1), "agent.project"},
 		{"workspace", strings.Replace(good, "workspace: demo-ws", "workspace: demo_ws", 1), "agent.workspace"},
 		{"image", strings.Replace(good, "@"+digest, ":latest", 1), "pinned by digest"},
+		{"chat image", strings.Replace(good, "  clusters:\n", "  chatImage: registry.example.com/agent:latest\n  clusters:\n", 1), "agent.chatImage"},
 		{"no clusters", strings.Replace(good, "  clusters:\n    - name: demo\n      path: projects/example-project/locations/us-central1/clusters/demo\n", "  clusters: []\n", 1), "at least one cluster"},
 		{"cluster path", strings.Replace(good, "clusters/demo\n", "clusters/other\n", 1), "agent.clusters[0].path"},
 		{"cluster name", strings.Replace(good, "- name: demo", "- name: Demo", 1), "agent.clusters[0].name"},

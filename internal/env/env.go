@@ -81,6 +81,10 @@ type Agent struct {
 	Workspace string `yaml:"workspace"`
 	// Image is the agent image, pinned by digest.
 	Image string `yaml:"image"`
+	// ChatImage, when set, is the core-agent agent image (images/agent),
+	// pinned by digest, that switchboard's threads run instead of Image
+	// (#48): the first use moved off mast. Empty keeps them on Image.
+	ChatImage string `yaml:"chatImage,omitempty"`
 	// Clusters is the table the agent uses for incidents that name only
 	// a bare cluster.
 	Clusters []Cluster `yaml:"clusters"`
@@ -217,6 +221,9 @@ func (e *Env) check() error {
 	}
 	if !digestRef.MatchString(a.Image) {
 		fail("agent.image %q: want an image pinned by digest", a.Image)
+	}
+	if a.ChatImage != "" && !digestRef.MatchString(a.ChatImage) {
+		fail("agent.chatImage %q: want an image pinned by digest", a.ChatImage)
 	}
 	if len(a.Clusters) == 0 {
 		fail("agent.clusters: want at least one cluster")

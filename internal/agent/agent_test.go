@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -204,7 +206,12 @@ func TestTemplatesSurviveYAML11(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, b := range map[string][]byte{"task": task, "workspace": ws} {
+	e.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
+	chat, err := ChatTask(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range map[string][]byte{"task": task, "workspace": ws, "core-agent chat task": chat} {
 		var doc map[string]any
 		if err := yaml11.Unmarshal(b, &doc); err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -293,6 +300,146 @@ func TestBundles(t *testing.T) {
 		}
 		if !strings.Contains(string(dockerfile), "COPY agents/sre-triage/"+b+" /opt/mast/workloads/"+b+"\n") {
 			t.Errorf("the agent image doesn't carry bundle %s", b)
+		}
+	}
+}
+
+// With agent.chatImage set, switchboard's threads run core-agent (#48):
+// its image and command, the attach token under core-agent's name, and
+// everything Substrate books or routes on the same as the mast task's.
+func TestChatTaskCoreAgent(t *testing.T) {
+	type spec struct {
+		Image     string
+		Command   []string
+		Env       []struct{ Name, Value string }
+		Egress    any            `yaml:"egress"`
+		HTTP      any            `yaml:"http"`
+		Idle      any            `yaml:"idle"`
+		Resources any            `yaml:"resources"`
+		Workspace map[string]any `yaml:"workspace"`
+		Debug     bool           `yaml:"debug"`
+	}
+	parse := func(b []byte) (string, spec) {
+		t.Helper()
+		var task struct {
+			Metadata struct{ Atespace string } `yaml:"metadata"`
+			Spec     spec                      `yaml:"spec"`
+		}
+		if err := yaml.Unmarshal(b, &task); err != nil {
+			t.Fatalf("rendered task is not YAML: %v\n%s", err, b)
+		}
+		return task.Metadata.Atespace, task.Spec
+	}
+
+	e := testEnv()
+	e.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
+	b, err := ChatTask(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	atespace, got := parse(b)
+	mastB, err := ChatTask(root, testEnv(), tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mast := parse(mastB)
+
+	envs := map[string]string{}
+	for _, v := range got.Env {
+		envs[v.Name] = v.Value
+	}
+	// The whole command line: core-agent's flag forms differ from mast's
+	// (--session-db is a bool, --attach-token names an env var), and a
+	// mast-style flag fails core-agent's parse at task start.
+	wantCmd := []string{
+		"core-agent",
+		"-c", "/opt/core-agent/recipes/" + ChatBundle + "/.agents/config.json",
+		"--provider=vertex", "--model=gemini-3.8-flash", "--no-repl",
+		"--attach-listen=127.0.0.1:8484", "--attach-token=CORE_AGENT_ATTACH_TOKEN",
+		"--session-db", "--session-db-path=/workspace/.core-agent/sessions.db",
+		"--checkpoint=operator", "--no-pricing-refresh",
+		"--agents-content-dir=/workspace/repo",
+	}
+	if !slices.Equal(got.Command, wantCmd) {
+		t.Errorf("command\n got %q\nwant %q", got.Command, wantCmd)
+	}
+	cmd := strings.Join(got.Command, " ")
+	switch {
+	case atespace != "agents":
+		t.Errorf("atespace %q", atespace)
+	case got.Image != e.Agent.ChatImage:
+		t.Errorf("image %q", got.Image)
+	case len(got.Command) == 0 || got.Command[0] != "core-agent":
+		t.Errorf("command %q", got.Command)
+	case !strings.Contains(cmd, "-c /opt/core-agent/recipes/"+ChatBundle+"/.agents/config.json"):
+		t.Errorf("command %q: not the chat bundle", cmd)
+	case !strings.Contains(cmd, "--attach-token=CORE_AGENT_ATTACH_TOKEN"):
+		t.Errorf("command %q: attach token not read from CORE_AGENT_ATTACH_TOKEN", cmd)
+	case envs["CORE_AGENT_ATTACH_TOKEN"] != tok.Attach:
+		t.Errorf("attach token %q", envs["CORE_AGENT_ATTACH_TOKEN"])
+	case envs["CORE_AGENT_GOOGLE_AUTH"] != "injected" || envs["GOOGLE_CLOUD_PROJECT"] != "example-project" || envs["GOOGLE_CLOUD_LOCATION"] == "":
+		t.Errorf("env %v", envs)
+	case strings.Contains(string(b), "MAST_"):
+		t.Errorf("core-agent task carries mast settings:\n%s", b)
+	}
+	for name, pair := range map[string][2]any{
+		"egress": {got.Egress, mast.Egress}, "http": {got.HTTP, mast.HTTP}, "idle": {got.Idle, mast.Idle},
+		"resources": {got.Resources, mast.Resources}, "workspace": {got.Workspace, mast.Workspace}, "debug": {got.Debug, mast.Debug},
+	} {
+		if !reflect.DeepEqual(pair[0], pair[1]) {
+			t.Errorf("%s differs from the mast task's: %#v vs %#v", name, pair[0], pair[1])
+		}
+	}
+
+	// lookout's incidents stay on mast.
+	inc, err := Task(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, s := parse(inc); s.Image != e.Agent.Image {
+		t.Errorf("incident task image %q, want agent.image", s.Image)
+	}
+	if _, err := ChatTask(root, e, Tokens{Inject: tok.Inject, Attach: "x"}); err == nil {
+		t.Error("ChatTask with a bad token succeeded")
+	}
+}
+
+// images/agent converts the bundles the tasks name, and the chat bundle's
+// attach overlay names the attach token's holder without letting it
+// assert anyone: switchboard's assert_caller is off (docs/decisions.md).
+func TestCoreAgentImage(t *testing.T) {
+	dockerfile, err := os.ReadFile(filepath.Join(root, "images/agent/Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dockerfile), "for b in "+IncidentBundle+" "+ChatBundle+"; do") {
+		t.Errorf("images/agent doesn't convert %s and %s", IncidentBundle, ChatBundle)
+	}
+	b, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-"+ChatBundle+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o struct {
+		Attach struct {
+			MultiSession struct {
+				Enabled bool `json:"enabled"`
+				Auth    struct {
+					TokenIdentity string `json:"token_identity"`
+				} `json:"auth"`
+				ProxyIdentities []string `json:"proxy_identities"`
+			} `json:"multi_session"`
+		} `json:"attach"`
+	}
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatal(err)
+	}
+	ms := o.Attach.MultiSession
+	if !ms.Enabled || ms.Auth.TokenIdentity == "" || len(ms.ProxyIdentities) != 0 {
+		t.Errorf("attach overlay %+v: want multi-session on the token's identity, and no proxies", ms)
+	}
+	for _, step := range []string{`jq -s '.[0] * .[1]'`, "/in/ax/core-agent-$b.json", "--attach-token=SMOKE_TOKEN"} {
+		if !strings.Contains(string(dockerfile), step) {
+			t.Errorf("images/agent lacks %q (the overlay merge or the boot check)", step)
 		}
 	}
 }

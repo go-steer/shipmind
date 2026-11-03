@@ -79,7 +79,7 @@ func NewTokens() (Tokens, error) {
 	return Tokens{Inject: inject, Attach: attach}, nil
 }
 
-// The bundles the agent image carries (images/agent-mast) that a task
+// The bundles the agent images carry (images/agent-mast, images/agent) that a task
 // runs: one incident per task for lookout, a conversation per task for
 // switchboard. Budgets differ most: mast meters a session for its life,
 // and a conversation is one long session.
@@ -96,7 +96,22 @@ func Task(root string, e *env.Env, t Tokens) ([]byte, error) {
 
 // ChatTask renders the task template switchboard starts a thread's task
 // from: the same agent, image and tokens, with the conversation bundle.
+// With agent.chatImage set, it is core-agent's template and image
+// instead (#48).
 func ChatTask(root string, e *env.Env, t Tokens) ([]byte, error) {
+	if e.Agent.ChatImage != "" {
+		if err := t.Check(); err != nil {
+			return nil, err
+		}
+		return render(root, "task-core-agent.yaml.tmpl", map[string]string{
+			"Bundle":      ChatBundle,
+			"Atespace":    e.Agent.Atespace,
+			"Image":       e.Agent.ChatImage,
+			"Project":     e.Agent.Project,
+			"Workspace":   e.Agent.Workspace,
+			"AttachToken": t.Attach,
+		})
+	}
 	return task(root, e, t, ChatBundle)
 }
 

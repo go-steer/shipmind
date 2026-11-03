@@ -4,6 +4,33 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-03: switchboard's threads move to core-agent first, without per-person identity
+
+`images/agent` builds core-agent (#48) with the ax runner, and converts
+`agents/sre-triage`'s mast bundles at build time with that core-agent's
+`config import-workload`. An environment that sets `agent.chatImage` runs
+switchboard's threads on it; lookout's incidents stay on mast and
+`agent.image`. The chat bundle's attach token authenticates as
+`switchboard` (`token_identity`), which owns every thread's session; it
+may assert no one (no `proxy_identities`), and switchboard's
+`assert_caller` stays off. Setting or changing `chatImage` changes
+switchboard's task template, so switchboard (`replace_drifted`) replaces
+each thread's task on its next message and the conversation starts over.
+
+**Why:** converting at build time keeps one source for each bundle while
+mast still runs them, and an importer regression fails the image build
+instead of the agent. Per-person identity waits because core-agent's
+sessions belong to their creator and switchboard adds no contributors:
+with `assert_caller` on, only the person who started a thread could talk
+in it, and everyone else would get "session not found".
+
+**Rejected:** committing converted copies of the bundles (two sources
+that drift until mast is gone); moving lookout in the same step (its
+nightly scenarios are the comparison the move needs); turning on
+`assert_caller` now; listing `switchboard` in `proxy_identities` ahead
+of it (in `token_identity` mode that lets the token assert any name,
+which nothing would use yet).
+
 ## 2026-11-01: The private repository is go-steer/shipmind-deploy
 
 The private companion repository (2026-10-20, "Public repository,

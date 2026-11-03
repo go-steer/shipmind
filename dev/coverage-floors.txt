@@ -33,7 +33,7 @@ github.com/go-steer/shipmind/internal/env      100.0
 
 # Agent rendering. Uncovered: crypto/rand failing, and template
 # execution errors on templates that parsed.
-github.com/go-steer/shipmind/internal/agent     91.0  # 92.1
+github.com/go-steer/shipmind/internal/agent     93.0  # 94.0
 
 # kubectl and ax, run as subprocesses against a fake binary.
 github.com/go-steer/shipmind/internal/cluster   97.0  # 97.3

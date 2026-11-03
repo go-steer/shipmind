@@ -1319,6 +1319,28 @@ func TestSwitchboardSecret(t *testing.T) {
 	if err != nil || len(r.Changes) == 0 || !strings.Contains(fmt.Sprint(r.Changes), "differs (keys triage.yaml) against the render") {
 		t.Errorf("new image: %+v, %v", r, err)
 	}
+	// agent.chatImage moves the threads to core-agent (#48): the template
+	// changes, and up writes the core-agent one.
+	p.Env.Agent.Image = testEnv().Agent.Image
+	p.Env.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("2", 64)
+	r, err = Status(ctx, p, c)
+	if err != nil || !strings.Contains(fmt.Sprint(r.Changes), "differs (keys triage.yaml) against the render") {
+		t.Errorf("chatImage: %+v, %v", r, err)
+	}
+	c.applied = nil
+	if err := Up(ctx, p, c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	written = ""
+	for _, m := range c.applied {
+		if strings.Contains(m, "name: switchboard-agent") {
+			written = m
+		}
+	}
+	want, _ := agent.ChatTask(root, p.Env, tok)
+	if !strings.Contains(string(want), "core-agent") || !strings.Contains(written, "triage.yaml: "+base64.StdEncoding.EncodeToString(want)) {
+		t.Errorf("chatImage: up didn't write the core-agent template:\n%s", written)
+	}
 	// Without switchboard in the render, nothing.
 	if r, err := Status(ctx, plan(t), inSync(t)); err != nil || len(r.Changes) != 0 {
 		t.Errorf("no switchboard: %+v, %v", r, err)

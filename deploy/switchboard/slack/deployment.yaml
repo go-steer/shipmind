@@ -38,7 +38,8 @@
       secretKeyRef:
         name: switchboard-slack
         key: bot-token
-# The agent's attach token, the template's MAST_ATTACH_TOKEN.
+# The agent's attach token: the task template's MAST_ATTACH_TOKEN, or
+# CORE_AGENT_ATTACH_TOKEN with agent.chatImage.
 - op: add
   path: /spec/template/spec/containers/0/env/-
   value:
