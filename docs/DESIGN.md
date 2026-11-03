@@ -123,6 +123,7 @@ agents/
   sre-triage/            gke-triage bundles, Workspace AGENTS.md, schemas
 images/
   agent-mast/            mast + ax runner + agent bundles
+  agent/                 core-agent + ax runner + the bundles, converted (#48)
   token-refresher/
 deploy/
   vendor/<component>/    manifests at the pinned version, one kustomize base each, and other listed files (generated)

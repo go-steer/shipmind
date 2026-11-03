@@ -20,9 +20,9 @@
 #
 # Every image the substrate profile runs is built by shipmind's CI from
 # the pins below and published to ghcr.io/go-steer/shipmind, except the
-# third-party ones (postgres, envoy, redis, lookout), pinned by digest as
-# their projects publish them. switchboard, mast-web and core-agent join
-# with the standalone profile and with switchboard starting ax agents.
+# ones other projects publish (postgres, envoy, redis, lookout,
+# switchboard), pinned by digest as they publish them. mast-web joins
+# with the standalone profile.
 
 components:
   - name: substrate
@@ -101,6 +101,18 @@ components:
       main after the ax upstreaming (#528-#531: injected Google auth,
       POST /sessions, --instructions, examples/deploy/ax). Built into the
       agent image; no release covers it yet.
+
+  - name: core-agent
+    source: github.com/go-steer/core-agent
+    version: v3.1.0-dev.3
+    profiles: [substrate]
+    note: >-
+      The harness replacing mast (#48), built into images/agent with the
+      ax-runner pin above; its own `config import-workload` converts
+      agents/sre-triage's bundles at build time. v3.1.0-dev.3 is the first
+      release where an ax task can serve sessions on its attach token
+      alone and a proxy can assert callers the token's one-row table
+      doesn't list (go-steer/core-agent#1483, #1485).
 
   - name: agent-mast
     source: github.com/go-steer/shipmind
