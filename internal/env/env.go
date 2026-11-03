@@ -85,6 +85,9 @@ type Agent struct {
 	// pinned by digest, that switchboard's threads run instead of Image
 	// (#48): the first use moved off mast. Empty keeps them on Image.
 	ChatImage string `yaml:"chatImage,omitempty"`
+	// IncidentImage is the same for lookout's incidents: set, they run
+	// core-agent from this image instead of mast from Image.
+	IncidentImage string `yaml:"incidentImage,omitempty"`
 	// Clusters is the table the agent uses for incidents that name only
 	// a bare cluster.
 	Clusters []Cluster `yaml:"clusters"`
@@ -224,6 +227,9 @@ func (e *Env) check() error {
 	}
 	if a.ChatImage != "" && !digestRef.MatchString(a.ChatImage) {
 		fail("agent.chatImage %q: want an image pinned by digest", a.ChatImage)
+	}
+	if a.IncidentImage != "" && !digestRef.MatchString(a.IncidentImage) {
+		fail("agent.incidentImage %q: want an image pinned by digest", a.IncidentImage)
 	}
 	if len(a.Clusters) == 0 {
 		fail("agent.clusters: want at least one cluster")

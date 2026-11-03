@@ -443,3 +443,57 @@ func TestCoreAgentImage(t *testing.T) {
 		}
 	}
 }
+
+// agent.incidentImage moves lookout's incidents to core-agent (#48): the
+// same template as the chat task's, with the incident bundle.
+func TestTaskCoreAgent(t *testing.T) {
+	e := testEnv()
+	e.Agent.IncidentImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("3", 64)
+	b, err := Task(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var task struct {
+		Spec struct {
+			Image   string
+			Command []string
+			Env     []struct{ Name, Value string }
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(b, &task); err != nil {
+		t.Fatal(err)
+	}
+	cmd := strings.Join(task.Spec.Command, " ")
+	switch {
+	case task.Spec.Image != e.Agent.IncidentImage:
+		t.Errorf("image %q", task.Spec.Image)
+	case task.Spec.Command[0] != "core-agent" || !strings.Contains(cmd, "-c /opt/core-agent/recipes/"+IncidentBundle+"/.agents/config.json "):
+		t.Errorf("command %q", cmd)
+	case strings.Contains(string(b), "MAST_"):
+		t.Errorf("core-agent incident task carries mast settings:\n%s", b)
+	}
+	// The incident and chat tasks differ in nothing but image and bundle.
+	e.Agent.ChatImage = e.Agent.IncidentImage
+	chat, err := ChatTask(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotDoc, chatDoc any
+	if err := yaml.Unmarshal(b, &gotDoc); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(strings.Replace(string(chat), "recipes/"+ChatBundle+"/", "recipes/"+IncidentBundle+"/", 1)), &chatDoc); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDoc, chatDoc) {
+		t.Error("the core-agent incident and chat tasks differ in more than the bundle")
+	}
+	// Switchboard's threads don't follow incidentImage.
+	e.Agent.ChatImage = ""
+	if chat, _ := ChatTask(root, e, tok); strings.Contains(string(chat), e.Agent.IncidentImage) {
+		t.Error("incidentImage moved the chat task")
+	}
+	if _, err := Task(root, e, Tokens{Inject: tok.Inject, Attach: "x"}); err == nil {
+		t.Error("Task with a bad token succeeded")
+	}
+}

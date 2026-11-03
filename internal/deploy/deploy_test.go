@@ -1398,3 +1398,55 @@ func TestSwitchboardWiring(t *testing.T) {
 		t.Error("the base's daemon token or ConfigMap survived")
 	}
 }
+
+// agent.incidentImage moves lookout's incidents to core-agent (#48): up
+// writes core-agent's template and restarts lookout; status is then
+// clean, and the token check still guards the live template, which now
+// carries only the attach token.
+func TestIncidentImage(t *testing.T) {
+	ctx := context.Background()
+	p := plan(t)
+	objs, err := render.Build("testdata/lookout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Objects = objs
+	p.Env.Agent.IncidentImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("3", 64)
+	c := inSync(t)
+	r, err := Status(ctx, p, c)
+	if err != nil || !strings.Contains(fmt.Sprint(r.Changes), "task.yaml differs from the render") {
+		t.Fatalf("before: %+v, %v", r, err)
+	}
+	if err := Up(ctx, p, c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	ops := strings.Join(c.ops, ", ")
+	if !strings.Contains(ops, "secret lookout-ax-agent") || !strings.Contains(ops, "restart lookout-ax/lookout-ax") {
+		t.Errorf("ops %v, want the core-agent template applied and lookout restarted", c.ops)
+	}
+	want, err := agent.Task(root, p.Env, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = want
+	if r, err := Status(ctx, p, c); err != nil || len(r.Changes) != 0 {
+		t.Errorf("after: %+v, %v", r, err)
+	}
+
+	// A core-agent template whose attach token isn't the stored one: refused.
+	other := agent.Tokens{Inject: tok.Inject, Attach: strings.Repeat("d", 32)}
+	stale, err := agent.Task(root, p.Env, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = stale
+	if _, err := Status(ctx, p, c); err == nil || !strings.Contains(err.Error(), "disagree") {
+		t.Errorf("stale attach token: err = %v, want a disagreement", err)
+	}
+	// Nothing to adopt the inject token from: refused rather than generated.
+	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = want
+	delete(c.secrets, Namespace+"/"+TokensSecret)
+	if _, err := Status(ctx, p, c); err == nil || !strings.Contains(err.Error(), "carries no inject token") {
+		t.Errorf("no tokens Secret: err = %v", err)
+	}
+}

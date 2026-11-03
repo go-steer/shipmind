@@ -4,6 +4,24 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-03: lookout's incidents follow, by their own setting
+
+`agent.incidentImage` moves lookout's incidents to core-agent the way
+`agent.chatImage` moved switchboard's threads, rendering the same
+core-agent template with `gke-triage-f`. Both settings go once every
+environment runs core-agent: `agent.image` then names images/agent, and
+the mast template and `agent-mast` are deleted.
+
+**Why:** an environment can move each use on its own and back, and the
+nightly scenario, which drives an incident end to end, is the check for
+this one. lookout needed no change: its ax sink was written against
+core-agent's session API.
+
+**Rejected:** switching `agent.image` itself to core-agent (it would
+move every environment's incidents and threads together, and prod and
+development are still on mast); choosing the harness from the image's
+name.
+
 ## 2026-11-03: switchboard's threads move to core-agent first, without per-person identity
 
 `images/agent` builds core-agent (#48) with the ax runner, and converts

@@ -12,20 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The ax task each switchboard thread runs as when the environment sets
-# agent.chatImage (#48): core-agent, in serve mode, instead of mast.
-# `shipmind up` renders it with the environment's values and the agent's
-# tokens into switchboard's Secret (/etc/switchboard/triage.yaml). The
-# token is why it is a Secret (ax has no secret references for env).
+# The ax task the agent runs as on core-agent, in serve mode, instead of
+# mast (#48), rendered once per use with that use's bundle:
 #
-# The attach token is switchboard's credential and, through
-# auth.token_identity in agents/sre-triage/ax/core-agent-gke-chat.json,
-# the identity "switchboard" that owns every thread's session. Asserting
-# the Slack user instead (switchboard's assert_caller, plus
-# proxy_identities here) waits: core-agent's sessions belong to their
-# creator, and switchboard adds no contributors, so a thread would answer
-# only the person who started it. Until then the token can't assert
-# anyone.
+#   gke-chat      each switchboard thread, when the environment sets
+#                 agent.chatImage: into switchboard's Secret
+#                 (/etc/switchboard/triage.yaml)
+#   gke-triage-f  each lookout incident, when it sets agent.incidentImage:
+#                 into Secret lookout-ax/lookout-ax-agent, which lookout's
+#                 ax sink stamps a task from per incident
+#
+# The attach token is why it is a Secret (ax has no secret references
+# for env). It is the only credential: lookout and switchboard both
+# present it. For gke-chat, auth.token_identity in
+# agents/sre-triage/ax/core-agent-gke-chat.json names its holder
+# "switchboard", which owns every thread's session. Asserting the Slack
+# user instead (switchboard's assert_caller, plus proxy_identities there)
+# waits: core-agent's sessions belong to their creator, and switchboard
+# adds no contributors, so a thread would answer only the person who
+# started it. gke-triage-f has no overlay: core-agent serves sessions on
+# the token alone, owned by its default identity, and lookout asserts no
+# one.
 apiVersion: ax.io/v1alpha1
 kind: Task
 metadata:
@@ -41,8 +48,9 @@ spec:
     - --provider=vertex
     - --model=gemini-3.8-flash
     - --no-repl
-    # Session API (what switchboard speaks), reached through the runner's
-    # spec.http.port pass-through.
+    # Session API (what switchboard, lookout's sink and the nightly
+    # scenario speak), reached through the runner's spec.http.port
+    # pass-through.
     - --attach-listen=127.0.0.1:8484
     - --attach-token=CORE_AGENT_ATTACH_TOKEN
     # On /workspace, so sessions survive suspend, resume and restarts.

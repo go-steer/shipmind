@@ -75,6 +75,11 @@ release is a tested set of component versions (see "Cutting a release" in
   on mast. Setting or changing it changes switchboard's task template,
   so each Slack thread starts a fresh task, and conversation, on its
   next message.
+- `agent.incidentImage`, the same for lookout's incidents: set, each
+  incident runs core-agent's template with `gke-triage-f` (#48). `up`
+  and `status` read the attach token from a core-agent template too, so
+  the check that refuses to deploy over tokens the running tasks carry
+  keeps working once the template has no inject token.
 
 ### Changed
 
