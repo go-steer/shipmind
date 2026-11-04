@@ -16,6 +16,7 @@ package scenario
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -277,14 +278,51 @@ func TestRouterUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := u.Overall
-	if o.Calls != 8 || o.InputTokens != 113873 || o.CachedTokens != 75522 || o.OutputTokens != 2160 || o.ThoughtTokens != 2160 || o.CostUSD < 0.05 || o.CostUSD > 0.051 {
-		t.Errorf("overall %+v", o)
+	// core-agent reports thinking beside output: kept as is.
+	n := u.Normalize("core-agent/dfaff57e", time.Date(2026, 11, 4, 16, 31, 0, 0, time.UTC))
+	if n.Agent != "core-agent/dfaff57e" || n.ReadAt != "2026-11-04T16:31:00Z" || n.ModelCalls != 8 || n.InputTokens != 113873 || n.CachedInputTokens != 75522 ||
+		n.OutputTokens != 2160 || n.ThinkingTokens != 2160 || n.CostUSD < 0.05 || n.CostUSD > 0.051 {
+		t.Errorf("totals %+v", n)
 	}
-	if len(u.PerTurn) != 8 || u.PerTurn[0].Call != 1 || u.PerTurn[0].Model != "gemini-3.8-flash" || u.PerTurn[2].CachedTokens != 12587 {
-		t.Errorf("per call %+v", u.PerTurn)
+	// Call 2: 14766 in, 210 out, 538 thinking (15514 total); call 3 the
+	// first from the cache.
+	c := n.Calls
+	if len(c) != 8 || c[0].Call != 1 || c[0].Model != "gemini-3.8-flash" || c[1].At != "2026-11-04T16:30:18.284741121Z" ||
+		c[1].InputTokens != 14766 || c[1].OutputTokens != 210 || c[1].ThinkingTokens != 538 || c[2].CachedInputTokens != 12587 {
+		t.Errorf("calls %+v", c)
 	}
 	if _, err := r.Usage(context.Background(), "t", "nope"); err == nil {
 		t.Error("Usage on a missing session succeeded")
+	}
+}
+
+// mast reports thinking inside its output count (its UsageTotals doc:
+// "ThoughtsTokens is the thinking subset of it, not an addition"), so
+// Normalize takes it out there, and only there.
+func TestUsageNormalizeMast(t *testing.T) {
+	var u AgentUsage
+	if err := json.Unmarshal([]byte(`{"overall":{"input_tokens":5000,"input_tokens_cached":1000,"output_tokens":900,"thoughts_tokens":600,"turns":2,"cost_usd":0.01},
+		"per_turn":[{"turn":41,"model":"gemini-3.8-flash","input_tokens":2000,"output_tokens":300,"thoughts_tokens":200},{"turn":42,"input_tokens":3000,"output_tokens":600,"thoughts_tokens":400}]}`), &u); err != nil {
+		t.Fatal(err)
+	}
+	n := u.Normalize("mast/922e549", time.Unix(0, 0))
+	if n.OutputTokens != 300 || n.ThinkingTokens != 600 || n.Calls[0].OutputTokens != 100 || n.Calls[1].OutputTokens != 200 || n.Calls[0].Call != 41 {
+		t.Errorf("mast normalised: %+v", n)
+	}
+	if c := u.Normalize("core-agent/x", time.Unix(0, 0)); c.OutputTokens != 900 {
+		t.Errorf("core-agent output %d, want it as reported", c.OutputTokens)
+	}
+}
+
+// The agent names itself in the stream's capabilities frame.
+func TestTranscriptServer(t *testing.T) {
+	f, err := os.Open("testdata/core-agent-incident.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	tr, err := ParseEvents(f)
+	if err != nil || !strings.HasPrefix(tr.Server, "core-agent/") {
+		t.Errorf("Server = %q, %v", tr.Server, err)
 	}
 }

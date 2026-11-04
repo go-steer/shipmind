@@ -16,6 +16,7 @@ package scenario
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -145,14 +146,14 @@ func (w *world) Sessions(_ context.Context, task string) ([]Session, error) {
 	return []Session{{ID: "s-" + task, Status: status}}, nil
 }
 
-func (w *world) Usage(context.Context, string, string) (*Usage, error) {
+func (w *world) Usage(context.Context, string, string) (*AgentUsage, error) {
 	if w.failUsage {
 		return nil, errors.New("usage: 503")
 	}
-	return &Usage{
-		Overall: UsageTotals{InputTokens: 1000, CachedTokens: 600, OutputTokens: 50, Calls: 2, CostUSD: 0.05},
-		PerTurn: []UsageCall{{Call: 1, InputTokens: 400, OutputTokens: 20, CostUSD: 0.03}, {Call: 2, InputTokens: 600, CachedTokens: 600, OutputTokens: 30, CostUSD: 0.02}},
-	}, nil
+	var u AgentUsage
+	err := json.Unmarshal([]byte(`{"overall":{"input_tokens":1000,"input_tokens_cached":600,"output_tokens":50,"thoughts_tokens":7,"turns":2,"cost_usd":0.05},
+		"per_turn":[{"turn":1,"input_tokens":400,"output_tokens":20,"cost_usd":0.03},{"turn":2,"input_tokens":600,"input_tokens_cached":600,"output_tokens":30,"thoughts_tokens":7,"cost_usd":0.02}]}`), &u)
+	return &u, err
 }
 
 func (w *world) State(context.Context, string, string) (string, error) {
@@ -238,7 +239,7 @@ func TestRunPasses(t *testing.T) {
 	if r.IncidentAfter != "2m0s" || r.SuspendAfter == "" || len(logs) == 0 {
 		t.Errorf("timings %+v, logs %v", r, logs)
 	}
-	if r.Usage == nil || r.Usage.Overall.Calls != 2 || len(r.Usage.PerTurn) != 2 || !slices.Contains(logs, "usage: 2 model calls, 1000 input tokens (60% cached), 50 output, 0 thinking") {
+	if r.Usage == nil || r.Usage.ModelCalls != 2 || len(r.Usage.Calls) != 2 || r.Usage.ReadAt == "" || !slices.Contains(logs, "usage: 2 model calls, 1000 input tokens (60% cached), 50 output, 7 thinking") {
 		t.Errorf("usage %+v, logs %v", r.Usage, logs)
 	}
 }

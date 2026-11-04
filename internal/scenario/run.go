@@ -44,7 +44,7 @@ type Agent interface {
 	Sessions(ctx context.Context, task string) ([]Session, error)
 	State(ctx context.Context, task, session string) (string, error)
 	Events(ctx context.Context, task, session string) (*Transcript, error)
-	Usage(ctx context.Context, task, session string) (*Usage, error)
+	Usage(ctx context.Context, task, session string) (*AgentUsage, error)
 }
 
 // Ax runs the ax CLI.
@@ -131,10 +131,14 @@ type Result struct {
 	Answer  string   `json:"answer,omitempty"`
 	Missing []string `json:"missing,omitempty"`
 	CostUSD float64  `json:"cost_usd"`
-	// Usage is what the answer took, as the agent metered it: model
-	// calls, tokens (and how many came from the prompt cache), cost per
-	// call. Read once the answer settles; absent when the read failed,
-	// which doesn't fail the run.
+	// Superseded: a later message (lookout re-sending the incident)
+	// arrived before the answer settled, so Usage may include calls
+	// made for it.
+	Superseded bool `json:"superseded,omitempty"`
+	// Usage is the session's model usage once the answer settled, in
+	// one meaning whichever agent answered: model calls, tokens and the
+	// cached share, cost per call. Absent when the read failed, which
+	// doesn't fail the run.
 	Usage *Usage `json:"usage,omitempty"`
 
 	Correct bool `json:"correct"`
@@ -216,6 +220,10 @@ const Leftovers = "shipmind.dev/scenario"
 type Sweeper interface {
 	DeleteLabeled(ctx context.Context, namespace, kinds, selector string) (string, error)
 }
+
+// usageTimeout bounds the usage read: the task has just answered, so it
+// is awake, and the read is a record, never a reason to wait.
+const usageTimeout = 15 * time.Second
 
 // coreAgentDefaultSession is core-agent's own startup session, which no
 // incident lands in; reading its stream would cost EventsWait per task.
@@ -339,7 +347,7 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		return answer != "" && (superseded || idle >= 2), nil
 	})
 	if tr != nil {
-		r.Answer, _ = tr.Answer()
+		r.Answer, r.Superseded = tr.Answer()
 		r.CostUSD = tr.Cost
 	}
 	switch {
@@ -358,16 +366,19 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		failf("the answer lacks %s", strings.Join(r.Missing, ", "))
 	}
 	o.Log("answered after %s, correct=%v, cost $%.3f", r.AnswerAfter, r.Correct, r.CostUSD)
-	if u, err := agent.Usage(ctx, r.Task, r.Session); err != nil {
+	uctx, cancel := context.WithTimeout(ctx, usageTimeout)
+	u, err := agent.Usage(uctx, r.Task, r.Session)
+	cancel()
+	if err != nil {
 		o.Log("usage: not read: %v", err)
 	} else {
-		r.Usage = u
+		r.Usage = u.Normalize(tr.Server, o.Now())
 		cached := 0.0
-		if u.Overall.InputTokens > 0 {
-			cached = 100 * float64(u.Overall.CachedTokens) / float64(u.Overall.InputTokens)
+		if r.Usage.InputTokens > 0 {
+			cached = 100 * float64(r.Usage.CachedInputTokens) / float64(r.Usage.InputTokens)
 		}
 		o.Log("usage: %d model calls, %d input tokens (%.0f%% cached), %d output, %d thinking",
-			u.Overall.Calls, u.Overall.InputTokens, cached, u.Overall.OutputTokens, u.Overall.ThoughtTokens)
+			r.Usage.ModelCalls, r.Usage.InputTokens, cached, r.Usage.OutputTokens, r.Usage.ThinkingTokens)
 	}
 	events := len(tr.Events)
 
