@@ -91,6 +91,12 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- core-agent v3.1.0-rc.1 in images/agent. Its loopback attach listener
+  now answers 421 to a Host it doesn't know (a DNS-rebinding guard,
+  go-steer/core-agent#1358). Requests reach it from Substrate's router
+  through ax-task-runner's pass-through, which keeps the router's Host,
+  so both bundles list the router in `attach.allowed_hosts`. The image's
+  boot check now asks under that Host, and fails the build on a 421.
 - `gke-triage-f` and `gke-chat` drop the `change-executor` specialist.
   The agent reads clusters through GKE's read-only MCP endpoint, so it
   had no write tools to run and every proposed change was already left

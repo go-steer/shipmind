@@ -32,7 +32,12 @@
 #                   has no place for. Each converted recipe is then booted
 #                   once (echo provider, no network needed) until its
 #                   attach listener answers, so a config core-agent would
-#                   refuse at task start fails the build instead.
+#                   refuse at task start fails the build instead. The
+#                   check asks as Substrate's router does, under the
+#                   router's Host (ax-task-runner's pass-through keeps
+#                   it), so a recipe that would answer the router 421
+#                   (core-agent#1358's guard, without attach.allowed_hosts)
+#                   fails it too.
 #
 # The pins arrive as build arguments read from versions.yaml
 # (build-args.sh); this file has no defaults for them, so they can't
@@ -93,6 +98,9 @@ RUN set -e; \
       fi; \
       mkdir -p "/out/$b/.agents/plans"; \
     done
+# The Host Substrate's router sends (switchboard's and lookout's
+# default router URL; the nightly's too).
+ARG ROUTER_HOST=atenet-router.ate-system.svc.cluster.local
 RUN set -e; mkdir -p /tmp/content; \
     for b in gke-triage-f gke-chat; do \
       SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \
@@ -100,13 +108,15 @@ RUN set -e; mkdir -p /tmp/content; \
           --attach-listen=127.0.0.1:8484 --attach-token=SMOKE_TOKEN \
           --session-db --session-db-path="/tmp/smoke-$b.db" --agents-content-dir=/tmp/content \
           >"/tmp/smoke-$b.log" 2>&1 & pid=$!; \
-      up=; for i in $(seq 1 60); do \
-        if curl -s -o /dev/null http://127.0.0.1:8484/; then up=1; break; fi; \
+      code=000; for i in $(seq 1 60); do \
+        code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $ROUTER_HOST" -H "Authorization: Bearer smoke" http://127.0.0.1:8484/sessions || true); \
+        [ "$code" != 000 ] && break; \
         kill -0 "$pid" 2>/dev/null || break; sleep 0.5; \
       done; \
       kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
-      if [ -z "$up" ]; then echo "recipe $b: core-agent did not start:"; cat "/tmp/smoke-$b.log"; exit 1; fi; \
-      echo "recipe $b: core-agent starts"; \
+      if [ "$code" = 000 ]; then echo "recipe $b: core-agent did not start:"; cat "/tmp/smoke-$b.log"; exit 1; fi; \
+      if [ "$code" != 200 ]; then echo "recipe $b: GET /sessions as the router ($ROUTER_HOST) answered $code, not 200"; exit 1; fi; \
+      echo "recipe $b: core-agent starts and answers the router"; \
     done
 
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587

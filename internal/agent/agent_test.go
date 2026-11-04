@@ -447,13 +447,43 @@ func TestCoreAgentImage(t *testing.T) {
 		Permissions struct {
 			ApprovalTimeout string `json:"approval_timeout"`
 		} `json:"permissions"`
-		Attach any `json:"attach"`
+		Attach map[string]any `json:"attach"`
 	}
 	if err := json.Unmarshal(b, &inc); err != nil {
 		t.Fatal(err)
 	}
-	if d, err := time.ParseDuration(inc.Permissions.ApprovalTimeout); err != nil || d <= 0 || d > 2*time.Minute || inc.Attach != nil {
-		t.Errorf("incident overlay %s: want a short approval_timeout and no attach settings", b)
+	if d, err := time.ParseDuration(inc.Permissions.ApprovalTimeout); err != nil || d <= 0 || d > 2*time.Minute {
+		t.Errorf("incident overlay %s: want a short approval_timeout", b)
+	}
+	if _, ok := inc.Attach["multi_session"]; ok || len(inc.Attach) != 1 {
+		t.Errorf("incident overlay %s: want no attach settings but allowed_hosts", b)
+	}
+
+	// Requests reach core-agent's loopback listener from Substrate's
+	// router, Host and all (ax-task-runner's pass-through keeps it);
+	// core-agent answers any Host it doesn't know 421 (#1358), so both
+	// overlays allow the router's names, and the build checks as the
+	// router asks.
+	routerHosts := []string{"atenet-router.ate-system.svc.cluster.local", "atenet-router.ate-system.svc"}
+	for _, bundle := range []string{IncidentBundle, ChatBundle} {
+		b, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-"+bundle+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var o struct {
+			Attach struct {
+				AllowedHosts []string `json:"allowed_hosts"`
+			} `json:"attach"`
+		}
+		if err := json.Unmarshal(b, &o); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(o.Attach.AllowedHosts, routerHosts) {
+			t.Errorf("%s overlay: attach.allowed_hosts %q, want the router's names %q", bundle, o.Attach.AllowedHosts, routerHosts)
+		}
+	}
+	if !strings.Contains(string(dockerfile), "ARG ROUTER_HOST="+routerHosts[0]+"\n") || !strings.Contains(string(dockerfile), `-H "Host: $ROUTER_HOST"`) {
+		t.Error("images/agent's boot check doesn't ask as the router does")
 	}
 	for _, step := range []string{`jq -s '.[0] * .[1]'`, "/in/ax/core-agent-$b.json", "--attach-token=SMOKE_TOKEN"} {
 		if !strings.Contains(string(dockerfile), step) {
