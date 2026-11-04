@@ -16,10 +16,12 @@ package scenario
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +56,7 @@ type world struct {
 	onCleanup    func()
 	failTasks    bool
 	failDelete   bool
+	failUsage    bool
 }
 
 func (w *world) Apply(_ context.Context, m []byte, _ bool) (string, error) {
@@ -143,6 +146,16 @@ func (w *world) Sessions(_ context.Context, task string) ([]Session, error) {
 	return []Session{{ID: "s-" + task, Status: status}}, nil
 }
 
+func (w *world) Usage(context.Context, string, string) (*AgentUsage, error) {
+	if w.failUsage {
+		return nil, errors.New("usage: 503")
+	}
+	var u AgentUsage
+	err := json.Unmarshal([]byte(`{"overall":{"input_tokens":1000,"input_tokens_cached":600,"output_tokens":50,"thoughts_tokens":7,"turns":2,"cost_usd":0.05},
+		"per_turn":[{"turn":1,"input_tokens":400,"output_tokens":20,"cost_usd":0.03},{"turn":2,"input_tokens":600,"input_tokens_cached":600,"output_tokens":30,"thoughts_tokens":7,"cost_usd":0.02}]}`), &u)
+	return &u, err
+}
+
 func (w *world) State(context.Context, string, string) (string, error) {
 	if !w.neverIdle && w.answerAt >= 0 && w.since() >= w.answerAt {
 		return "idle", nil
@@ -225,6 +238,21 @@ func TestRunPasses(t *testing.T) {
 	}
 	if r.IncidentAfter != "2m0s" || r.SuspendAfter == "" || len(logs) == 0 {
 		t.Errorf("timings %+v, logs %v", r, logs)
+	}
+	if r.Usage == nil || r.Usage.ModelCalls != 2 || len(r.Usage.Calls) != 2 || r.Usage.ReadAt == "" || !slices.Contains(logs, "usage: 2 model calls, 1000 input tokens (60% cached), 50 output, 7 thinking") {
+		t.Errorf("usage %+v, logs %v", r.Usage, logs)
+	}
+}
+
+// A usage read that fails is logged and left out; the run still passes.
+func TestRunUsageUnavailable(t *testing.T) {
+	w, s, o := newWorld(t)
+	w.failUsage = true
+	var logs []string
+	o.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	r := run(t, w, s, o)
+	if !r.Pass || r.Usage != nil || !slices.ContainsFunc(logs, func(l string) bool { return strings.HasPrefix(l, "usage: not read:") }) {
+		t.Errorf("pass %v, usage %+v, logs %v", r.Pass, r.Usage, logs)
 	}
 }
 

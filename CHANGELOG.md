@@ -10,6 +10,14 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- The nightly scenario records the session's model usage once the
+  answer settles (`GET /sessions/{id}/usage`): model calls, input tokens
+  and the cached share, output and thinking tokens, and each call with
+  its time and cost, in its JSON result under `usage` and as a log line,
+  with the agent that answered. Output excludes thinking on both agents
+  (mast counts it inside output; the scenario takes it out), and
+  `superseded` marks a run whose totals may include calls for a later
+  message. A failed read is logged and doesn't fail the run.
 - switchboard v0.8.0 pinned in `versions.yaml` and its base and
   durable-state PVC vendored, ahead of two instances (Slack and Google
   Chat) in a profile.

@@ -147,6 +147,114 @@ func (r *Router) State(ctx context.Context, task, session string) (string, error
 	return out.State, nil
 }
 
+// AgentUsage is GET /sessions/{id}/usage as the agent answers it (mast
+// and core-agent share the shape, not every meaning): session totals,
+// and one row per model call ("turn" in their naming).
+type AgentUsage struct {
+	Overall struct {
+		InputTokens   int64   `json:"input_tokens"`
+		CachedTokens  int64   `json:"input_tokens_cached"`
+		OutputTokens  int64   `json:"output_tokens"`
+		ThoughtTokens int64   `json:"thoughts_tokens"`
+		Calls         int     `json:"turns"`
+		CostUSD       float64 `json:"cost_usd"`
+	} `json:"overall"`
+	PerTurn []struct {
+		Call          int     `json:"turn"`
+		At            string  `json:"ts"`
+		Model         string  `json:"model"`
+		InputTokens   int64   `json:"input_tokens"`
+		CachedTokens  int64   `json:"input_tokens_cached"`
+		OutputTokens  int64   `json:"output_tokens"`
+		ThoughtTokens int64   `json:"thoughts_tokens"`
+		CostUSD       float64 `json:"cost_usd"`
+	} `json:"per_turn"`
+}
+
+// Usage reads a session's model usage as the agent reports it.
+func (r *Router) Usage(ctx context.Context, task, session string) (*AgentUsage, error) {
+	var u AgentUsage
+	if err := r.getJSON(ctx, task, "/sessions/"+url.PathEscape(session)+"/usage", &u); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// Usage is a session's model usage in one meaning whichever agent
+// reported it. The totals are the session's when they were read (at
+// ReadAt, once the answer settled), so they include every call made
+// for the incident so far: if a later message arrived first
+// (Result.Superseded), calls for it may be in too; Calls carries each
+// call's time to tell.
+type Usage struct {
+	// Agent is the server the session ran on ("core-agent/<version>",
+	// "mast/<version>"), from its event stream.
+	Agent  string `json:"agent,omitempty"`
+	ReadAt string `json:"read_at"`
+
+	ModelCalls int `json:"model_calls"`
+	// InputTokens includes CachedInputTokens, the part served from the
+	// prompt cache.
+	InputTokens       int64 `json:"input_tokens"`
+	CachedInputTokens int64 `json:"cached_input_tokens"`
+	// OutputTokens excludes ThinkingTokens (mast reports them inside
+	// its output count; core-agent beside it).
+	OutputTokens   int64 `json:"output_tokens"`
+	ThinkingTokens int64 `json:"thinking_tokens"`
+	// CostUSD is the agent's own estimate. On mast it can include spend
+	// carried over from an earlier process of the same session; the
+	// result's top-level cost_usd is the event stream's figure.
+	CostUSD float64 `json:"cost_usd"`
+
+	// Calls is one row per model call, as far back as the agent keeps
+	// them (mast: its last 500).
+	Calls []UsageCall `json:"calls,omitempty"`
+}
+
+// UsageCall is one model call, in Usage's meanings.
+type UsageCall struct {
+	Call              int     `json:"call"`
+	At                string  `json:"at,omitempty"`
+	Model             string  `json:"model,omitempty"`
+	InputTokens       int64   `json:"input_tokens"`
+	CachedInputTokens int64   `json:"cached_input_tokens"`
+	OutputTokens      int64   `json:"output_tokens"`
+	ThinkingTokens    int64   `json:"thinking_tokens"`
+	CostUSD           float64 `json:"cost_usd"`
+}
+
+// Normalize puts u in Usage's meanings for the agent server: mast counts
+// thinking inside output, so it is taken out there.
+func (u *AgentUsage) Normalize(server string, readAt time.Time) *Usage {
+	thinkingInOutput := strings.HasPrefix(server, "mast/")
+	output := func(out, thinking int64) int64 {
+		if thinkingInOutput {
+			return max(out-thinking, 0)
+		}
+		return out
+	}
+	o := u.Overall
+	n := &Usage{
+		Agent:             server,
+		ReadAt:            readAt.UTC().Format(time.RFC3339),
+		ModelCalls:        o.Calls,
+		InputTokens:       o.InputTokens,
+		CachedInputTokens: o.CachedTokens,
+		OutputTokens:      output(o.OutputTokens, o.ThoughtTokens),
+		ThinkingTokens:    o.ThoughtTokens,
+		CostUSD:           o.CostUSD,
+	}
+	for _, c := range u.PerTurn {
+		n.Calls = append(n.Calls, UsageCall{
+			Call: c.Call, At: c.At, Model: c.Model,
+			InputTokens: c.InputTokens, CachedInputTokens: c.CachedTokens,
+			OutputTokens: output(c.OutputTokens, c.ThoughtTokens), ThinkingTokens: c.ThoughtTokens,
+			CostUSD: c.CostUSD,
+		})
+	}
+	return n
+}
+
 // Events reads a session's event stream for EventsWait (default 15s).
 func (r *Router) Events(ctx context.Context, task, session string) (*Transcript, error) {
 	wait := r.EventsWait
@@ -171,6 +279,9 @@ func (r *Router) Events(ctx context.Context, task, session string) (*Transcript,
 
 // Transcript is a session's events, as far as scoring needs them.
 type Transcript struct {
+	// Server is the agent the stream came from, from its capabilities
+	// frame ("core-agent/<version>", "mast/<version>").
+	Server string
 	Events []Event
 	// Cost is the session's running cost in US dollars, from the last
 	// usage update.
@@ -210,13 +321,17 @@ func ParseEvents(r io.Reader) (*Transcript, error) {
 					} `json:"parts"`
 				} `json:"content"`
 			} `json:"event"`
-			Cost *float64 `json:"cost_usd_total"`
+			Cost   *float64 `json:"cost_usd_total"`
+			Server string   `json:"server"`
 		}
 		if json.Unmarshal([]byte(data), &d) != nil {
 			continue
 		}
 		if d.Cost != nil {
 			t.Cost = *d.Cost
+		}
+		if d.Server != "" {
+			t.Server = d.Server
 		}
 		if d.Seq == nil {
 			continue
