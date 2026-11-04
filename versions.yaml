@@ -199,17 +199,18 @@ components:
 
   - name: e2e-runner
     source: github.com/go-steer/shipmind
-    version: fecaac1bf78b642413680a3676fc9c465614f7e6
+    version: 5246ac37758215e452758360be0bf89cd550a00b
     profiles: [substrate]
     images:
       - name: e2e-runner
-        ref: ghcr.io/go-steer/shipmind/e2e-runner:fecaac1bf78b642413680a3676fc9c465614f7e6@sha256:e7f35aba814353bce8ed38fec637c8515795b631f83c9b25f57eb80e185762f4
+        ref: ghcr.io/go-steer/shipmind/e2e-runner:5246ac37758215e452758360be0bf89cd550a00b@sha256:725d21fa36887530084518a7fabeb969e7a4a0b6ff5350c3764042bcc338748d
     note: >-
       The end-to-end runner (images/e2e-runner: shipmind, the ax CLI,
       kubectl, the scenarios) at the commit in version, which the nightly
       in deploy/e2e/substrate runs. CI publishes a build from every main
       commit that touches its inputs; move this pin deliberately. This
-      build reads core-agent's sessions as well as mast's (#68).
+      build reads core-agent's sessions as well as mast's (#68) and
+      records each answer's model usage (#73).
 
   - name: switchboard
     source: github.com/go-steer/switchboard
