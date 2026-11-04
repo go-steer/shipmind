@@ -147,6 +147,44 @@ func (r *Router) State(ctx context.Context, task, session string) (string, error
 	return out.State, nil
 }
 
+// Usage is a session's model usage as the agent meters it (GET
+// /sessions/{id}/usage; mast and core-agent share the shape): totals,
+// and one row per model call.
+type Usage struct {
+	Overall UsageTotals `json:"overall"`
+	PerTurn []UsageCall `json:"per_turn,omitempty"`
+}
+
+// UsageTotals sums a session's model calls.
+type UsageTotals struct {
+	InputTokens   int64   `json:"input_tokens"`
+	CachedTokens  int64   `json:"input_tokens_cached,omitempty"`
+	OutputTokens  int64   `json:"output_tokens"`
+	ThoughtTokens int64   `json:"thoughts_tokens,omitempty"`
+	Calls         int     `json:"turns"`
+	CostUSD       float64 `json:"cost_usd"`
+}
+
+// UsageCall is one model call.
+type UsageCall struct {
+	Call          int     `json:"turn"`
+	Model         string  `json:"model,omitempty"`
+	InputTokens   int64   `json:"input_tokens"`
+	CachedTokens  int64   `json:"input_tokens_cached,omitempty"`
+	OutputTokens  int64   `json:"output_tokens"`
+	ThoughtTokens int64   `json:"thoughts_tokens,omitempty"`
+	CostUSD       float64 `json:"cost_usd"`
+}
+
+// Usage reads a session's model usage.
+func (r *Router) Usage(ctx context.Context, task, session string) (*Usage, error) {
+	var u Usage
+	if err := r.getJSON(ctx, task, "/sessions/"+url.PathEscape(session)+"/usage", &u); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 // Events reads a session's event stream for EventsWait (default 15s).
 func (r *Router) Events(ctx context.Context, task, session string) (*Transcript, error) {
 	wait := r.EventsWait

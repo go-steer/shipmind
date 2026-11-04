@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,7 @@ type world struct {
 	onCleanup    func()
 	failTasks    bool
 	failDelete   bool
+	failUsage    bool
 }
 
 func (w *world) Apply(_ context.Context, m []byte, _ bool) (string, error) {
@@ -143,6 +145,16 @@ func (w *world) Sessions(_ context.Context, task string) ([]Session, error) {
 	return []Session{{ID: "s-" + task, Status: status}}, nil
 }
 
+func (w *world) Usage(context.Context, string, string) (*Usage, error) {
+	if w.failUsage {
+		return nil, errors.New("usage: 503")
+	}
+	return &Usage{
+		Overall: UsageTotals{InputTokens: 1000, CachedTokens: 600, OutputTokens: 50, Calls: 2, CostUSD: 0.05},
+		PerTurn: []UsageCall{{Call: 1, InputTokens: 400, OutputTokens: 20, CostUSD: 0.03}, {Call: 2, InputTokens: 600, CachedTokens: 600, OutputTokens: 30, CostUSD: 0.02}},
+	}, nil
+}
+
 func (w *world) State(context.Context, string, string) (string, error) {
 	if !w.neverIdle && w.answerAt >= 0 && w.since() >= w.answerAt {
 		return "idle", nil
@@ -225,6 +237,21 @@ func TestRunPasses(t *testing.T) {
 	}
 	if r.IncidentAfter != "2m0s" || r.SuspendAfter == "" || len(logs) == 0 {
 		t.Errorf("timings %+v, logs %v", r, logs)
+	}
+	if r.Usage == nil || r.Usage.Overall.Calls != 2 || len(r.Usage.PerTurn) != 2 || !slices.Contains(logs, "usage: 2 model calls, 1000 input tokens (60% cached), 50 output, 0 thinking") {
+		t.Errorf("usage %+v, logs %v", r.Usage, logs)
+	}
+}
+
+// A usage read that fails is logged and left out; the run still passes.
+func TestRunUsageUnavailable(t *testing.T) {
+	w, s, o := newWorld(t)
+	w.failUsage = true
+	var logs []string
+	o.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+	r := run(t, w, s, o)
+	if !r.Pass || r.Usage != nil || !slices.ContainsFunc(logs, func(l string) bool { return strings.HasPrefix(l, "usage: not read:") }) {
+		t.Errorf("pass %v, usage %+v, logs %v", r.Pass, r.Usage, logs)
 	}
 }
 

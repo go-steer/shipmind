@@ -1,0 +1,123 @@
+{
+  "overall": {
+    "input_tokens": 113873,
+    "input_tokens_cached": 75522,
+    "input_tokens_uncached": 38351,
+    "output_tokens": 2160,
+    "thoughts_tokens": 2160,
+    "turns": 8,
+    "cost_usd": 0.0506274,
+    "cost_usd_uncached_reference": 0.10160475
+  },
+  "per_turn": [
+    {
+      "turn": 1,
+      "ts": "2026-11-04T16:30:12.752027163Z",
+      "model": "gemini-3.8-flash",
+      "input_tokens": 2032,
+      "input_tokens_uncached": 2032,
+      "output_tokens": 8,
+      "total_tokens": 2040,
+      "cost_usd": 0.001554,
+      "cost_usd_uncached_reference": 0.001554
+    },
+    {
+      "turn": 2,
+      "ts": "2026-11-04T16:30:18.284741121Z",
+      "model": "gemini-3.8-flash",
+      "input_tokens": 14766,
+      "input_tokens_uncached": 14766,
+      "output_tokens": 210,
+      "thoughts_tokens": 538,
+      "total_tokens": 15514,
+      "cost_usd": 0.0138795,
+      "cost_usd_uncached_reference": 0.0138795
+    },
+    {
+      "turn": 3,
+      "ts": "2026-11-04T16:30:23.633283008Z",
+      "model": "gemini-3.8-flash",
+      "input_tokens": 12783,
+      "input_tokens_cached": 12587,
+      "input_tokens_uncached": 196,
+      "output_tokens": 210,
+      "thoughts_tokens": 538,
+      "total_tokens": 13531,
+      "cost_usd": 0.0038960249999999996,
+      "cost_usd_uncached_reference": 0.012392249999999999
+    },
+    {
+      "turn": 4,
+      "ts": "2026-11-04T16:30:27.4825734Z",
+      "model": "gemini-3.8-flash",
+      "input_tokens": 13668,
+      "input_tokens_cached": 12587,
+      "input_tokens_uncached": 1081,
+      "output_tokens": 300,
+      "thoughts_tokens": 213,
+      "total_tokens": 14181,
+      "cost_usd": 0.003678525,
+      "cost_usd_uncached_reference": 0.01217475
+    },
+    {
+      "turn": 5,
+      "ts": "2026-11-04T16:30:31.431626799Z",
+      "model": "gemini-3.8-flash",
+      "input_tokens": 17353,
+      "input_tokens_cached": 12587,
+      "input_tokens_uncached": 4766,
+      "output_tokens": 193,
+      "thoughts_tokens": 206,
+      "total_tokens": 17752,
+      "cost_usd": 0.006014775000000001,
+      "cost_usd_uncached_reference": 0.014511
+    },
+    {
+      "turn": 6,
+      "ts": "2026-11-04T16:30:41.226595345Z",
+      "model": "gemini-3.8-flash",
+      "input_tokens": 18208,
+      "input_tokens_cached": 12587,
+      "input_tokens_uncached": 5621,
+      "output_tokens": 579,
+      "thoughts_tokens": 214,
+      "total_tokens": 19001,
+      "cost_usd": 0.008133524999999999,
+      "cost_usd_uncached_reference": 0.01662975
+    },
+    {
+      "turn": 7,
+      "ts": "2026-11-04T16:30:47.096552539Z",
+      "model": "gemini-3.8-flash",
+      "input_tokens": 16873,
+      "input_tokens_cached": 12587,
+      "input_tokens_uncached": 4286,
+      "output_tokens": 606,
+      "thoughts_tokens": 181,
+      "total_tokens": 17660,
+      "cost_usd": 0.0071097750000000005,
+      "cost_usd_uncached_reference": 0.015606
+    },
+    {
+      "turn": 8,
+      "ts": "2026-11-04T16:30:50.379553655Z",
+      "model": "gemini-3.8-flash",
+      "input_tokens": 18190,
+      "input_tokens_cached": 12587,
+      "input_tokens_uncached": 5603,
+      "output_tokens": 54,
+      "thoughts_tokens": 270,
+      "total_tokens": 18514,
+      "cost_usd": 0.0063612750000000004,
+      "cost_usd_uncached_reference": 0.014857500000000003
+    }
+  ],
+  "digest_methods": {
+    "counts": {
+      "passthrough": 5
+    },
+    "bytes_saved": {
+      "passthrough": 0
+    }
+  }
+}

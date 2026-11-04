@@ -256,3 +256,35 @@ func TestStateWithSubagents(t *testing.T) {
 		t.Errorf("no /agents route (mast): State = %q, %v", s, err)
 	}
 }
+
+// GET /usage as core-agent v3.1.0-rc.1 answered it for a missing-env
+// incident (testdata/core-agent-usage.json, captured from a kept task).
+func TestRouterUsage(t *testing.T) {
+	body, err := os.ReadFile("testdata/core-agent-usage.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sessions/s1/usage" {
+			http.Error(w, "no such session", http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	r := &Router{Base: srv.URL, Atespace: "agents", Token: "tok"}
+	u, err := r.Usage(context.Background(), "t", "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := u.Overall
+	if o.Calls != 8 || o.InputTokens != 113873 || o.CachedTokens != 75522 || o.OutputTokens != 2160 || o.ThoughtTokens != 2160 || o.CostUSD < 0.05 || o.CostUSD > 0.051 {
+		t.Errorf("overall %+v", o)
+	}
+	if len(u.PerTurn) != 8 || u.PerTurn[0].Call != 1 || u.PerTurn[0].Model != "gemini-3.8-flash" || u.PerTurn[2].CachedTokens != 12587 {
+		t.Errorf("per call %+v", u.PerTurn)
+	}
+	if _, err := r.Usage(context.Background(), "t", "nope"); err == nil {
+		t.Error("Usage on a missing session succeeded")
+	}
+}

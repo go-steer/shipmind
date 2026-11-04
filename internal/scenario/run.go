@@ -44,6 +44,7 @@ type Agent interface {
 	Sessions(ctx context.Context, task string) ([]Session, error)
 	State(ctx context.Context, task, session string) (string, error)
 	Events(ctx context.Context, task, session string) (*Transcript, error)
+	Usage(ctx context.Context, task, session string) (*Usage, error)
 }
 
 // Ax runs the ax CLI.
@@ -130,12 +131,17 @@ type Result struct {
 	Answer  string   `json:"answer,omitempty"`
 	Missing []string `json:"missing,omitempty"`
 	CostUSD float64  `json:"cost_usd"`
+	// Usage is what the answer took, as the agent metered it: model
+	// calls, tokens (and how many came from the prompt cache), cost per
+	// call. Read once the answer settles; absent when the read failed,
+	// which doesn't fail the run.
+	Usage *Usage `json:"usage,omitempty"`
 
 	Correct bool `json:"correct"`
 	// Suspended: the task suspended once the workload was gone.
 	Suspended bool `json:"suspended"`
 	// Woke: the session answered again through the router, still in
-	// mast's memory (status "active") with its history intact.
+	// the agent's memory (status "active") with its history intact.
 	Woke bool `json:"woke"`
 
 	Pass     bool     `json:"pass"`
@@ -352,6 +358,17 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		failf("the answer lacks %s", strings.Join(r.Missing, ", "))
 	}
 	o.Log("answered after %s, correct=%v, cost $%.3f", r.AnswerAfter, r.Correct, r.CostUSD)
+	if u, err := agent.Usage(ctx, r.Task, r.Session); err != nil {
+		o.Log("usage: not read: %v", err)
+	} else {
+		r.Usage = u
+		cached := 0.0
+		if u.Overall.InputTokens > 0 {
+			cached = 100 * float64(u.Overall.CachedTokens) / float64(u.Overall.InputTokens)
+		}
+		o.Log("usage: %d model calls, %d input tokens (%.0f%% cached), %d output, %d thinking",
+			u.Overall.Calls, u.Overall.InputTokens, cached, u.Overall.OutputTokens, u.Overall.ThoughtTokens)
+	}
 	events := len(tr.Events)
 
 	if o.Keep {
