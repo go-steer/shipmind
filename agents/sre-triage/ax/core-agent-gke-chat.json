@@ -4,6 +4,6 @@
       "enabled": true,
       "auth": { "token_identity": "switchboard" }
     },
-    "allowed_hosts": ["atenet-router.ate-system.svc.cluster.local", "atenet-router.ate-system.svc"]
+    "allowed_hosts": ["atenet-router.ate-system.svc.cluster.local", "atenet-router.ate-system.svc", "atenet-router.ate-system"]
   }
 }

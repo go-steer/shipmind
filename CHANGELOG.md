@@ -97,6 +97,11 @@ release is a tested set of component versions (see "Cutting a release" in
   through ax-task-runner's pass-through, which keeps the router's Host,
   so both bundles list the router in `attach.allowed_hosts`. The image's
   boot check now asks under that Host, and fails the build on a 421.
+- The agent on core-agent runs without `bash` (`--disable-tools=bash`).
+  It reads clusters through GKE's MCP server, mast's bundles never had
+  it, and from rc.1 only an admin may approve it on a multi-session
+  daemon (go-steer/core-agent#1355), so approving it from Slack would
+  be refused.
 - `gke-triage-f` and `gke-chat` drop the `change-executor` specialist.
   The agent reads clusters through GKE's read-only MCP endpoint, so it
   had no write tools to run and every proposed change was already left

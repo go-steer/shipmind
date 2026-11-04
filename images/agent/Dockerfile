@@ -109,7 +109,7 @@ RUN set -e; mkdir -p /tmp/content; \
           --session-db --session-db-path="/tmp/smoke-$b.db" --agents-content-dir=/tmp/content \
           >"/tmp/smoke-$b.log" 2>&1 & pid=$!; \
       code=000; for i in $(seq 1 60); do \
-        code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $ROUTER_HOST" -H "Authorization: Bearer smoke" http://127.0.0.1:8484/sessions || true); \
+        code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H "Host: $ROUTER_HOST" -H "Authorization: Bearer smoke" http://127.0.0.1:8484/sessions || true); \
         [ "$code" != 000 ] && break; \
         kill -0 "$pid" 2>/dev/null || break; sleep 0.5; \
       done; \
