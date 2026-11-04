@@ -109,14 +109,18 @@ components:
 
   - name: core-agent
     source: github.com/go-steer/core-agent
-    version: 5bdde618d8b746ea31e04027917f32ca208dd6f5
+    version: dfaff57e4af4e8c723ec5f6bf4a2f903f2b887fd
     profiles: [substrate]
     note: >-
-      v3.1.0-dev.3, pinned by commit because images/agent builds it from
+      v3.1.0-rc.1, pinned by commit because images/agent builds it from
       source and checks what it fetched. The harness replacing mast (#48),
       built into images/agent with the ax-runner pin above; its own
       `config import-workload` converts agents/sre-triage's bundles at
-      build time. v3.1.0-dev.3 is the first
+      build time. rc.1 refuses a request on its loopback attach listener
+      whose Host isn't loopback (DNS-rebinding guard, core-agent#1358);
+      requests arrive through Substrate's router and ax-task-runner's
+      pass-through still naming the router, so both bundles' overlays
+      list it in attach.allowed_hosts. v3.1.0-dev.3 was the first
       release where an ax task can serve sessions on its attach token
       alone and a proxy can assert callers the token's one-row table
       doesn't list (go-steer/core-agent#1483, #1485).

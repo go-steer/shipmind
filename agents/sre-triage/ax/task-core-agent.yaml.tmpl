@@ -30,13 +30,19 @@
 # user instead (switchboard's assert_caller, plus proxy_identities there)
 # waits: core-agent's sessions belong to their creator, and switchboard
 # adds no contributors, so a thread would answer only the person who
-# started it. gke-triage-f's overlay has no attach block: core-agent
-# serves sessions on the token alone, owned by its default identity, and
-# lookout asserts no one. It bounds approvals instead
-# (permissions.approval_timeout): no one approves an incident's tool
-# calls, so a call outside the allow list fails after 30s rather than
-# holding the turn until its wall-clock budget. switchboard relays
-# approvals to Slack, so a thread's calls wait for the person.
+# started it. gke-triage-f has no multi-session block: core-agent serves
+# sessions on the token alone, owned by its default identity, and lookout
+# asserts no one. It bounds approvals (permissions.approval_timeout): no
+# one approves an incident's tool calls, so a call outside the allow
+# list fails after 30s rather than holding the turn until its wall-clock
+# budget. switchboard relays approvals to Slack, so a thread's calls wait
+# for the person, up to core-agent's 30m unattended default and the
+# turn's own wall-clock budget.
+#
+# Both overlays list Substrate's router in attach.allowed_hosts: every
+# request arrives through it and ax-task-runner's pass-through, which
+# keeps the router's Host, and core-agent answers an unknown Host on a
+# loopback listener 421 (core-agent#1358).
 apiVersion: ax.io/v1alpha1
 kind: Task
 metadata:
@@ -63,6 +69,11 @@ spec:
     # A long-lived service: the model doesn't declare task boundaries;
     # /done and core-agent's heuristic still can.
     - --checkpoint=operator
+    # No bash: the agent reads clusters through GKE's MCP server (the
+    # image has no kubectl), mast's bundles never had it, and on a
+    # multi-session daemon only an admin may approve it (core-agent
+    # #1355), so a Slack approval would be refused.
+    - --disable-tools=bash
     # No startup fetch of LiteLLM's price list (raw.githubusercontent.com
     # is outside the egress below, and the fetch blocks the listener for
     # up to 30s); the built-in table prices Gemini.
