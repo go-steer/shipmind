@@ -4,6 +4,29 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-05: The incident agent triages; specialists get briefs
+
+The incident profile's main agent holds the read tools and diagnoses
+lookout's signal itself; specialists are for what comes after triage:
+deep dives in one domain, and actions with side effects (issues and pull
+requests), which stay separate from the readers and behind approval.
+Today that means `gke-triage-f`'s one specialist is folded into the main
+agent at build time (`core-agent-gke-triage-f.fold-specialist`).
+
+**Why:** core-agent hands a subagent only the request the model writes,
+so delegating a raw signal means re-typing it, and output tokens are the
+dearest (2.1k for one lookout incident, measured). A handoff after triage
+carries the agent's own finding, which is short. mast's coordinator
+existed to route among specialists and to keep the one that changed the
+cluster apart; with one read-only specialist it was only overhead, and
+the capability split returns with the action specialists.
+
+**Rejected:** a brief-only delegation (the specialist would re-fetch, or
+lose, what lookout already gathered: event counts and times, the
+enrichment bundle); porting mast's built-in coordinator instruction (it
+framed every message as an incident). A core-agent way to hand a
+subagent the triggering message verbatim is requested upstream.
+
 ## 2026-11-05: Two agent profiles, autonomous and interactive, one image
 
 lookout's incidents and switchboard's threads stay one image (core-agent

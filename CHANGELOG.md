@@ -99,6 +99,13 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- The incident profile triages in its main agent (#48): `gke-triage-f`'s
+  one specialist runs as the main agent, with its four read tools and its
+  diagnosis instructions (a reporting section replaces its `finish_task`),
+  so lookout's signal is read where it lands instead of being re-typed
+  into a delegation, the costliest step measured (2.1k output tokens).
+  Specialists to come (deep dives, issues and pull requests) get briefs
+  from the triage. Chat keeps its delegation.
 - The agent on core-agent has its MCP tools where mast had them (#48):
   each specialist loads the GKE server from its own content root, and
   the main agent keeps only what

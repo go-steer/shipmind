@@ -522,8 +522,45 @@ func TestCoreAgentImage(t *testing.T) {
 	if d := string(dockerfile); strings.Index(d, `cp "$mcp" "/out/$b/.agents/roots/$n/mcp.json"`) > strings.Index(d, `/in/ax/core-agent-$b.main-tools.json`) {
 		t.Error("images/agent narrows the main agent's mcp.json before copying it to the specialists' roots")
 	}
-	if _, err := os.Stat(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".main-tools.json")); !os.IsNotExist(err) {
-		t.Errorf("the incident bundle's main agent gets MCP tools (%v); mast's coordinator had none", err)
+	// The incident profile triages itself: its one specialist runs as
+	// the main agent (so lookout's signal is read where it lands, not
+	// re-typed into a delegation), with that specialist's tools and a
+	// reporting section for a main agent in place of finish_task.
+	fold, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".fold-specialist"))
+	if err != nil || strings.TrimSpace(string(fold)) != "_fallback" {
+		t.Errorf("incident fold-specialist %q, %v", fold, err)
+	}
+	spec, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", IncidentBundle, "specialists/_fallback.specialist.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"get_k8s_resource", "describe_k8s_resource", "get_k8s_logs", "list_k8s_events"} {
+		if !strings.Contains(string(spec), "        - "+tool+"\n") {
+			t.Errorf("_fallback no longer holds %s; the incident main agent's tools would drift from it", tool)
+		}
+	}
+	var incMain []string
+	b, err = os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".main-tools.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &incMain); err != nil || !slices.Equal(incMain, []string{"get_k8s_resource", "describe_k8s_resource", "get_k8s_logs", "list_k8s_events"}) {
+		t.Errorf("incident main agent's tools %q, %v: want _fallback's", incMain, err)
+	}
+	if !strings.Contains(string(spec), "\nReturn your finding by calling `finish_task`") {
+		t.Error("_fallback's finish_task paragraph moved; the fold cuts the instructions there")
+	}
+	report, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".report.md"))
+	if err != nil || strings.Contains(string(report), "finish_task") {
+		t.Errorf("incident report section: %v, or it names finish_task", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, Dir, "core-agent-"+ChatBundle+".fold-specialist")); !os.IsNotExist(err) {
+		t.Errorf("the chat profile folds its specialist (%v); it delegates", err)
+	}
+	for _, step := range []string{`fold="/in/ax/core-agent-$b.fold-specialist"`, `/^## Subagent Roster/`, `/^Return your finding by calling ` + "`finish_task`" + `/ { exit }`, `cat "/in/ax/core-agent-$b.report.md"`, `[ -f "$sa" ] || continue`} {
+		if !strings.Contains(string(dockerfile), step) {
+			t.Errorf("images/agent lacks %q (the fold)", step)
+		}
 	}
 	b, err = os.ReadFile(filepath.Join(root, Dir, "core-agent-"+ChatBundle+".main-tools.json"))
 	if err != nil {
