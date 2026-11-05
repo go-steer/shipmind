@@ -35,8 +35,17 @@
 #                   which its own mcp_tools filter within, and the main
 #                   agent keeps only the tools
 #                   agents/sre-triage/ax/core-agent-<bundle>.main-tools.json
-#                   names (mast's coordinator held none; a bundle with no
-#                   such file gets none). Each converted recipe is then booted
+#                   names (a bundle with no such file gets none). A bundle
+#                   with core-agent-<bundle>.fold-specialist runs the
+#                   named specialist as its main agent instead of
+#                   delegating to it: its instructions, up to the
+#                   finish_task reporting a delegated specialist uses, are
+#                   appended to the recipe's AGENTS.md (whose roster
+#                   section goes), then core-agent-<bundle>.report.md, and
+#                   the specialist is removed, so the agent that receives a
+#                   signal is the one that reads the cluster, and nothing
+#                   has to be re-typed into a delegation (core-agent hands
+#                   a subagent only what the model writes). Each converted recipe is then booted
 #                   once (echo provider, no network needed) until its
 #                   attach listener answers, so a config core-agent would
 #                   refuse at task start fails the build instead. The
@@ -104,8 +113,24 @@ RUN set -e; \
         mv /tmp/config.json "/out/$b/.agents/config.json"; \
       fi; \
       mkdir -p "/out/$b/.agents/plans"; \
+      fold="/in/ax/core-agent-$b.fold-specialist"; \
+      if [ -f "$fold" ]; then \
+        n=$(tr -d ' \n' < "$fold"); sa="/out/$b/.agents/subagents/$n.md"; \
+        test -f "$sa"; \
+        awk '/^## Subagent Roster/ { skip = 1; next } skip && /^## / { skip = 0 } !skip' "/out/$b/AGENTS.md" > /tmp/agents.md; \
+        awk 'f >= 2 { print; next } /^---$/ { f++ }' "$sa" > /tmp/body.md; \
+        grep -q '^Return your finding by calling `finish_task`' /tmp/body.md; \
+        awk '/^Return your finding by calling `finish_task`/ { exit } { print }' /tmp/body.md | sed 's/ and leave `proposed_change` empty//' > /tmp/diagnosis.md; \
+        { cat /tmp/agents.md; printf '\n## Diagnosis\n\n'; cat /tmp/diagnosis.md; cat "/in/ax/core-agent-$b.report.md"; } > "/out/$b/AGENTS.md"; \
+        rm "$sa"; \
+        if grep -qF "\`$n\`" "/out/$b/AGENTS.md" || grep -qF finish_task "/out/$b/AGENTS.md" || ! grep -q '^## Diagnosis$' "/out/$b/AGENTS.md"; then \
+          echo "recipe $b: folding $n left its roster entry or finish_task, or no Diagnosis section:"; cat "/out/$b/AGENTS.md"; exit 1; \
+        fi; \
+        if ls /out/$b/.agents/subagents/*.md >/dev/null 2>&1; then echo "recipe $b: subagents remain after folding $n"; exit 1; fi; \
+      fi; \
       mcp="/out/$b/.agents/mcp.json"; \
       for sa in /out/$b/.agents/subagents/*.md; do \
+        [ -f "$sa" ] || continue; \
         n=$(basename "$sa" .md); \
         mkdir -p "/out/$b/.agents/roots/$n"; \
         cp "$mcp" "/out/$b/.agents/roots/$n/mcp.json"; \
@@ -117,6 +142,7 @@ RUN set -e; \
       if [ -f "$main" ] && [ "$(jq length "$main")" -gt 0 ]; then \
         jq --slurpfile t "$main" '.servers |= map_values(.tools = $t[0])' "$mcp" > /tmp/mcp.json; \
         mv /tmp/mcp.json "$mcp"; \
+        if ! jq -e --slurpfile t "$main" '[.servers[].tools] | all(. == $t[0])' "$mcp" >/dev/null; then echo "recipe $b: main agent's tools aren't $(cat "$main")"; exit 1; fi; \
       else \
         rm "$mcp"; \
       fi; \
@@ -128,7 +154,7 @@ ARG ROUTER_HOST=atenet-router.ate-system.svc.cluster.local
 # check boots what a task boots (internal/agent's test keeps the two in
 # step): the provider decides which tools come on by default, and a
 # disabled tool another one needs is a startup error.
-ARG TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator --disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep --agentic-tools=false --no-pricing-refresh"
+ARG TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator --disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep --agentic-tools=false --no-background-agents --no-pricing-refresh"
 RUN set -e; mkdir -p /tmp/content; \
     for b in gke-triage-f gke-chat; do \
       SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \

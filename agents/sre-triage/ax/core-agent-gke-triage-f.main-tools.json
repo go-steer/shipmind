@@ -1,0 +1,1 @@
+["get_k8s_resource", "describe_k8s_resource", "get_k8s_logs", "list_k8s_events"]
