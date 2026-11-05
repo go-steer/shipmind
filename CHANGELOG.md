@@ -105,6 +105,13 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- core-agent v3.1.0-rc.2 in images/agent. Its importer now gives each
+  specialist its own content root and the main agent no MCP servers
+  (go-steer/core-agent#1498), which the image build used to arrange
+  itself and now checks instead. It enforces `agent.max_steps`
+  (go-steer/core-agent#1500), so the incident profile caps a turn at 15
+  steps again, with `final_report`'s partial answer, and keeps the 150s
+  bound as a backstop.
 - The incident profile triages in its main agent (#48): `gke-triage-f`'s
   one specialist runs as the main agent, with its four read tools and its
   diagnosis instructions (a reporting section replaces its `finish_task`),
