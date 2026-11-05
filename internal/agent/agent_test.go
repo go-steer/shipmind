@@ -358,7 +358,7 @@ func TestChatTaskCoreAgent(t *testing.T) {
 		"--provider=vertex", "--model=gemini-3.8-flash", "--no-repl",
 		"--attach-listen=127.0.0.1:8484", "--attach-token=CORE_AGENT_ATTACH_TOKEN",
 		"--session-db", "--session-db-path=/workspace/.core-agent/sessions.db",
-		"--checkpoint=operator", "--disable-tools=bash", "--no-pricing-refresh",
+		"--checkpoint=operator", "--disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep", "--no-pricing-refresh",
 		"--agents-content-dir=/workspace/repo",
 	}
 	if !slices.Equal(got.Command, wantCmd) {
@@ -484,6 +484,25 @@ func TestCoreAgentImage(t *testing.T) {
 	}
 	if !strings.Contains(string(dockerfile), "ARG ROUTER_HOST="+routerHosts[0]+"\n") || !strings.Contains(string(dockerfile), `-H "Host: $ROUTER_HOST"`) || !strings.Contains(string(dockerfile), `if [ "$code" != 200 ]; then`) {
 		t.Error("images/agent's boot check doesn't ask as the router does")
+	}
+	// Where mast had the MCP tools: each specialist's own content root,
+	// and the main agent only what main-tools names (incidents: none,
+	// as mast's coordinator; chat: cluster-level reads for quick answers).
+	for _, step := range []string{`print "root: roots/" n`, `cp "$mcp" "/out/$b/.agents/roots/$n/mcp.json"`, `/in/ax/core-agent-$b.main-tools.json`, `rm "$mcp"`} {
+		if !strings.Contains(string(dockerfile), step) {
+			t.Errorf("images/agent lacks %q (the MCP split)", step)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".main-tools.json")); !os.IsNotExist(err) {
+		t.Errorf("the incident bundle's main agent gets MCP tools (%v); mast's coordinator had none", err)
+	}
+	b, err = os.ReadFile(filepath.Join(root, Dir, "core-agent-"+ChatBundle+".main-tools.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chatMain []string
+	if err := json.Unmarshal(b, &chatMain); err != nil || !slices.Equal(chatMain, []string{"list_clusters", "get_cluster"}) {
+		t.Errorf("chat main agent's tools %q, %v", chatMain, err)
 	}
 	for _, step := range []string{`jq -s '.[0] * .[1]'`, "/in/ax/core-agent-$b.json", "--attach-token=SMOKE_TOKEN"} {
 		if !strings.Contains(string(dockerfile), step) {

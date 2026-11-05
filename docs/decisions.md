@@ -4,6 +4,26 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-05: Two agent profiles, autonomous and interactive, one image
+
+lookout's incidents and switchboard's threads stay one image (core-agent
+and the ax runner) with two profiles that differ in configuration on
+purpose: their bundles, overlays and the main agent's tools. Incidents
+are mast's shape, where the main agent only delegates and the specialist
+reads the cluster; chat's main agent also holds `list_clusters` and
+`get_cluster`. `agent.chatImage` and `agent.incidentImage` become
+permanent per-profile settings when mast goes, rather than being deleted.
+
+**Why:** the binaries are the same; what should differ (who approves,
+budgets, sessions, tools) is configuration, and two images would be two
+builds and two pins of one binary. Splitting the image waits until the
+contents differ (tools needing other binaries, a hardened base).
+
+**Rejected:** separate images now; keeping the importer's layout, where
+the main agent holds every MCP tool (go-steer/core-agent#1498): it read
+clusters itself instead of delegating, and every call carried the tool
+schemas.
+
 ## 2026-11-03: lookout's incidents follow, by their own setting
 
 `agent.incidentImage` moves lookout's incidents to core-agent the way
