@@ -109,9 +109,10 @@ release is a tested set of component versions (see "Cutting a release" in
   specialist its own content root and the main agent no MCP servers
   (go-steer/core-agent#1498), which the image build used to arrange
   itself and now checks instead. It enforces `agent.max_steps`
-  (go-steer/core-agent#1500), so the incident profile caps a turn at 15
-  steps again, with `final_report`'s partial answer, and keeps the 150s
-  bound as a backstop.
+  (go-steer/core-agent#1500, a turn's main-agent model calls), so the
+  incident profile caps a turn at 8, about twice a healthy one, where
+  `final_report` gets a partial answer before the 150s bound would cut
+  the turn off with none.
 - The incident profile triages in its main agent (#48): `gke-triage-f`'s
   one specialist runs as the main agent, with its four read tools and its
   diagnosis instructions (a reporting section replaces its `finish_task`),
@@ -120,7 +121,7 @@ release is a tested set of component versions (see "Cutting a release" in
   Specialists to come (deep dives, issues and pull requests) get briefs
   from the triage. Chat keeps its delegation. An incident turn is
   bounded at 150s (`agent.max_wallclock_seconds`; a healthy one takes
-  45 to 75s); `agent.max_steps` caps nothing in core-agent. Background
+  45 to 75s). Background
   subagents (`spawn_agent`) are off in both profiles: delegation is a
   specialist's own synchronous tool.
 - The agent on core-agent has its MCP tools where mast had them (#48):

@@ -117,7 +117,7 @@ RUN set -e; \
       for sa in /out/$b/.agents/subagents/*.md; do \
         [ -f "$sa" ] || continue; \
         n=$(basename "$sa" .md); \
-        if ! grep -qx "root: roots/$n" "$sa" || [ ! -f "/out/$b/.agents/roots/$n/mcp.json" ]; then echo "recipe $b: the importer gave specialist $n no content root of its own"; exit 1; fi; \
+        if grep -q '^mcp_tools:\|^mcp:' "$sa" && ! grep -qx 'mode: single_turn' "$sa" && { ! grep -qx "root: roots/$n" "$sa" || [ ! -f "/out/$b/.agents/roots/$n/mcp.json" ]; }; then echo "recipe $b: the importer gave specialist $n, which uses MCP, no content root of its own"; exit 1; fi; \
       done; \
       if [ -e "$mcp" ]; then echo "recipe $b: the importer gave the main agent MCP servers"; exit 1; fi; \
       fold="/in/ax/core-agent-$b.fold-specialist"; \
@@ -129,8 +129,8 @@ RUN set -e; \
         grep -q '^Return your finding by calling `finish_task`' /tmp/body.md; \
         awk '/^Return your finding by calling `finish_task`/ { exit } { print }' /tmp/body.md | sed 's/ and leave `proposed_change` empty//' > /tmp/diagnosis.md; \
         { cat /tmp/agents.md; printf '\n## Diagnosis\n\n'; cat /tmp/diagnosis.md; cat "/in/ax/core-agent-$b.report.md"; } > "/out/$b/AGENTS.md"; \
-        cp "/out/$b/.agents/roots/$n/mcp.json" "$mcp"; \
-        rm "$sa"; rm -r "/out/$b/.agents/roots/$n"; \
+        cp "/in/$b/mcp.json" "$mcp"; \
+        rm "$sa"; rm -rf "/out/$b/.agents/roots/$n"; \
         if grep -qF "\`$n\`" "/out/$b/AGENTS.md" || grep -qF finish_task "/out/$b/AGENTS.md" || ! grep -q '^## Diagnosis$' "/out/$b/AGENTS.md"; then \
           echo "recipe $b: folding $n left its roster entry or finish_task, or no Diagnosis section:"; cat "/out/$b/AGENTS.md"; exit 1; \
         fi; \
@@ -138,7 +138,7 @@ RUN set -e; \
       fi; \
       main="/in/ax/core-agent-$b.main-tools.json"; \
       if [ -f "$main" ] && [ "$(jq length "$main")" -gt 0 ]; then \
-        if [ ! -f "$mcp" ]; then src=$(ls /out/$b/.agents/roots/*/mcp.json | head -1); cp "$src" "$mcp"; fi; \
+        [ -f "$mcp" ] || cp "/in/$b/mcp.json" "$mcp"; \
         jq --slurpfile t "$main" '.servers |= map_values(.tools = $t[0])' "$mcp" > /tmp/mcp.json; \
         mv /tmp/mcp.json "$mcp"; \
         if ! jq -e --slurpfile t "$main" '[.servers[].tools] | all(. == $t[0])' "$mcp" >/dev/null; then echo "recipe $b: main agent's tools aren't $(cat "$main")"; exit 1; fi; \
