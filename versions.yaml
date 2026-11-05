@@ -142,11 +142,11 @@ components:
 
   - name: agent
     source: github.com/go-steer/shipmind
-    version: 5d9da61564483b2b7b282c23f4a555fa81c8068a
+    version: 321b1aa14a459bbf3f086ee4e91cfaf281d05464
     profiles: [substrate]
     images:
       - name: agent
-        ref: ghcr.io/go-steer/shipmind/agent:5d9da61564483b2b7b282c23f4a555fa81c8068a@sha256:35accbe9801967baa454d1fbca36513d0b5f3db9228af7c47ecdf7c91f788064
+        ref: ghcr.io/go-steer/shipmind/agent:321b1aa14a459bbf3f086ee4e91cfaf281d05464@sha256:1bdfae20cd12581c48e9a4b6a8948f23d16d440d79b77f70683aac5bce82f1b6
     note: >-
       The agent image on core-agent (#48), built by this repository
       (images/agent) at the commit in version: the core-agent and
