@@ -182,9 +182,19 @@ func TestNightlyScenariosExist(t *testing.T) {
 	if len(refs) < 2 {
 		t.Fatalf("found %d scenario references in the CronJobs", len(refs))
 	}
+	entries, err := os.ReadDir("../../e2e/scenarios")
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, e := range entries {
+		if _, err := os.Stat(filepath.Join("../../e2e/scenarios", e.Name(), "scenario.yaml")); e.IsDir() && err == nil {
+			have[e.Name()] = true
+		}
+	}
 	for _, r := range refs {
-		if _, err := Load(filepath.Join("../../e2e/scenarios", r[1])); err != nil {
-			t.Errorf("CronJob runs /scenarios/%s: %v", r[1], err)
+		if !have[r[1]] {
+			t.Errorf("a CronJob runs /scenarios/%s, which e2e/scenarios doesn't have", r[1])
 		}
 	}
 }
