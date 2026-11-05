@@ -110,8 +110,8 @@ deployed with `shipmind up` from the substrate profile plus its private
 overlay (go-steer/shipmind-deploy); `shipmind status` reports
 no drift, Substrate included. Every image the profile renders is pinned
 in `versions.yaml` and built by this repository's CI. The nightly
-scenario (`deploy/e2e/substrate`, missing-env) runs in the cluster at
-03:17 UTC. Next: the standalone profile and kind PR tests (Milestone 2);
+scenarios (`deploy/e2e/substrate`: missing-env at 03:17 UTC, oom-killed
+at 03:47) run in the cluster, one CronJob each. Next: the standalone profile and kind PR tests (Milestone 2);
 #20 (the stock gke-triage bundle, decided by scenario runs); #15.
 Changes reach the cluster by moving the overlay's shipmind pin, then
 `status`, `up -dry-run`, `up`.

@@ -23,11 +23,13 @@ namespace: triage-lab
 workload: workload.yaml
 expect:
   # Regular expressions, case-insensitive; the final answer must match
-  # every one.
+  # every one. Positive matches can't tell an answer that blames the limit
+  # from one that names it and blames the node; the scenario catches the
+  # common miss (no limit at all) and the transcript is there for the rest.
   mentions:
-    - "oom.?kill|out of memory"
-    - "64 ?mi"
-    - "memory limit|limits\\.memory|limits:\\s*memory"
+    - "oom.?kill|out.of.memory"
+    - "\\b64 ?(mi|mib|mb|m)\\b"
+    - "memory.?limit|limits\\W+memory|limit\\w* (of|on|for) (the )?memory"
 limits:
   # Break to incident, incident to answer, workload removed to suspend.
   incident: 10m
