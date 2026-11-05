@@ -99,6 +99,16 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- The agent on core-agent has its MCP tools where mast had them (#48):
+  each specialist loads the GKE server from its own content root, and
+  the main agent keeps only what
+  `agents/sre-triage/ax/core-agent-<bundle>.main-tools.json` names:
+  none for incidents (mast's coordinator only delegated), the
+  cluster-level `list_clusters` and `get_cluster` for chat, so a quick
+  question needs no specialist. The file tools (`read_file`,
+  `write_file`, `grep` and the rest) are off with `bash`: mast had none,
+  and each tool's schema rides in every model call. core-agent's
+  importer gives the main agent every server (go-steer/core-agent#1498).
 - core-agent v3.1.0-rc.1 in images/agent. Its loopback attach listener
   now answers 421 to a Host it doesn't know (a DNS-rebinding guard,
   go-steer/core-agent#1358). Requests reach it from Substrate's router

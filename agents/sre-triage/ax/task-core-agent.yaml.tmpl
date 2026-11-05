@@ -69,11 +69,16 @@ spec:
     # A long-lived service: the model doesn't declare task boundaries;
     # /done and core-agent's heuristic still can.
     - --checkpoint=operator
-    # No bash: the agent reads clusters through GKE's MCP server (the
-    # image has no kubectl), mast's bundles never had it, and on a
-    # multi-session daemon only an admin may approve it (core-agent
-    # #1355), so a Slack approval would be refused.
-    - --disable-tools=bash
+    # No bash or file tools: the agent reads clusters through GKE's MCP
+    # server (the image has no kubectl), mast's bundles had neither, and
+    # every tool's schema rides along in every model call. On a
+    # multi-session daemon only an admin may approve bash (core-agent
+    # #1355), so a Slack approval would be refused anyway.
+    - --disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep
+    # core-agent's small-model agentic tools read files and URLs, so with
+    # the file tools gone it refuses to start unless they're off too;
+    # the MCP digests behind retrieve_raw are separate and stay.
+    - --agentic-tools=false
     # No startup fetch of LiteLLM's price list (raw.githubusercontent.com
     # is outside the egress below, and the fetch blocks the listener for
     # up to 30s); the built-in table prices Gemini.
