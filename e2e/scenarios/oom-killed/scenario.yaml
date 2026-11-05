@@ -1,0 +1,37 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A Deployment crash-loops because its container is killed for running
+# out of memory: the process allocates a 200 MiB index at startup and its
+# memory limit is 64Mi. The agent must connect the OOMKilled exit to the
+# limit and say which field to raise, not blame the code or the node.
+#
+# {{.Name}} is unique per run (lookout keys an incident's ax task on the
+# workload, so a reused name would land in the previous run's session).
+namespace: triage-lab
+workload: workload.yaml
+expect:
+  # Regular expressions, case-insensitive; the final answer must match
+  # every one. Positive matches can't tell an answer that blames the limit
+  # from one that names it and blames the node; the scenario catches the
+  # common miss (no limit at all) and the transcript is there for the rest.
+  mentions:
+    - "oom.?kill|out.of.memory"
+    - "\\b64 ?(mi|mib|mb|m)\\b"
+    - "memory.?limit|limits\\W+memory|limit\\w* (of|on|for) (the )?memory"
+limits:
+  # Break to incident, incident to answer, workload removed to suspend.
+  incident: 10m
+  diagnose: 15m
+  suspend: 25m

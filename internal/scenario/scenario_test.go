@@ -17,6 +17,7 @@ package scenario
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -125,5 +126,75 @@ func TestLoadErrors(t *testing.T) {
 	}
 	if s.Limits.Diagnose != time.Minute {
 		t.Errorf("limits = %+v", s.Limits)
+	}
+}
+
+// oom-killed: a container that allocates more than its memory limit. The
+// answer must name the OOM kill, the 64Mi limit and the field to raise,
+// in the shapes an answer actually takes.
+func TestOOMKilledScenario(t *testing.T) {
+	s, err := Load("../../e2e/scenarios/oom-killed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Namespace != "triage-lab" || len(s.Expect.Mentions) != 3 {
+		t.Fatalf("scenario %+v", s)
+	}
+	// The answer core-agent gave to this workload on staging (2026-11-05).
+	good := "Container `reports` is terminated with `exitCode: 137` (`OOMKilled`) because the workload allocates a 200 MiB bytearray at startup while container memory is capped at 64 MiB. Field: `spec.template.spec.containers[name=\"reports\"].resources.limits.memory` Value: `256Mi`"
+	if missing, err := s.Score(good, "oom-killed-1105-160452"); err != nil || len(missing) != 0 {
+		t.Errorf("a correct answer scored missing %v, %v", missing, err)
+	}
+	for _, ok := range []string{
+		"The container hit the out-of-memory killer: 64 MB is below what it allocates. Raise the memory-limit.",
+		"OOM killed (exit 137). There is a limit of 64Mi on memory; set resources.limits:\n  memory: 256Mi.",
+	} {
+		if missing, err := s.Score(ok, "oom-killed-1105-160452"); err != nil || len(missing) != 0 {
+			t.Errorf("%q scored missing %v, %v", ok, missing, err)
+		}
+	}
+	for _, bad := range []string{
+		"The pod crash-loops because DATABASE_URL is missing.",
+		"OOMKilled: the node ran out of memory; add nodes.",
+		"OOMKilled after 64 minutes; raise the memory limit.",
+		"OOMKilled at 164Mi; raise the memory limit.",
+	} {
+		if missing, err := s.Score(bad, "oom-killed-1105-160452"); err != nil || len(missing) == 0 {
+			t.Errorf("%q scored correct (%v)", bad, err)
+		}
+	}
+	m, err := s.Manifest("oom-killed-1105-160452")
+	if err != nil || !strings.Contains(string(m), "memory: 64Mi") || !strings.Contains(string(m), "shipmind.dev/scenario: oom-killed") {
+		t.Errorf("manifests: %v\n%s", err, m)
+	}
+}
+
+// Every nightly CronJob runs a scenario that exists here, so the runner
+// image built from this tree carries it (images/e2e-runner copies
+// e2e/scenarios). A CronJob still needs the runner pin moved to an image
+// built after its scenario was added.
+func TestNightlyScenariosExist(t *testing.T) {
+	b, err := os.ReadFile("../../deploy/e2e/substrate/e2e.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := regexp.MustCompile(`(?m)^\s+- /scenarios/([a-z0-9-]+)$`).FindAllStringSubmatch(string(b), -1)
+	if len(refs) < 2 {
+		t.Fatalf("found %d scenario references in the CronJobs", len(refs))
+	}
+	entries, err := os.ReadDir("../../e2e/scenarios")
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, e := range entries {
+		if _, err := os.Stat(filepath.Join("../../e2e/scenarios", e.Name(), "scenario.yaml")); e.IsDir() && err == nil {
+			have[e.Name()] = true
+		}
+	}
+	for _, r := range refs {
+		if !have[r[1]] {
+			t.Errorf("a CronJob runs /scenarios/%s, which e2e/scenarios doesn't have", r[1])
+		}
 	}
 }

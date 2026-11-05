@@ -311,12 +311,14 @@ earlier run's session, where the agent rightly answers "still failing"),
 waits for lookout's new ax task, reads the agent's answer to the first
 incident message through Substrate's router and scores it, removes the
 workload, waits for the task to suspend, wakes it through the router and
-requires its session to still be in mast's memory with its history, and
+requires its session to still be in the agent's memory with its history, and
 deletes the task. The result is one JSON object; the exit status says
 pass or fail. It runs from a workstation (a kube context and a
 port-forwarded router) or inside the cluster (`-in-cluster`, the
-`e2e-runner` image). `deploy/e2e/substrate` runs it nightly as a
-CronJob with just the permissions it needs (Deployments and ConfigMaps
+`e2e-runner` image). `deploy/e2e/substrate` runs each scenario nightly
+as its own CronJob (labelled `shipmind.dev/nightly: scenario`, so an
+overlay patches them all with one target), with just the permissions it
+needs (Deployments and ConfigMaps
 in the scenario's namespace, the agent's attach token); an environment
 opts in by referencing it at the same shipmind commit as its profile.
 
