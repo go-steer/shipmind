@@ -29,11 +29,11 @@
 #                   build. agents/sre-triage/ax/core-agent-<bundle>.json,
 #                   when present, is merged over the converted config:
 #                   the deployment's attach settings, which a mast bundle
-#                   has no place for. The MCP servers then go where mast
-#                   had them: each specialist gets its own content root
-#                   (.agents/roots/<name>) holding the bundle's mcp.json,
-#                   which its own mcp_tools filter within, and the main
-#                   agent keeps only the tools
+#                   has no place for. The importer gives each specialist
+#                   its own content root (.agents/roots/<name>/mcp.json,
+#                   core-agent#1498) and the main agent no MCP servers;
+#                   the build checks both, then gives the main agent only
+#                   the tools
 #                   agents/sre-triage/ax/core-agent-<bundle>.main-tools.json
 #                   names (a bundle with no such file gets none). A bundle
 #                   with core-agent-<bundle>.fold-specialist runs the
@@ -113,6 +113,13 @@ RUN set -e; \
         mv /tmp/config.json "/out/$b/.agents/config.json"; \
       fi; \
       mkdir -p "/out/$b/.agents/plans"; \
+      mcp="/out/$b/.agents/mcp.json"; \
+      for sa in /out/$b/.agents/subagents/*.md; do \
+        [ -f "$sa" ] || continue; \
+        n=$(basename "$sa" .md); \
+        if ! grep -qx "root: roots/$n" "$sa" || [ ! -f "/out/$b/.agents/roots/$n/mcp.json" ]; then echo "recipe $b: the importer gave specialist $n no content root of its own"; exit 1; fi; \
+      done; \
+      if [ -e "$mcp" ]; then echo "recipe $b: the importer gave the main agent MCP servers"; exit 1; fi; \
       fold="/in/ax/core-agent-$b.fold-specialist"; \
       if [ -f "$fold" ]; then \
         n=$(tr -d ' \n' < "$fold"); sa="/out/$b/.agents/subagents/$n.md"; \
@@ -122,29 +129,21 @@ RUN set -e; \
         grep -q '^Return your finding by calling `finish_task`' /tmp/body.md; \
         awk '/^Return your finding by calling `finish_task`/ { exit } { print }' /tmp/body.md | sed 's/ and leave `proposed_change` empty//' > /tmp/diagnosis.md; \
         { cat /tmp/agents.md; printf '\n## Diagnosis\n\n'; cat /tmp/diagnosis.md; cat "/in/ax/core-agent-$b.report.md"; } > "/out/$b/AGENTS.md"; \
-        rm "$sa"; \
+        cp "/out/$b/.agents/roots/$n/mcp.json" "$mcp"; \
+        rm "$sa"; rm -r "/out/$b/.agents/roots/$n"; \
         if grep -qF "\`$n\`" "/out/$b/AGENTS.md" || grep -qF finish_task "/out/$b/AGENTS.md" || ! grep -q '^## Diagnosis$' "/out/$b/AGENTS.md"; then \
           echo "recipe $b: folding $n left its roster entry or finish_task, or no Diagnosis section:"; cat "/out/$b/AGENTS.md"; exit 1; \
         fi; \
         if ls /out/$b/.agents/subagents/*.md >/dev/null 2>&1; then echo "recipe $b: subagents remain after folding $n"; exit 1; fi; \
       fi; \
-      mcp="/out/$b/.agents/mcp.json"; \
-      for sa in /out/$b/.agents/subagents/*.md; do \
-        [ -f "$sa" ] || continue; \
-        n=$(basename "$sa" .md); \
-        mkdir -p "/out/$b/.agents/roots/$n"; \
-        cp "$mcp" "/out/$b/.agents/roots/$n/mcp.json"; \
-        awk -v n="$n" 'NR == 1 && $0 == "---" { print; print "root: roots/" n; next } { print }' "$sa" > /tmp/sa.md; \
-        head -2 /tmp/sa.md | grep -qx "root: roots/$n"; \
-        mv /tmp/sa.md "$sa"; \
-      done; \
       main="/in/ax/core-agent-$b.main-tools.json"; \
       if [ -f "$main" ] && [ "$(jq length "$main")" -gt 0 ]; then \
+        if [ ! -f "$mcp" ]; then src=$(ls /out/$b/.agents/roots/*/mcp.json | head -1); cp "$src" "$mcp"; fi; \
         jq --slurpfile t "$main" '.servers |= map_values(.tools = $t[0])' "$mcp" > /tmp/mcp.json; \
         mv /tmp/mcp.json "$mcp"; \
         if ! jq -e --slurpfile t "$main" '[.servers[].tools] | all(. == $t[0])' "$mcp" >/dev/null; then echo "recipe $b: main agent's tools aren't $(cat "$main")"; exit 1; fi; \
       else \
-        rm "$mcp"; \
+        rm -f "$mcp"; \
       fi; \
     done
 # The Host Substrate's router sends (switchboard's and lookout's

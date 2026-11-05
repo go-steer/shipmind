@@ -109,7 +109,7 @@ components:
 
   - name: core-agent
     source: github.com/go-steer/core-agent
-    version: dfaff57e4af4e8c723ec5f6bf4a2f903f2b887fd
+    version: b226566a26ceeec2d9c84d6e52ceab65187e3b31
     profiles: [substrate]
     note: >-
       v3.1.0-rc.1, pinned by commit because images/agent builds it from

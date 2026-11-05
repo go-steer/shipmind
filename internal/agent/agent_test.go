@@ -512,15 +512,18 @@ func TestCoreAgentImage(t *testing.T) {
 	// Where mast had the MCP tools: each specialist's own content root,
 	// and the main agent only what main-tools names (incidents: none,
 	// as mast's coordinator; chat: cluster-level reads for quick answers).
-	for _, step := range []string{`print "root: roots/" n`, `cp "$mcp" "/out/$b/.agents/roots/$n/mcp.json"`, `/in/ax/core-agent-$b.main-tools.json`, `rm "$mcp"`} {
+	for _, step := range []string{`grep -qx "root: roots/$n" "$sa"`, `the importer gave the main agent MCP servers`, `/in/ax/core-agent-$b.main-tools.json`, `rm -f "$mcp"`} {
 		if !strings.Contains(string(dockerfile), step) {
-			t.Errorf("images/agent lacks %q (the MCP split)", step)
+			t.Errorf("images/agent lacks %q (the MCP layout checks)", step)
 		}
 	}
 	// Each specialist's root gets the bundle's servers before the main
 	// agent's are narrowed or removed.
-	if d := string(dockerfile); strings.Index(d, `cp "$mcp" "/out/$b/.agents/roots/$n/mcp.json"`) > strings.Index(d, `/in/ax/core-agent-$b.main-tools.json`) {
-		t.Error("images/agent narrows the main agent's mcp.json before copying it to the specialists' roots")
+	// The folded specialist's root becomes the main agent's servers
+	// before main-tools narrows them, and only then is the root removed.
+	if d := string(dockerfile); !(strings.Index(d, `cp "/out/$b/.agents/roots/$n/mcp.json" "$mcp"`) < strings.Index(d, `rm -r "/out/$b/.agents/roots/$n"`) &&
+		strings.Index(d, `rm -r "/out/$b/.agents/roots/$n"`) < strings.Index(d, `/in/ax/core-agent-$b.main-tools.json`)) {
+		t.Error("images/agent's fold doesn't take the specialist's servers, then remove its root, before narrowing")
 	}
 	// The incident profile triages itself: its one specialist runs as
 	// the main agent (so lookout's signal is read where it lands, not
