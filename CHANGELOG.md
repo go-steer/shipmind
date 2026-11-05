@@ -10,6 +10,12 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- A second nightly scenario, `oom-killed` (CronJob at 03:47 UTC): a
+  container allocates 200 MiB under a 64Mi memory limit and is
+  OOMKilled. The answer must name the OOM kill, the 64Mi limit and the
+  memory limit to raise. Both nightly CronJobs carry the label
+  `shipmind.dev/nightly: scenario`, so an overlay can patch them with one
+  target (the atespace argument).
 - The nightly scenario records the session's model usage once the
   answer settles (`GET /sessions/{id}/usage`): model calls, input tokens
   and the cached share, output and thinking tokens, and each call with

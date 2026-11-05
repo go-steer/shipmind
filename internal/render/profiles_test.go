@@ -389,6 +389,7 @@ func TestSubstrateRouterClientsMountMTLS(t *testing.T) {
 		{filepath.Join(profilesDir, "substrate"), "Deployment", "lookout-ax", "lookout-ax"},
 		{filepath.Join(profilesDir, "substrate"), "Deployment", "substrate-scope", "substrate-scope"},
 		{filepath.Join(profilesDir, "..", "e2e", "substrate"), "CronJob", "shipmind-e2e", "missing-env"},
+		{filepath.Join(profilesDir, "..", "e2e", "substrate"), "CronJob", "shipmind-e2e", "oom-killed"},
 		{filepath.Join(switchboardDir, "slack"), "Deployment", "switchboard", "switchboard"},
 	} {
 		o, ok := build(t, c.dir).Find(c.kind, c.ns, c.name)

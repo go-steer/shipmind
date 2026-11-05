@@ -127,3 +127,33 @@ func TestLoadErrors(t *testing.T) {
 		t.Errorf("limits = %+v", s.Limits)
 	}
 }
+
+// oom-killed: a container that allocates more than its memory limit. The
+// answer must name the OOM kill, the 64Mi limit and the field to raise,
+// in the shapes an answer actually takes.
+func TestOOMKilledScenario(t *testing.T) {
+	s, err := Load("../../e2e/scenarios/oom-killed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Namespace != "triage-lab" || len(s.Expect.Mentions) != 3 {
+		t.Fatalf("scenario %+v", s)
+	}
+	// The answer core-agent gave to this workload on staging (2026-11-05).
+	good := "Container `reports` is terminated with `exitCode: 137` (`OOMKilled`) because the workload allocates a 200 MiB bytearray at startup while container memory is capped at 64 MiB. Field: `spec.template.spec.containers[name=\"reports\"].resources.limits.memory` Value: `256Mi`"
+	if missing, err := s.Score(good, "oom-killed-1105-160452"); err != nil || len(missing) != 0 {
+		t.Errorf("a correct answer scored missing %v, %v", missing, err)
+	}
+	for _, bad := range []string{
+		"The pod crash-loops because DATABASE_URL is missing.",
+		"OOMKilled: the node ran out of memory; add nodes.",
+	} {
+		if missing, err := s.Score(bad, "oom-killed-1105-160452"); err != nil || len(missing) == 0 {
+			t.Errorf("%q scored correct (%v)", bad, err)
+		}
+	}
+	m, err := s.Manifest("oom-killed-1105-160452")
+	if err != nil || !strings.Contains(string(m), "memory: 64Mi") || !strings.Contains(string(m), "shipmind.dev/scenario: oom-killed") {
+		t.Errorf("manifests: %v\n%s", err, m)
+	}
+}
