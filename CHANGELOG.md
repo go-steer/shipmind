@@ -105,7 +105,11 @@ release is a tested set of component versions (see "Cutting a release" in
   so lookout's signal is read where it lands instead of being re-typed
   into a delegation, the costliest step measured (2.1k output tokens).
   Specialists to come (deep dives, issues and pull requests) get briefs
-  from the triage. Chat keeps its delegation.
+  from the triage. Chat keeps its delegation. An incident turn is
+  bounded at 150s (`agent.max_wallclock_seconds`; a healthy one takes
+  45 to 75s); `agent.max_steps` caps nothing in core-agent. Background
+  subagents (`spawn_agent`) are off in both profiles: delegation is a
+  specialist's own synchronous tool.
 - The agent on core-agent has its MCP tools where mast had them (#48):
   each specialist loads the GKE server from its own content root, and
   the main agent keeps only what

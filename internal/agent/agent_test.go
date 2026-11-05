@@ -358,7 +358,7 @@ func TestChatTaskCoreAgent(t *testing.T) {
 		"--provider=vertex", "--model=gemini-3.8-flash", "--no-repl",
 		"--attach-listen=127.0.0.1:8484", "--attach-token=CORE_AGENT_ATTACH_TOKEN",
 		"--session-db", "--session-db-path=/workspace/.core-agent/sessions.db",
-		"--checkpoint=operator", "--disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep", "--agentic-tools=false", "--no-pricing-refresh",
+		"--checkpoint=operator", "--disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep", "--agentic-tools=false", "--no-background-agents", "--no-pricing-refresh",
 		"--agents-content-dir=/workspace/repo",
 	}
 	if !slices.Equal(got.Command, wantCmd) {

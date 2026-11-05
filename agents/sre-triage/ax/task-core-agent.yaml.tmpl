@@ -79,6 +79,11 @@ spec:
     # the file tools gone it refuses to start unless they're off too;
     # the MCP digests behind retrieve_raw are separate and stay.
     - --agentic-tools=false
+    # No background subagents: the model delegates through a specialist's
+    # own tool (synchronous, its answer in the same turn) or not at all.
+    # spawn_agent's async route returned before the specialist did, and
+    # its schema rode in every call.
+    - --no-background-agents
     # No startup fetch of LiteLLM's price list (raw.githubusercontent.com
     # is outside the egress below, and the fetch blocks the listener for
     # up to 30s); the built-in table prices Gemini.
