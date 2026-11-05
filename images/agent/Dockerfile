@@ -114,7 +114,7 @@ RUN set -e; \
         mv /tmp/sa.md "$sa"; \
       done; \
       main="/in/ax/core-agent-$b.main-tools.json"; \
-      if [ -f "$main" ]; then \
+      if [ -f "$main" ] && [ "$(jq length "$main")" -gt 0 ]; then \
         jq --slurpfile t "$main" '.servers |= map_values(.tools = $t[0])' "$mcp" > /tmp/mcp.json; \
         mv /tmp/mcp.json "$mcp"; \
       else \
@@ -124,10 +124,15 @@ RUN set -e; \
 # The Host Substrate's router sends (switchboard's and lookout's
 # default router URL; the nightly's too).
 ARG ROUTER_HOST=atenet-router.ate-system.svc.cluster.local
+# The task template's flags that shape what core-agent builds, so the
+# check boots what a task boots (internal/agent's test keeps the two in
+# step): the provider decides which tools come on by default, and a
+# disabled tool another one needs is a startup error.
+ARG TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator --disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep --agentic-tools=false --no-pricing-refresh"
 RUN set -e; mkdir -p /tmp/content; \
     for b in gke-triage-f gke-chat; do \
       SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \
-        core-agent -c "/out/$b/.agents/config.json" --provider=echo --no-repl --no-pricing-refresh \
+        core-agent -c "/out/$b/.agents/config.json" $TASK_FLAGS --no-repl \
           --attach-listen=127.0.0.1:8484 --attach-token=SMOKE_TOKEN \
           --session-db --session-db-path="/tmp/smoke-$b.db" --agents-content-dir=/tmp/content \
           >"/tmp/smoke-$b.log" 2>&1 & pid=$!; \

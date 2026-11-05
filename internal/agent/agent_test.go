@@ -358,11 +358,35 @@ func TestChatTaskCoreAgent(t *testing.T) {
 		"--provider=vertex", "--model=gemini-3.8-flash", "--no-repl",
 		"--attach-listen=127.0.0.1:8484", "--attach-token=CORE_AGENT_ATTACH_TOKEN",
 		"--session-db", "--session-db-path=/workspace/.core-agent/sessions.db",
-		"--checkpoint=operator", "--disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep", "--no-pricing-refresh",
+		"--checkpoint=operator", "--disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep", "--agentic-tools=false", "--no-pricing-refresh",
 		"--agents-content-dir=/workspace/repo",
 	}
 	if !slices.Equal(got.Command, wantCmd) {
 		t.Errorf("command\n got %q\nwant %q", got.Command, wantCmd)
+	}
+	// images/agent's boot check starts core-agent with the template's
+	// flags that shape what it builds (provider, model, tools), so a
+	// combination core-agent refuses fails the build, not the task.
+	dockerfile, err := os.ReadFile(filepath.Join(root, "images/agent/Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var taskFlags []string
+	for _, line := range strings.Split(string(dockerfile), "\n") {
+		if v, ok := strings.CutPrefix(line, "ARG TASK_FLAGS="); ok {
+			taskFlags = strings.Fields(strings.Trim(v, `"`))
+		}
+	}
+	var shaping []string
+	for _, f := range wantCmd[3:] { // after core-agent -c <config>
+		switch {
+		case f == "--no-repl", strings.HasPrefix(f, "--attach-"), strings.HasPrefix(f, "--session-db"), strings.HasPrefix(f, "--agents-content-dir"):
+			continue // the listener, its token and paths, which the check sets for itself
+		}
+		shaping = append(shaping, f)
+	}
+	if !slices.Equal(taskFlags, shaping) {
+		t.Errorf("images/agent's TASK_FLAGS\n got %q\nwant the template's %q", taskFlags, shaping)
 	}
 	cmd := strings.Join(got.Command, " ")
 	switch {
@@ -492,6 +516,11 @@ func TestCoreAgentImage(t *testing.T) {
 		if !strings.Contains(string(dockerfile), step) {
 			t.Errorf("images/agent lacks %q (the MCP split)", step)
 		}
+	}
+	// Each specialist's root gets the bundle's servers before the main
+	// agent's are narrowed or removed.
+	if d := string(dockerfile); strings.Index(d, `cp "$mcp" "/out/$b/.agents/roots/$n/mcp.json"`) > strings.Index(d, `/in/ax/core-agent-$b.main-tools.json`) {
+		t.Error("images/agent narrows the main agent's mcp.json before copying it to the specialists' roots")
 	}
 	if _, err := os.Stat(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".main-tools.json")); !os.IsNotExist(err) {
 		t.Errorf("the incident bundle's main agent gets MCP tools (%v); mast's coordinator had none", err)
