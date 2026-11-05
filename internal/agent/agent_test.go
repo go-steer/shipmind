@@ -521,8 +521,9 @@ func TestCoreAgentImage(t *testing.T) {
 	// agent's are narrowed or removed.
 	// The folded specialist's root becomes the main agent's servers
 	// before main-tools narrows them, and only then is the root removed.
-	if d := string(dockerfile); !(strings.Index(d, `cp "/out/$b/.agents/roots/$n/mcp.json" "$mcp"`) < strings.Index(d, `rm -r "/out/$b/.agents/roots/$n"`) &&
-		strings.Index(d, `rm -r "/out/$b/.agents/roots/$n"`) < strings.Index(d, `/in/ax/core-agent-$b.main-tools.json`)) {
+	d := string(dockerfile)
+	take, drop, narrow := strings.Index(d, `cp "/out/$b/.agents/roots/$n/mcp.json" "$mcp"`), strings.Index(d, `rm -r "/out/$b/.agents/roots/$n"`), strings.Index(d, `/in/ax/core-agent-$b.main-tools.json`)
+	if take < 0 || take > drop || drop > narrow {
 		t.Error("images/agent's fold doesn't take the specialist's servers, then remove its root, before narrowing")
 	}
 	// The incident profile triages itself: its one specialist runs as
