@@ -512,15 +512,17 @@ func TestCoreAgentImage(t *testing.T) {
 	// Where mast had the MCP tools: each specialist's own content root,
 	// and the main agent only what main-tools names (incidents: none,
 	// as mast's coordinator; chat: cluster-level reads for quick answers).
-	for _, step := range []string{`print "root: roots/" n`, `cp "$mcp" "/out/$b/.agents/roots/$n/mcp.json"`, `/in/ax/core-agent-$b.main-tools.json`, `rm "$mcp"`} {
+	for _, step := range []string{`grep -qx "root: roots/$n" "$sa"`, `the importer gave the main agent MCP servers`, `/in/ax/core-agent-$b.main-tools.json`, `rm -f "$mcp"`} {
 		if !strings.Contains(string(dockerfile), step) {
-			t.Errorf("images/agent lacks %q (the MCP split)", step)
+			t.Errorf("images/agent lacks %q (the MCP layout checks)", step)
 		}
 	}
-	// Each specialist's root gets the bundle's servers before the main
-	// agent's are narrowed or removed.
-	if d := string(dockerfile); strings.Index(d, `cp "$mcp" "/out/$b/.agents/roots/$n/mcp.json"`) > strings.Index(d, `/in/ax/core-agent-$b.main-tools.json`) {
-		t.Error("images/agent narrows the main agent's mcp.json before copying it to the specialists' roots")
+	// The folded specialist's root becomes the main agent's servers
+	// before main-tools narrows them, and only then is the root removed.
+	d := string(dockerfile)
+	take, drop, narrow := strings.Index(d, `cp "/in/$b/mcp.json" "$mcp"`), strings.Index(d, `rm -rf "/out/$b/.agents/roots/$n"`), strings.Index(d, `/in/ax/core-agent-$b.main-tools.json`)
+	if take < 0 || take > drop || drop > narrow {
+		t.Error("images/agent's fold doesn't take the specialist's servers, then remove its root, before narrowing")
 	}
 	// The incident profile triages itself: its one specialist runs as
 	// the main agent (so lookout's signal is read where it lands, not
@@ -553,6 +555,23 @@ func TestCoreAgentImage(t *testing.T) {
 	report, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".report.md"))
 	if err != nil || strings.Contains(string(report), "finish_task") {
 		t.Errorf("incident report section: %v, or it names finish_task", err)
+	}
+	// core-agent enforces agent.max_steps on a turn's main-agent model
+	// calls (#1500): the incident cap must fire, with final_report's
+	// partial, before the 150s bound cuts the turn off with nothing (a
+	// healthy run is 4 calls in 45-75s).
+	var incCfg struct {
+		Agent struct {
+			MaxSteps            int `json:"max_steps"`
+			MaxWallclockSeconds int `json:"max_wallclock_seconds"`
+		} `json:"agent"`
+	}
+	b, err = os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &incCfg); err != nil || incCfg.Agent.MaxSteps < 5 || incCfg.Agent.MaxSteps*15 > incCfg.Agent.MaxWallclockSeconds {
+		t.Errorf("incident agent %+v: want a step cap that fires within the wall-clock bound (about 15s a call)", incCfg.Agent)
 	}
 	if _, err := os.Stat(filepath.Join(root, Dir, "core-agent-"+ChatBundle+".fold-specialist")); !os.IsNotExist(err) {
 		t.Errorf("the chat profile folds its specialist (%v); it delegates", err)
