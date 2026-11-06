@@ -4,6 +4,27 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-06: core-agent is the agent harness; mast is maintenance-only
+
+New agent work goes to core-agent only: specialists (deep dives, issues and
+pull requests), scenarios, identity. mast runs what it runs today, prod's
+incidents and dev's until core-agent 3.1 GA, and gets fixes but no new
+features. When prod moves, `images/agent-mast`, the mast task template and
+the `mast` pin are deleted; `agent.chatImage`/`agent.incidentImage` become
+the permanent per-profile settings; the bundles in `agents/sre-triage`
+can then become native core-agent recipes instead of imported ones.
+
+**Why:** on staging both paths run on core-agent, every scenario run has
+passed, and core-agent's single-agent triage costs about half mast's per
+incident ($0.016 to $0.040 against $0.039 to $0.073, 2026-11-05/06). The
+three core-agent issues found on the way (#1497, #1498, #1500) are fixed
+in v3.1.0-rc.2. mast's own plan (go-steer/mast#596, go-steer/core-agent#1411)
+keeps it supported only until shipmind has moved.
+
+**Rejected:** keeping both harnesses current (two bundle formats and two
+test baselines for one agent); moving prod before its Substrate cutover,
+which is best done once, to Substrate 1.0 GA.
+
 ## 2026-11-05: The incident agent triages; specialists get briefs
 
 The incident profile's main agent holds the read tools and diagnoses
