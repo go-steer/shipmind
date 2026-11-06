@@ -326,3 +326,31 @@ func TestTranscriptServer(t *testing.T) {
 		t.Errorf("Server = %q, %v", tr.Server, err)
 	}
 }
+
+// Replay keeps the stream as read, for the archive, and says when it ran
+// past its limit; a frame that doesn't parse is still kept.
+func TestRouterReplay(t *testing.T) {
+	body := "event: capabilities\ndata: {\"server\":\"core-agent/v3.1.0\"}\n\nevent: agent\ndata: {\"seq\":1,\"event\":{\"author\":\"user\"}}\n\ndata: not json\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sessions/s1/events" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, body)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	r := &Router{Base: srv.URL, Atespace: "agents", Token: "tok", EventsWait: 200 * time.Millisecond}
+	rp, err := r.Replay(context.Background(), "t", "s1")
+	if err != nil || string(rp.Raw) != body || rp.Server != "core-agent/v3.1.0" || rp.Truncated {
+		t.Fatalf("Replay = %+v, %v", rp, err)
+	}
+	r.MaxRaw = 40
+	if rp, err := r.Replay(context.Background(), "t", "s1"); err != nil || len(rp.Raw) != 40 || !rp.Truncated {
+		t.Errorf("limited Replay = %d bytes, truncated %v, %v", len(rp.Raw), rp.Truncated, err)
+	}
+	if _, err := r.Replay(context.Background(), "t", "nope"); err == nil {
+		t.Error("Replay of a missing session succeeded")
+	}
+}

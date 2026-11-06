@@ -10,6 +10,15 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- `shipmind scenario run -archive gs://bucket/prefix` stores each run's
+  record once it is decided, failed runs included: the session's full
+  event stream (`transcript.sse`: every message and tool call with its
+  arguments and result), its usage (`usage.json`), the result
+  (`result.json`) and what ran (`meta.json`), under
+  `<prefix>/<scenario>/<date>/<workload>/`. It writes over Cloud Storage's
+  JSON API with the pod's workload-identity token and never replaces an
+  object; a failed save is logged and doesn't fail the run. The record is
+  what trajectory checks, an answer judge and re-grading will read (#48).
 - A second nightly scenario, `oom-killed` (CronJob at 03:47 UTC): a
   container allocates 200 MiB under a 64Mi memory limit and is
   OOMKilled. The answer must name the OOM kill, the 64Mi limit and the
