@@ -109,14 +109,14 @@ components:
 
   - name: core-agent
     source: github.com/go-steer/core-agent
-    version: a8ba67a5ff1ada227a6db11b681e411b2d3b12f6
+    version: c2b516bbd3da35dae279aa9c16c63d1af526b008
     profiles: [substrate]
     note: >-
-      v3.1.0-rc.2, pinned by commit because images/agent builds it from
+      v3.1.0, pinned by commit because images/agent builds it from
       source and checks what it fetched. The harness replacing mast (#48),
       built into images/agent with the ax-runner pin above; its own
       `config import-workload` converts agents/sre-triage's bundles at
-      build time. rc.2's importer gives each specialist its own content
+      build time. 3.1's importer gives each specialist its own content
       root and the main agent no MCP servers (core-agent#1498), which
       images/agent checks; it enforces agent.max_steps (#1500). rc.1
       began refusing a request on its loopback attach listener

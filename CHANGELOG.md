@@ -105,6 +105,8 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- core-agent v3.1.0 (GA) in images/agent: rc.2 plus its changelog and
+  core-models v0.15.2.
 - core-agent v3.1.0-rc.2 in images/agent. Its importer now gives each
   specialist its own content root and the main agent no MCP servers
   (go-steer/core-agent#1498), which the image build used to arrange
