@@ -66,9 +66,13 @@ type Expect struct {
 	Trajectory *Trajectory `yaml:"trajectory"`
 }
 
-// Trajectory bounds the path to the answer. Tool names match a call with
-// or without its MCP server's prefix: get_k8s_logs matches
-// gke_get_k8s_logs.
+// Trajectory bounds the path to the answer, over the main agent's tool
+// calls: core-agent streams a specialist's calls in a session of its
+// own, so a profile that delegates needs those merged in before it gets
+// a trajectory. Tool names match a call as named or behind one MCP
+// server prefix: get_k8s_logs matches gke_get_k8s_logs. The bounds are
+// tuned for core-agent's single-agent triage (about 3 tool and 4 model
+// calls a run).
 type Trajectory struct {
 	// MustCall: each entry must be called at least once; "a|b" accepts
 	// either.
@@ -137,6 +141,15 @@ func Load(dir string) (*Scenario, error) {
 	if s.Expect.Trajectory != nil {
 		if err := s.Expect.Trajectory.check(); err != nil {
 			fail("%v", err)
+		}
+		known, err := loadTools(filepath.Join(filepath.Dir(dir), "tools.yaml"))
+		if err != nil {
+			fail("%v", err)
+		}
+		for _, name := range s.Expect.Trajectory.names() {
+			if known != nil && !known[name] {
+				fail("expect.trajectory: %q isn't a tool in %s", name, filepath.Join(filepath.Dir(dir), "tools.yaml"))
+			}
 		}
 	}
 	if s.Limits.Incident <= 0 || s.Limits.Diagnose <= 0 || s.Limits.Suspend <= 0 {
@@ -222,9 +235,42 @@ func (t *Trajectory) check() error {
 }
 
 // toolMatches reports whether a call (as the agent named it) is tool
-// name, with or without an MCP server's prefix.
+// name, as is or behind one server prefix ("gke_"): "resource" doesn't
+// match gke_get_k8s_resource.
 func toolMatches(call, name string) bool {
-	return call == name || strings.HasSuffix(call, "_"+name)
+	server, ok := strings.CutSuffix(call, "_"+name)
+	return call == name || (ok && server != "" && !strings.Contains(server, "_"))
+}
+
+// names lists every tool name the trajectory mentions.
+func (t *Trajectory) names() []string {
+	var names []string
+	for _, entry := range t.MustCall {
+		names = append(names, strings.Split(entry, "|")...)
+	}
+	return append(names, t.NeverCall...)
+}
+
+// loadTools reads the scenarios' tool catalog, or nil when there is none.
+func loadTools(path string) (map[string]bool, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		Tools []string `yaml:"tools"`
+	}
+	if err := yaml.Unmarshal(b, &doc); err != nil || len(doc.Tools) == 0 {
+		return nil, fmt.Errorf("%s: want a list of tools (%v)", path, err)
+	}
+	known := map[string]bool{}
+	for _, t := range doc.Tools {
+		known[t] = true
+	}
+	return known, nil
 }
 
 // Check grades a session's tool calls, in order, and its model-call

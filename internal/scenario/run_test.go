@@ -623,3 +623,23 @@ func TestRunArchiveWhenCancelled(t *testing.T) {
 		t.Errorf("tasks deleted %v", w.tasksGone)
 	}
 }
+
+// A run over its model-call bound fails; a run that never settles still
+// records the path it took (a runaway is that case).
+func TestRunTrajectoryBounds(t *testing.T) {
+	w, s, o := newWorld(t)
+	tj := *s.Expect.Trajectory
+	tj.MaxModelCalls = 1
+	s.Expect.Trajectory = &tj
+	r := run(t, w, s, o)
+	if r.Pass || !slices.Contains(r.Failures, "trajectory: 2 model calls, more than 1") {
+		t.Errorf("over the model-call bound: %+v", r.Failures)
+	}
+
+	w, s, o = newWorld(t)
+	w.neverIdle = true
+	r = run(t, w, s, o)
+	if r.Pass || r.Trajectory == nil || len(r.Trajectory.ToolCalls) != 2 {
+		t.Errorf("unsettled run: pass %v, trajectory %+v, failures %v", r.Pass, r.Trajectory, r.Failures)
+	}
+}

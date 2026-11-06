@@ -1,0 +1,44 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The tools a scenario's expect.trajectory may name: the GKE MCP server's
+# tools as the agent bundles' tool_catalog lists them (agents/sre-triage/
+# */workload.yaml; a test keeps the two equal). A name not here is a typo,
+# and Load refuses it rather than let a never_call guard quietly match
+# nothing.
+tools:
+  - triage-classifier
+  - get_k8s_resource
+  - describe_k8s_resource
+  - list_k8s_events
+  - get_k8s_logs
+  - get_k8s_rollout_status
+  - list_k8s_api_resources
+  - get_k8s_cluster_info
+  - get_k8s_version
+  - check_k8s_auth
+  - list_clusters
+  - get_cluster
+  - list_node_pools
+  - get_node_pool
+  - list_operations
+  - get_operation
+  - patch_k8s_resource
+  - apply_k8s_manifest
+  - delete_k8s_resource
+  - create_cluster
+  - update_cluster
+  - create_node_pool
+  - update_node_pool
+  - cancel_operation

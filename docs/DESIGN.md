@@ -307,10 +307,14 @@ handling looks like, and every run is checked against it (epic #93):
   the final answer must all match.
 - **The path** (`expect.trajectory`, #89): tools it must call (`a|b` for
   either), tools it must never call, and bounds on tool calls and model
-  calls, checked against the session's tool calls (from its event stream)
-  and the agent's usage. Tool names match with or without the MCP server's
-  prefix. A failed check fails the run like a missing mention, and the run's
-  result lists the calls it made.
+  calls, checked against the main agent's tool calls for the answer (from
+  its event stream) and the agent's usage. Names must be in
+  `e2e/scenarios/tools.yaml`, the bundles' tool catalog, so a typo can't
+  quietly disable a guard, and match a call as named or behind one MCP
+  server prefix. A failed check fails the run like a missing mention, and
+  the result lists the calls. core-agent streams a specialist's calls in a
+  session of its own, so a profile that delegates needs them merged before
+  it gets a trajectory; the incident profile triages in its main agent.
 - **The lifecycle**: the incident opens, the task suspends once the workload
   is gone, and wakes with the session in memory.
 
