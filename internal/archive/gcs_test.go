@@ -19,9 +19,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestParse(t *testing.T) {
@@ -93,5 +95,62 @@ func TestSave(t *testing.T) {
 	bad := &GCS{Bucket: "runs", TokenURL: srv.URL + "/nope", APIBase: srv.URL}
 	if err := bad.Save(context.Background(), "x", map[string][]byte{"a.json": nil}); err == nil || !strings.Contains(err.Error(), "archive token") {
 		t.Errorf("no token: %v", err)
+	}
+}
+
+// Objects go in name order with meta.json last, so a run with meta.json
+// is complete; a transient failure is retried, and a 412 on the retry
+// means the attempt before landed.
+func TestSaveOrderAndRetries(t *testing.T) {
+	old := retryWait
+	retryWait = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { retryWait = old })
+	var mu sync.Mutex
+	var order []string
+	tries := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			_, _ = io.WriteString(w, `{"access_token":"tok"}`)
+			return
+		}
+		name := r.URL.Query().Get("name")
+		mu.Lock()
+		tries[name]++
+		n := tries[name]
+		mu.Unlock()
+		switch {
+		case strings.HasSuffix(name, "flaky.json") && n == 1:
+			http.Error(w, "backend", http.StatusServiceUnavailable)
+			return
+		case strings.HasSuffix(name, "landed.json") && n == 1:
+			// Written, but the answer was lost.
+			mu.Lock()
+			order = append(order, name)
+			mu.Unlock()
+			http.Error(w, "reset", http.StatusBadGateway)
+			return
+		case strings.HasSuffix(name, "landed.json"):
+			http.Error(w, "conditionNotMet", http.StatusPreconditionFailed)
+			return
+		case strings.HasSuffix(name, "down.json"):
+			http.Error(w, "backend", http.StatusServiceUnavailable)
+			return
+		}
+		mu.Lock()
+		order = append(order, name)
+		mu.Unlock()
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	g := &GCS{Bucket: "runs", TokenURL: srv.URL + "/token", APIBase: srv.URL}
+	err := g.Save(context.Background(), "d", map[string][]byte{"meta.json": nil, "a.json": nil, "flaky.json": nil, "landed.json": nil, "z.sse": nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"d/a.json", "d/flaky.json", "d/landed.json", "d/z.sse", "d/meta.json"}; !slices.Equal(order, want) {
+		t.Errorf("order %v, want %v", order, want)
+	}
+	if err := g.Save(context.Background(), "e", map[string][]byte{"down.json": nil, "meta.json": nil}); err == nil || !strings.Contains(err.Error(), "503") || tries["e/meta.json"] != 0 {
+		t.Errorf("a write that keeps failing: %v; meta.json tried %d times", err, tries["e/meta.json"])
 	}
 }

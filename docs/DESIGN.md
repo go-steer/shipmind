@@ -318,11 +318,12 @@ port-forwarded router) or inside the cluster (`-in-cluster`, the
 `e2e-runner` image). `deploy/e2e/substrate` runs each scenario nightly
 as its own CronJob (labelled `shipmind.dev/nightly: scenario`, so an
 overlay patches them all with one target), with just the permissions it
-needs. With `-archive`, each run's record (the session's event stream,
-usage, result and metadata) is written to Cloud Storage once the run is
-decided, so it can be inspected, compared and re-graded later (Deployments and ConfigMaps
-in the scenario's namespace, the agent's attach token); an environment
-opts in by referencing it at the same shipmind commit as its profile.
+needs (Deployments and ConfigMaps in the scenario's namespace, the
+agent's attach token); an environment opts in by referencing it at the
+same shipmind commit as its profile. With `-archive`, each run's record
+(the session's event stream, usage, result and metadata) is written to
+Cloud Storage once the run is decided, so it can be inspected, compared
+and re-graded later.
 
 Substrate v1.0's router accepts only mTLS clients whose SPIFFE ID it
 allows. With `-router-cert` (a podCertificate projection's credential

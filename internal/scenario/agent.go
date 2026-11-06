@@ -43,6 +43,8 @@ type Router struct {
 	// EventsWait bounds how long Events reads the event stream, which
 	// replays the session and then stays open for new events.
 	EventsWait time.Duration
+	// MaxRaw bounds how much of the stream Replay keeps (default 64 MiB).
+	MaxRaw int64
 }
 
 // Session is one row of GET /sessions.
@@ -269,19 +271,56 @@ func (r *Router) Events(ctx context.Context, task, session string) (*Transcript,
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	var raw bytes.Buffer
-	t, err := ParseEvents(io.TeeReader(io.LimitReader(resp.Body, maxRawStream), &raw))
+	t, err := ParseEvents(resp.Body)
 	// The stream doesn't end on its own; running out of time is how a
 	// read finishes.
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 		return nil, err
 	}
-	t.Raw = raw.Bytes()
 	return t, nil
 }
 
-// maxRawStream bounds how much of a session's stream a read keeps raw.
-const maxRawStream = 64 << 20
+// Replay reads a session's stream as it comes, for the run's archive:
+// every frame, up to MaxRaw bytes (default 64 MiB), kept even when it
+// doesn't parse. core-agent replays a session's newest 5000 events.
+func (r *Router) Replay(ctx context.Context, task, session string) (*Replay, error) {
+	wait := r.EventsWait
+	if wait == 0 {
+		wait = 15 * time.Second
+	}
+	limit := r.MaxRaw
+	if limit == 0 {
+		limit = 64 << 20
+	}
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	resp, err := r.get(ctx, task, "/sessions/"+url.PathEscape(session)+"/events")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return nil, err
+	}
+	rp := &Replay{Raw: raw}
+	if int64(len(raw)) > limit {
+		rp.Raw, rp.Truncated = raw[:limit], true
+	}
+	if t, _ := ParseEvents(bytes.NewReader(rp.Raw)); t != nil {
+		rp.Server = t.Server
+	}
+	return rp, nil
+}
+
+// Replay is a session's stream as read for the archive.
+type Replay struct {
+	Raw []byte
+	// Server is the agent, from the stream's capabilities frame.
+	Server string
+	// Truncated: the stream ran past the read's limit.
+	Truncated bool
+}
 
 // Transcript is a session's events, as far as scoring needs them.
 type Transcript struct {
@@ -289,9 +328,6 @@ type Transcript struct {
 	// frame ("core-agent/<version>", "mast/<version>").
 	Server string
 	Events []Event
-	// Raw is the stream as read, every frame (tool calls with their
-	// arguments and results, usage updates), for the run's archive.
-	Raw []byte `json:"-"`
 	// Cost is the session's running cost in US dollars, from the last
 	// usage update.
 	Cost float64

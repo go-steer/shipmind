@@ -113,6 +113,16 @@ func (w *world) Tasks(context.Context) (map[string]string, error) {
 	return tasks, nil
 }
 
+// Replay serves the session's raw stream, and fails once the task is
+// deleted, as the real one does: an archive with a transcript proves the
+// session was read before cleanup deleted the task.
+func (w *world) Replay(_ context.Context, task, _ string) (*Replay, error) {
+	if contains(w.tasksGone, task) {
+		return nil, errors.New("task " + task + " not found")
+	}
+	return &Replay{Raw: []byte("event: agent\ndata: {\"seq\":1}\n\n"), Server: "core-agent/test"}, nil
+}
+
 func (w *world) DeleteTask(_ context.Context, name string) error {
 	if w.failDelete {
 		return errors.New("delete failed")
@@ -523,8 +533,23 @@ func TestRunArchives(t *testing.T) {
 		t.Errorf("archived result %+v, %v", res, err)
 	}
 	var meta map[string]any
-	if err := json.Unmarshal(a.files["meta.json"], &meta); err != nil || meta["scenario"] != s.Name || meta["workload"] != w.name || meta["task"] != "lookout-0123456789abcdef" {
+	if err := json.Unmarshal(a.files["meta.json"], &meta); err != nil || meta["scenario"] != s.Name || meta["workload"] != w.name || meta["task"] != "lookout-0123456789abcdef" ||
+		meta["agent"] != "core-agent/test" || meta["transcript_truncated"] != false {
 		t.Errorf("archived meta %v, %v", meta, err)
+	}
+	// Read before cleanup deleted the task (Replay fails after).
+	if !strings.Contains(string(a.files["transcript.sse"]), `"seq":1`) {
+		t.Errorf("transcript %q: the session wasn't read before the task was deleted", a.files["transcript.sse"])
+	}
+
+	// -keep leaves the task, and the archive still reads it.
+	w, s, o = newWorld(t)
+	o.Keep = true
+	a = &fakeArchive{}
+	o.Archive = a
+	run(t, w, s, o)
+	if _, ok := a.files["transcript.sse"]; !ok || len(w.tasksGone) != 0 {
+		t.Errorf("-keep: archived %v, tasks deleted %v", slices.Sorted(maps.Keys(a.files)), w.tasksGone)
 	}
 
 	// A failed save is logged; the run still passes.
@@ -546,5 +571,37 @@ func TestRunArchives(t *testing.T) {
 	}
 	if err := json.Unmarshal(a.files["result.json"], &res); err != nil || res.Pass || len(res.Failures) == 0 {
 		t.Errorf("archived failed result %+v, %v", res, err)
+	}
+}
+
+// A run being stopped spends what time it has on deleting the task: the
+// archive keeps the result and what ran, and the error, without reading
+// the session.
+func TestRunArchiveWhenCancelled(t *testing.T) {
+	w, s, o := newWorld(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &fakeArchive{}
+	o.Archive = a
+	o.Sleep = func(ctx context.Context, d time.Duration) error {
+		if w.since() > w.incidentAt {
+			cancel()
+			return ctx.Err()
+		}
+		w.now = w.now.Add(d)
+		return nil
+	}
+	r, err := Run(ctx, s, w, w, w, o)
+	if err == nil || r == nil || r.Pass {
+		t.Fatalf("Run = %+v, %v; want a cancelled, failed run", r, err)
+	}
+	if _, ok := a.files["transcript.sse"]; ok {
+		t.Error("read the session while being stopped")
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(a.files["meta.json"], &meta); err != nil || meta["error"] == nil {
+		t.Errorf("meta %v, %v: want the run's error", meta, err)
+	}
+	if len(w.tasksGone) != 1 {
+		t.Errorf("tasks deleted %v", w.tasksGone)
 	}
 }

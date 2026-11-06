@@ -178,6 +178,22 @@ type Archiver interface {
 	Save(ctx context.Context, dir string, files map[string][]byte) error
 }
 
+// Replayer is an Agent that can hand over a session's raw stream for the
+// archive (Router is one).
+type Replayer interface {
+	Replay(ctx context.Context, task, session string) (*Replay, error)
+}
+
+const (
+	// collectTimeout bounds reading the session for the archive, apart
+	// from the cleanup it runs inside, so it can't take the time the
+	// task's deletion needs.
+	collectTimeout = 45 * time.Second
+	// archiveTimeout bounds saving the archive, the last thing a run
+	// does, inside a pod's termination grace period.
+	archiveTimeout = time.Minute
+)
+
 func (o *Options) defaults() {
 	if o.Poll == 0 {
 		o.Poll = 15 * time.Second
@@ -262,16 +278,30 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	// the task, for the archive.
 	collected := map[string][]byte{}
 	var server string
-	collect := func(ctx context.Context) {
-		if o.Archive == nil || r.Task == "" || len(collected) > 0 {
+	var truncated, collectedOnce bool
+	collect := func() {
+		if o.Archive == nil || r.Task == "" || collectedOnce {
 			return
 		}
-		if tr, err := agent.Events(ctx, r.Task, r.Session); err != nil {
-			o.Log("archive: reading the session: %v", err)
-		} else {
-			collected["transcript.sse"], server = tr.Raw, tr.Server
+		collectedOnce = true
+		if ctx.Err() != nil {
+			// Being stopped (a deadline, a SIGTERM): the time left is the
+			// task's deletion's; the archive keeps the result alone.
+			o.Log("archive: not reading the session: %v", ctx.Err())
+			return
 		}
-		if u, err := agent.Usage(ctx, r.Task, r.Session); err != nil {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), collectTimeout)
+		defer cancel()
+		if rp, ok := agent.(Replayer); ok {
+			if tr, err := rp.Replay(cctx, r.Task, r.Session); err != nil {
+				o.Log("archive: reading the session: %v", err)
+			} else {
+				collected["transcript.sse"], server, truncated = tr.Raw, tr.Server, tr.Truncated
+			}
+		}
+		uctx, ucancel := context.WithTimeout(cctx, usageTimeout)
+		defer ucancel()
+		if u, err := agent.Usage(uctx, r.Task, r.Session); err != nil {
 			o.Log("archive: reading usage: %v", err)
 		} else if b, err := json.MarshalIndent(u, "", "  "); err == nil {
 			collected["usage.json"] = b
@@ -287,9 +317,9 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		if o.Archive == nil {
 			return
 		}
-		actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		collect() // with -keep the task is still there
+		actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), archiveTimeout)
 		defer cancel()
-		collect(actx) // with -keep the task is still there
 		files := map[string][]byte{}
 		for k, v := range collected {
 			files[k] = v
@@ -301,7 +331,10 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 			"schema": 1, "scenario": s.Name, "workload": name, "namespace": s.Namespace,
 			"task": r.Task, "session": r.Session, "agent": server,
 			"started_at": start.UTC().Format(time.RFC3339), "finished_at": o.Now().UTC().Format(time.RFC3339),
-			"runner": runnerRevision(),
+			"runner": runnerRevision(), "transcript_truncated": truncated,
+		}
+		if err != nil {
+			meta["error"] = err.Error()
 		}
 		if b, err := json.MarshalIndent(meta, "", "  "); err == nil {
 			files["meta.json"] = b
@@ -361,7 +394,7 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		if r.Task == "" {
 			return
 		}
-		collect(cctx)
+		collect()
 		if err := tasks.DeleteTask(cctx, r.Task); err != nil {
 			failf("deleting task %s: %v", r.Task, err)
 			return

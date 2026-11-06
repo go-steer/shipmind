@@ -29,9 +29,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 	"time"
 )
@@ -73,38 +75,72 @@ func (g *GCS) client() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
-// Save writes files under Prefix/dir, one object each. It stops at the
-// first failure and says which object it was.
+// Save writes files under Prefix/dir, one object each, in name order with
+// meta.json last, so a run whose meta.json is there is complete. A write
+// that fails transiently (429, 5xx, the connection) is retried; an object
+// a retry finds already there (412) was written by the attempt before.
+// Save stops at the first write that still fails and says which.
 func (g *GCS) Save(ctx context.Context, dir string, files map[string][]byte) error {
 	tok, err := g.token(ctx)
 	if err != nil {
 		return err
 	}
+	names := slices.Sorted(maps.Keys(files))
+	if i := slices.Index(names, "meta.json"); i >= 0 {
+		names = append(append(names[:i:i], names[i+1:]...), "meta.json")
+	}
+	for _, name := range names {
+		if err := g.write(ctx, tok, path.Join(g.Prefix, dir, name), contentType(name), files[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// retryWait is the pause before each retry; tests shorten it.
+var retryWait = []time.Duration{time.Second, 3 * time.Second}
+
+func (g *GCS) write(ctx context.Context, tok, obj, ctype string, data []byte) error {
 	base := g.APIBase
 	if base == "" {
 		base = defaultAPIBase
 	}
-	for name, data := range files {
-		obj := path.Join(g.Prefix, dir, name)
-		u := fmt.Sprintf("%s/upload/storage/v1/b/%s/o?uploadType=media&ifGenerationMatch=0&name=%s",
-			strings.TrimSuffix(base, "/"), url.PathEscape(g.Bucket), url.QueryEscape(obj))
+	u := fmt.Sprintf("%s/upload/storage/v1/b/%s/o?uploadType=media&ifGenerationMatch=0&name=%s",
+		strings.TrimSuffix(base, "/"), url.PathEscape(g.Bucket), url.QueryEscape(obj))
+	var last error
+	for attempt := 0; attempt <= len(retryWait); attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("writing gs://%s/%s: %w (after %v)", g.Bucket, obj, ctx.Err(), last)
+			case <-time.After(retryWait[attempt-1]):
+			}
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(data))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Authorization", "Bearer "+tok)
-		req.Header.Set("Content-Type", contentType(name))
+		req.Header.Set("Content-Type", ctype)
 		resp, err := g.client().Do(req)
 		if err != nil {
-			return fmt.Errorf("writing gs://%s/%s: %w", g.Bucket, obj, err)
+			last = fmt.Errorf("writing gs://%s/%s: %w", g.Bucket, obj, err)
+			continue
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("writing gs://%s/%s: %s: %s", g.Bucket, obj, resp.Status, strings.TrimSpace(string(body)))
+		switch {
+		case resp.StatusCode == http.StatusOK:
+			return nil
+		case resp.StatusCode == http.StatusPreconditionFailed && attempt > 0:
+			return nil // the attempt before wrote it
+		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
+			last = fmt.Errorf("writing gs://%s/%s: %s: %s", g.Bucket, obj, resp.Status, strings.TrimSpace(string(body)))
+			continue
 		}
+		return fmt.Errorf("writing gs://%s/%s: %s: %s", g.Bucket, obj, resp.Status, strings.TrimSpace(string(body)))
 	}
-	return nil
+	return last
 }
 
 func contentType(name string) string {
