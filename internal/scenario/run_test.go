@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -484,5 +485,66 @@ func TestFirstIncident(t *testing.T) {
 	}
 	if (Incident{Namespace: "lab", Name: "wx-1"}).About("lab", "w") {
 		t.Error("a workload sharing a prefix matched")
+	}
+}
+
+type fakeArchive struct {
+	dir   string
+	files map[string][]byte
+	err   error
+}
+
+func (f *fakeArchive) Save(_ context.Context, dir string, files map[string][]byte) error {
+	f.dir, f.files = dir, files
+	return f.err
+}
+
+// A run's record is archived once it is decided: the session's events
+// and usage (read before cleanup deletes the task), the result and what
+// ran, under <scenario>/<date>/<workload>.
+func TestRunArchives(t *testing.T) {
+	w, s, o := newWorld(t)
+	a := &fakeArchive{}
+	o.Archive = a
+	r := run(t, w, s, o)
+	if !r.Pass {
+		t.Fatalf("result %+v", r)
+	}
+	if want := s.Name + "/" + t0.UTC().Format("2006-01-02") + "/" + w.name; a.dir != want {
+		t.Errorf("dir %q, want %q", a.dir, want)
+	}
+	for _, f := range []string{"transcript.sse", "usage.json", "result.json", "meta.json"} {
+		if _, ok := a.files[f]; !ok {
+			t.Errorf("archive lacks %s (has %v)", f, slices.Sorted(maps.Keys(a.files)))
+		}
+	}
+	var res Result
+	if err := json.Unmarshal(a.files["result.json"], &res); err != nil || !res.Pass || res.Task != "lookout-0123456789abcdef" {
+		t.Errorf("archived result %+v, %v", res, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(a.files["meta.json"], &meta); err != nil || meta["scenario"] != s.Name || meta["workload"] != w.name || meta["task"] != "lookout-0123456789abcdef" {
+		t.Errorf("archived meta %v, %v", meta, err)
+	}
+
+	// A failed save is logged; the run still passes.
+	w, s, o = newWorld(t)
+	o.Archive = &fakeArchive{err: errors.New("403")}
+	var logs []string
+	o.Log = func(f string, args ...any) { logs = append(logs, fmt.Sprintf(f, args...)) }
+	if r := run(t, w, s, o); !r.Pass || !slices.Contains(logs, "archive: 403") {
+		t.Errorf("failed save: pass %v, logs %v", r.Pass, logs)
+	}
+
+	// A failed run is archived too, with its failures.
+	w, s, o = newWorld(t)
+	w.answer = "the pod crash-loops"
+	a = &fakeArchive{}
+	o.Archive = a
+	if r := run(t, w, s, o); r.Pass {
+		t.Fatal("a wrong answer passed")
+	}
+	if err := json.Unmarshal(a.files["result.json"], &res); err != nil || res.Pass || len(res.Failures) == 0 {
+		t.Errorf("archived failed result %+v, %v", res, err)
 	}
 }

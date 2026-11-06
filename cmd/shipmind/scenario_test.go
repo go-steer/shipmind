@@ -25,6 +25,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-steer/shipmind/internal/archive"
 	"github.com/go-steer/shipmind/internal/scenario"
 )
 
@@ -48,8 +49,12 @@ func (f scenarioFake) Tasks(context.Context) (map[string]string, error) {
 func (f scenarioFake) DeleteTask(context.Context, string) error { return nil }
 
 func TestScenarioCommand(t *testing.T) {
-	oldK, oldT, oldA := newScenarioKube, newScenarioTasks, newScenarioAgent
-	t.Cleanup(func() { newScenarioKube, newScenarioTasks, newScenarioAgent = oldK, oldT, oldA })
+	oldK, oldT, oldA, oldR := newScenarioKube, newScenarioTasks, newScenarioAgent, newScenarioArchiver
+	t.Cleanup(func() {
+		newScenarioKube, newScenarioTasks, newScenarioAgent, newScenarioArchiver = oldK, oldT, oldA, oldR
+	})
+	var archivedTo *archive.GCS
+	newScenarioArchiver = func(g *archive.GCS) scenario.Archiver { archivedTo = g; return fakeArchiver{} }
 	fake := scenarioFake{token: "tok"}
 	var gotRouter *scenario.Router
 	newScenarioKube = func(string) scenarioKube { return fake }
@@ -87,6 +92,8 @@ func TestScenarioCommand(t *testing.T) {
 		{"bad scenario", []string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", t.TempDir()}, 1, "", "scenario.yaml"},
 		{"not in cluster", []string{"scenario", "run", "-atespace", "a", "-in-cluster", dir}, 1, "", "not running in a cluster"},
 		{"half mTLS", []string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-router-cert", "c.pem", dir}, 2, "", "wants both -router-cert and -router-trust"},
+		{"bad archive", []string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-archive", "runs/stage", dir}, 2, "", "want gs://bucket/prefix"},
+		{"archives", []string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-archive", "gs://runs/stage", dir}, 1, "", "scenario quick: archived 2 files under quick/"},
 		{"server name without mTLS", []string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-router-server-name", "x", dir}, 2, "", "-router-server-name is for mTLS"},
 		{"times out", []string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-json", jsonOut, dir}, 1,
 			`"pass": false`, "scenario quick: broke lab/quick-"},
@@ -170,4 +177,11 @@ func TestScenarioCommand(t *testing.T) {
 	if code := run([]string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", dir}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "forbidden") {
 		t.Errorf("secret error: exit %d, stderr %q", code, errOut.String())
 	}
+	if archivedTo == nil || archivedTo.Bucket != "runs" || archivedTo.Prefix != "stage" {
+		t.Errorf("-archive gs://runs/stage built %+v", archivedTo)
+	}
 }
+
+type fakeArchiver struct{}
+
+func (fakeArchiver) Save(context.Context, string, map[string][]byte) error { return nil }

@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/go-steer/shipmind/internal/archive"
 	"github.com/go-steer/shipmind/internal/cluster"
 	"github.com/go-steer/shipmind/internal/deploy"
 	"github.com/go-steer/shipmind/internal/scenario"
@@ -47,16 +48,17 @@ type scenarioKube interface {
 
 // What a run touches; tests replace these.
 var (
-	newScenarioKube  = func(kubeContext string) scenarioKube { return cluster.Kube{Context: kubeContext} }
-	newScenarioTasks = func(ax scenario.Ax) scenario.Tasks { return ax }
-	newScenarioAgent = func(r *scenario.Router) scenario.Agent { return r }
-	newRouterClient  = func(t scenario.RouterTLS) (*http.Client, func() error, error) { return t.Client() }
+	newScenarioKube     = func(kubeContext string) scenarioKube { return cluster.Kube{Context: kubeContext} }
+	newScenarioTasks    = func(ax scenario.Ax) scenario.Tasks { return ax }
+	newScenarioAgent    = func(r *scenario.Router) scenario.Agent { return r }
+	newScenarioArchiver = func(g *archive.GCS) scenario.Archiver { return g }
+	newRouterClient     = func(t scenario.RouterTLS) (*http.Client, func() error, error) { return t.Client() }
 )
 
 // runScenario implements `shipmind scenario run`.
 func runScenario(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "run" {
-		fmt.Fprintln(stderr, "usage: shipmind scenario run -atespace A (-context C -router URL | -in-cluster) [-router-cert F -router-trust F] [-keep] [-json FILE] <scenario-dir>")
+		fmt.Fprintln(stderr, "usage: shipmind scenario run -atespace A (-context C -router URL | -in-cluster) [-router-cert F -router-trust F] [-keep] [-json FILE] [-archive gs://bucket/prefix] <scenario-dir>")
 		return 2
 	}
 	fs := flag.NewFlagSet("shipmind scenario run", flag.ContinueOnError)
@@ -71,6 +73,7 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 	routerName := fs.String("router-server-name", "", "with mTLS, the name to verify the router's certificate against (default "+scenario.RouterServerName+")")
 	keep := fs.Bool("keep", false, "leave the workload and task in place for inspection")
 	jsonOut := fs.String("json", "", "also write the result as JSON to this file")
+	archiveTo := fs.String("archive", "", "store each run's record (the session's events, usage, result) under gs://bucket/prefix, with the pod's workload identity")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -149,8 +152,18 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 		rt.Client = c
 	}
 
+	var archiver scenario.Archiver
+	if *archiveTo != "" {
+		g, err := archive.Parse(*archiveTo)
+		if err != nil {
+			fmt.Fprintf(stderr, "shipmind scenario run: %v\n", err)
+			return 2
+		}
+		archiver = newScenarioArchiver(g)
+	}
 	res, runErr := scenario.Run(ctx, s, kube, newScenarioTasks(ax), newScenarioAgent(rt), scenario.Options{
-		Keep: *keep,
+		Keep:    *keep,
+		Archive: archiver,
 		Log: func(format string, a ...any) {
 			fmt.Fprintf(stderr, "scenario %s: "+format+"\n", append([]any{s.Name}, a...)...)
 		},

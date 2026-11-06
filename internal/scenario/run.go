@@ -17,10 +17,12 @@ package scenario
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -163,6 +165,17 @@ type Options struct {
 	Sleep func(ctx context.Context, d time.Duration) error
 	// Log receives progress lines.
 	Log func(format string, args ...any)
+	// Archive, when set, stores the run's record once it is decided
+	// (#48): the session's full event stream (transcript.sse), its usage
+	// (usage.json), the result (result.json) and what ran (meta.json),
+	// under <scenario>/<date>/<workload>/. A failed save is logged and
+	// doesn't fail the run.
+	Archive Archiver
+}
+
+// Archiver stores a run's files under dir.
+type Archiver interface {
+	Save(ctx context.Context, dir string, files map[string][]byte) error
 }
 
 func (o *Options) defaults() {
@@ -245,11 +258,60 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	name := RunName(s.Name, start)
 	r = &Result{Scenario: s.Name, Workload: name}
 	failf := func(format string, args ...any) { r.Failures = append(r.Failures, fmt.Sprintf(format, args...)) }
-	// Registered first, so it runs last: cleanup failures count too.
-	defer func() {
-		if r != nil {
-			r.Pass = len(r.Failures) == 0 && err == nil
+	// collected is the session's record, read before cleanup deletes
+	// the task, for the archive.
+	collected := map[string][]byte{}
+	var server string
+	collect := func(ctx context.Context) {
+		if o.Archive == nil || r.Task == "" || len(collected) > 0 {
+			return
 		}
+		if tr, err := agent.Events(ctx, r.Task, r.Session); err != nil {
+			o.Log("archive: reading the session: %v", err)
+		} else {
+			collected["transcript.sse"], server = tr.Raw, tr.Server
+		}
+		if u, err := agent.Usage(ctx, r.Task, r.Session); err != nil {
+			o.Log("archive: reading usage: %v", err)
+		} else if b, err := json.MarshalIndent(u, "", "  "); err == nil {
+			collected["usage.json"] = b
+		}
+	}
+	// Registered first, so it runs last: cleanup failures count too, and
+	// the archive gets the decided result.
+	defer func() {
+		if r == nil {
+			return
+		}
+		r.Pass = len(r.Failures) == 0 && err == nil
+		if o.Archive == nil {
+			return
+		}
+		actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
+		collect(actx) // with -keep the task is still there
+		files := map[string][]byte{}
+		for k, v := range collected {
+			files[k] = v
+		}
+		if b, err := json.MarshalIndent(r, "", "  "); err == nil {
+			files["result.json"] = b
+		}
+		meta := map[string]any{
+			"schema": 1, "scenario": s.Name, "workload": name, "namespace": s.Namespace,
+			"task": r.Task, "session": r.Session, "agent": server,
+			"started_at": start.UTC().Format(time.RFC3339), "finished_at": o.Now().UTC().Format(time.RFC3339),
+			"runner": runnerRevision(),
+		}
+		if b, err := json.MarshalIndent(meta, "", "  "); err == nil {
+			files["meta.json"] = b
+		}
+		dir := s.Name + "/" + start.UTC().Format("2006-01-02") + "/" + name
+		if serr := o.Archive.Save(actx, dir, files); serr != nil {
+			o.Log("archive: %v", serr)
+			return
+		}
+		o.Log("archived %d files under %s", len(files), dir)
 	}()
 
 	manifest, err := s.Manifest(name)
@@ -299,6 +361,7 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		if r.Task == "" {
 			return
 		}
+		collect(cctx)
 		if err := tasks.DeleteTask(cctx, r.Task); err != nil {
 			failf("deleting task %s: %v", r.Task, err)
 			return
@@ -538,4 +601,17 @@ func lenEvents(t *Transcript) int {
 		return 0
 	}
 	return len(t.Events)
+}
+
+// runnerRevision is the shipmind commit the runner was built from, when
+// the build recorded it.
+func runnerRevision() string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, kv := range bi.Settings {
+			if kv.Key == "vcs.revision" {
+				return kv.Value
+			}
+		}
+	}
+	return ""
 }

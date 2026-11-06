@@ -16,6 +16,7 @@ package scenario
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -268,14 +269,19 @@ func (r *Router) Events(ctx context.Context, task, session string) (*Transcript,
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	t, err := ParseEvents(resp.Body)
+	var raw bytes.Buffer
+	t, err := ParseEvents(io.TeeReader(io.LimitReader(resp.Body, maxRawStream), &raw))
 	// The stream doesn't end on its own; running out of time is how a
 	// read finishes.
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 		return nil, err
 	}
+	t.Raw = raw.Bytes()
 	return t, nil
 }
+
+// maxRawStream bounds how much of a session's stream a read keeps raw.
+const maxRawStream = 64 << 20
 
 // Transcript is a session's events, as far as scoring needs them.
 type Transcript struct {
@@ -283,6 +289,9 @@ type Transcript struct {
 	// frame ("core-agent/<version>", "mast/<version>").
 	Server string
 	Events []Event
+	// Raw is the stream as read, every frame (tool calls with their
+	// arguments and results, usage updates), for the run's archive.
+	Raw []byte `json:"-"`
 	// Cost is the session's running cost in US dollars, from the last
 	// usage update.
 	Cost float64
