@@ -339,6 +339,8 @@ type Event struct {
 	Author string
 	Role   string
 	Texts  []string
+	// Calls are the tools the event calls, as the agent names them.
+	Calls []string
 }
 
 // ParseEvents reads the agent's server-sent events (mast's and
@@ -362,7 +364,10 @@ func ParseEvents(r io.Reader) (*Transcript, error) {
 				Content *struct {
 					Role  string `json:"role"`
 					Parts []struct {
-						Text string `json:"text"`
+						Text         string `json:"text"`
+						FunctionCall *struct {
+							Name string `json:"name"`
+						} `json:"functionCall"`
 					} `json:"parts"`
 				} `json:"content"`
 			} `json:"event"`
@@ -388,11 +393,23 @@ func ParseEvents(r io.Reader) (*Transcript, error) {
 				if p.Text != "" {
 					e.Texts = append(e.Texts, p.Text)
 				}
+				if p.FunctionCall != nil && p.FunctionCall.Name != "" {
+					e.Calls = append(e.Calls, p.FunctionCall.Name)
+				}
 			}
 		}
 		t.Events = append(t.Events, e)
 	}
 	return t, sc.Err()
+}
+
+// Calls returns every tool the session called, in order.
+func (t *Transcript) Calls() []string {
+	var calls []string
+	for _, e := range t.Events {
+		calls = append(calls, e.Calls...)
+	}
+	return calls
 }
 
 // isUser reports whether e is a message sent to the agent: authored by
@@ -447,6 +464,26 @@ func messageText(text string) string {
 // counts. It also returns whether a later message arrived after the
 // answer, meaning the answer is complete.
 func (t *Transcript) Answer() (answer string, superseded bool) {
+	answer, superseded, _ = t.answerSpan()
+	return answer, superseded
+}
+
+// AnswerCalls returns the tools the session called for its answer: up to
+// a later message that supersedes it (lookout re-sending the incident),
+// not the calls made for that.
+func (t *Transcript) AnswerCalls() []string {
+	_, _, end := t.answerSpan()
+	var calls []string
+	for _, e := range t.Events[:end] {
+		calls = append(calls, e.Calls...)
+	}
+	return calls
+}
+
+// answerSpan is Answer, plus the index of the event that ended it: the
+// superseding message, or the end of the transcript.
+func (t *Transcript) answerSpan() (answer string, superseded bool, end int) {
+	end = len(t.Events)
 	first := -1
 	hasCoordinator := false
 	for i, e := range t.Events {
@@ -458,13 +495,13 @@ func (t *Transcript) Answer() (answer string, superseded bool) {
 		}
 	}
 	if first < 0 {
-		return "", false
+		return "", false, end
 	}
 	var coordinator, other string
-	for _, e := range t.Events[first+1:] {
+	for i, e := range t.Events[first+1:] {
 		if isUser(e) {
 			if coordinator != "" || (!hasCoordinator && other != "") {
-				superseded = true
+				superseded, end = true, first+1+i
 				break
 			}
 			continue
@@ -479,9 +516,9 @@ func (t *Transcript) Answer() (answer string, superseded bool) {
 		other = text
 	}
 	if coordinator != "" {
-		return coordinator, superseded
+		return coordinator, superseded, end
 	}
-	return other, superseded
+	return other, superseded, end
 }
 
 // Mentions reports whether any event's text contains s, for finding the

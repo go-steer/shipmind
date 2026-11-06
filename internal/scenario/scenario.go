@@ -34,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"text/template"
 	"time"
@@ -55,11 +56,34 @@ type Scenario struct {
 	Limits   Limits `yaml:"limits"`
 }
 
-// Expect is what a correct answer contains.
+// Expect is what a correct handling of the scenario looks like.
 type Expect struct {
 	// Mentions are case-insensitive regular expressions (templates over
 	// the run's Name and Namespace) the final answer must all match.
 	Mentions []string `yaml:"mentions"`
+	// Trajectory is how the agent may get there (#89), checked against
+	// the session's tool calls and usage; nil checks nothing.
+	Trajectory *Trajectory `yaml:"trajectory"`
+}
+
+// Trajectory bounds the path to the answer, over the main agent's tool
+// calls: core-agent streams a specialist's calls in a session of its
+// own, so a profile that delegates needs those merged in before it gets
+// a trajectory. Tool names match a call as named or behind one MCP
+// server prefix: get_k8s_logs matches gke_get_k8s_logs. The bounds are
+// tuned for core-agent's single-agent triage (about 3 tool and 4 model
+// calls a run).
+type Trajectory struct {
+	// MustCall: each entry must be called at least once; "a|b" accepts
+	// either.
+	MustCall []string `yaml:"must_call"`
+	// NeverCall: none of these may be called.
+	NeverCall []string `yaml:"never_call"`
+	// MaxToolCalls bounds the session's tool calls (0: no bound).
+	MaxToolCalls int `yaml:"max_tool_calls"`
+	// MaxModelCalls bounds its model calls, from the agent's usage (0:
+	// no bound).
+	MaxModelCalls int `yaml:"max_model_calls"`
 }
 
 // Limits bound each wait.
@@ -112,6 +136,20 @@ func Load(dir string) (*Scenario, error) {
 	for _, m := range s.Expect.Mentions {
 		if _, err := s.mention(m, "probe"); err != nil {
 			fail("expect.mentions %q: %v", m, err)
+		}
+	}
+	if s.Expect.Trajectory != nil {
+		if err := s.Expect.Trajectory.check(); err != nil {
+			fail("%v", err)
+		}
+		known, err := loadTools(filepath.Join(filepath.Dir(dir), "tools.yaml"))
+		if err != nil {
+			fail("%v", err)
+		}
+		for _, name := range s.Expect.Trajectory.names() {
+			if known != nil && !known[name] {
+				fail("expect.trajectory: %q isn't a tool in %s", name, filepath.Join(filepath.Dir(dir), "tools.yaml"))
+			}
 		}
 	}
 	if s.Limits.Incident <= 0 || s.Limits.Diagnose <= 0 || s.Limits.Suspend <= 0 {
@@ -177,4 +215,99 @@ func (s *Scenario) Score(answer, name string) ([]string, error) {
 // the second, so runs never share an incident.
 func RunName(scenario string, t time.Time) string {
 	return scenario + "-" + t.UTC().Format("0102-150405")
+}
+
+// check validates a trajectory as loaded.
+func (t *Trajectory) check() error {
+	for _, list := range [][]string{t.MustCall, t.NeverCall} {
+		for _, entry := range list {
+			for _, name := range strings.Split(entry, "|") {
+				if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t") {
+					return fmt.Errorf("expect.trajectory: tool name %q: want names without spaces, alternatives as a|b", entry)
+				}
+			}
+		}
+	}
+	if t.MaxToolCalls < 0 || t.MaxModelCalls < 0 {
+		return fmt.Errorf("expect.trajectory: max_tool_calls and max_model_calls must not be negative")
+	}
+	return nil
+}
+
+// toolMatches reports whether a call (as the agent named it) is tool
+// name, as is or behind one server prefix ("gke_"): "resource" doesn't
+// match gke_get_k8s_resource.
+func toolMatches(call, name string) bool {
+	server, ok := strings.CutSuffix(call, "_"+name)
+	return call == name || (ok && server != "" && !strings.Contains(server, "_"))
+}
+
+// names lists every tool name the trajectory mentions.
+func (t *Trajectory) names() []string {
+	var names []string
+	for _, entry := range t.MustCall {
+		names = append(names, strings.Split(entry, "|")...)
+	}
+	return append(names, t.NeverCall...)
+}
+
+// loadTools reads the scenarios' tool catalog, or nil when there is none.
+func loadTools(path string) (map[string]bool, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		Tools []string `yaml:"tools"`
+	}
+	if err := yaml.Unmarshal(b, &doc); err != nil || len(doc.Tools) == 0 {
+		return nil, fmt.Errorf("%s: want a list of tools (%v)", path, err)
+	}
+	known := map[string]bool{}
+	for _, t := range doc.Tools {
+		known[t] = true
+	}
+	return known, nil
+}
+
+// Check grades a session's tool calls, in order, and its model-call
+// count (modelCalls < 0: unknown) against t, returning one line per
+// failure. It is what a run and a re-grade of an archived run both use.
+func (t *Trajectory) Check(calls []string, modelCalls int) (failures, notes []string) {
+	called := func(name string) bool {
+		for _, c := range calls {
+			if toolMatches(c, name) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, entry := range t.MustCall {
+		alts := strings.Split(entry, "|")
+		if !slices.ContainsFunc(alts, called) {
+			failures = append(failures, fmt.Sprintf("never called %s", strings.Join(alts, " or ")))
+		}
+	}
+	for _, name := range t.NeverCall {
+		for _, c := range calls {
+			if toolMatches(c, name) {
+				failures = append(failures, fmt.Sprintf("called %s, which it must not", c))
+				break
+			}
+		}
+	}
+	if t.MaxToolCalls > 0 && len(calls) > t.MaxToolCalls {
+		failures = append(failures, fmt.Sprintf("%d tool calls, more than %d", len(calls), t.MaxToolCalls))
+	}
+	switch {
+	case t.MaxModelCalls == 0:
+	case modelCalls < 0:
+		notes = append(notes, "max_model_calls not checked: the agent's usage wasn't read")
+	case modelCalls > t.MaxModelCalls:
+		failures = append(failures, fmt.Sprintf("%d model calls, more than %d", modelCalls, t.MaxModelCalls))
+	}
+	return failures, notes
 }

@@ -10,6 +10,14 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- Trajectory checks in `scenario.yaml` (`expect.trajectory`, #89): tools
+  the agent must call (`a|b` for either) and must never call, and bounds on
+  tool calls and model calls, checked against the session's tool calls and
+  usage. A failed check fails the run; the result lists the calls made
+  (`trajectory.tool_calls`), up to the answer, even when it never settles.
+  Names must be in `e2e/scenarios/tools.yaml`, the bundles' tool catalog.
+  Both scenarios require a read of the workload, forbid every write tool,
+  and allow at most 10 tool and 10 model calls.
 - `shipmind scenario run -archive gs://bucket/prefix` stores each run's
   record once it is decided, failed runs included: the session's full
   event stream (`transcript.sse`: every message and tool call with its

@@ -137,6 +137,9 @@ type Result struct {
 	// arrived before the answer settled, so Usage may include calls
 	// made for it.
 	Superseded bool `json:"superseded,omitempty"`
+	// Trajectory is the path the agent took to its answer and how it
+	// fared against the scenario's expect.trajectory (#89).
+	Trajectory *TrajectoryResult `json:"trajectory,omitempty"`
 	// Usage is the session's model usage once the answer settled, in
 	// one meaning whichever agent answered: model calls, tokens and the
 	// cached share, cost per call. Absent when the read failed, which
@@ -152,6 +155,15 @@ type Result struct {
 
 	Pass     bool     `json:"pass"`
 	Failures []string `json:"failures,omitempty"`
+}
+
+// TrajectoryResult is a run's tool calls, in order, and what checking
+// them found.
+type TrajectoryResult struct {
+	ToolCalls  []string `json:"tool_calls"`
+	ModelCalls int      `json:"model_calls,omitempty"`
+	Failures   []string `json:"failures,omitempty"`
+	Notes      []string `json:"notes,omitempty"`
 }
 
 // Options control Run.
@@ -418,6 +430,25 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	r.IncidentAfter = o.Now().Sub(start).Round(time.Second).String()
 	o.Log("incident: task %s, session %s, after %s", r.Task, r.Session, r.IncidentAfter)
 
+	// checkTrajectory grades the path to the answer (#89) and records it.
+	checkTrajectory := func(tr *Transcript) {
+		tj := s.Expect.Trajectory
+		if tj == nil || tr == nil {
+			return
+		}
+		modelCalls := -1
+		if r.Usage != nil {
+			modelCalls = r.Usage.ModelCalls
+		}
+		path := &TrajectoryResult{ToolCalls: tr.AnswerCalls(), ModelCalls: max(modelCalls, 0)}
+		path.Failures, path.Notes = tj.Check(path.ToolCalls, modelCalls)
+		r.Trajectory = path
+		for _, f := range path.Failures {
+			failf("trajectory: %s", f)
+		}
+		o.Log("trajectory: %d tool calls (%s); %d failures", len(path.ToolCalls), strings.Join(path.ToolCalls, ", "), len(path.Failures))
+	}
+
 	// 2. The agent answers. Settled when idle twice in a row with an
 	// answer to the first incident message, or when a later message has
 	// arrived after one. An answer still being written doesn't count.
@@ -449,6 +480,7 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	switch {
 	case errors.Is(werr, errTimeout):
 		failf("no settled answer within %s", s.Limits.Diagnose)
+		checkTrajectory(tr) // a runaway is this case: record what it did
 		return r, nil
 	case werr != nil:
 		return r, werr
@@ -476,6 +508,7 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		o.Log("usage: %d model calls, %d input tokens (%.0f%% cached), %d output, %d thinking",
 			r.Usage.ModelCalls, r.Usage.InputTokens, cached, r.Usage.OutputTokens, r.Usage.ThinkingTokens)
 	}
+	checkTrajectory(tr)
 	events := len(tr.Events)
 
 	if o.Keep {

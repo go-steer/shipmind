@@ -100,6 +100,10 @@ func TestLoadErrors(t *testing.T) {
 		{"bad regex", "ok", strings.Replace(good, "mentions: [X]", "mentions: ['(']", 1), "expect.mentions"},
 		{"bad template", "ok", strings.Replace(good, "mentions: [X]", "mentions: ['{{.Nope}}']", 1), "expect.mentions"},
 		{"limits", "ok", strings.Replace(good, "suspend: 1m", "suspend: 0s", 1), "limits"},
+		{"trajectory name", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    must_call: ['get pod']", 1), "expect.trajectory"},
+		{"trajectory empty alternative", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    never_call: ['a|']", 1), "expect.trajectory"},
+		{"trajectory negative", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    max_tool_calls: -1", 1), "expect.trajectory"},
+		{"trajectory unknown key", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    must: [x]", 1), "must"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), tc.dir)
@@ -196,5 +200,120 @@ func TestNightlyScenariosExist(t *testing.T) {
 		if !have[r[1]] {
 			t.Errorf("a CronJob runs /scenarios/%s, which e2e/scenarios doesn't have", r[1])
 		}
+	}
+}
+
+func TestTrajectoryCheck(t *testing.T) {
+	tj := &Trajectory{MustCall: []string{"get_k8s_resource|describe_k8s_resource", "get_k8s_logs"}, NeverCall: []string{"delete_k8s_resource"}, MaxToolCalls: 3, MaxModelCalls: 5}
+	for _, tc := range []struct {
+		calls      []string
+		modelCalls int
+		failures   []string
+		notes      []string
+	}{
+		{[]string{"gke_describe_k8s_resource", "gke_get_k8s_logs"}, 4, nil, nil},
+		{[]string{"get_k8s_resource", "get_k8s_logs"}, 4, nil, nil}, // no prefix
+		{[]string{"gke_get_k8s_logs"}, 4, []string{"never called get_k8s_resource or describe_k8s_resource"}, nil},
+		{[]string{"gke_get_k8s_resource", "gke_get_k8s_logs", "gke_delete_k8s_resource"}, 4, []string{"called gke_delete_k8s_resource, which it must not"}, nil},
+		{[]string{"gke_get_k8s_resource", "gke_get_k8s_logs", "x", "y"}, 6, []string{"4 tool calls, more than 3", "6 model calls, more than 5"}, nil},
+		{[]string{"gke_get_k8s_resource", "gke_get_k8s_logs"}, -1, nil, []string{"max_model_calls not checked: the agent's usage wasn't read"}},
+		{[]string{"gke_get_k8s_resourcex", "gke_get_k8s_logs"}, 4, []string{"never called get_k8s_resource or describe_k8s_resource"}, nil}, // not a whole name
+		{[]string{"a_b_get_k8s_resource", "gke_get_k8s_logs"}, 4, []string{"never called get_k8s_resource or describe_k8s_resource"}, nil},  // one server prefix only
+	} {
+		failures, notes := tj.Check(tc.calls, tc.modelCalls)
+		if !slices.Equal(failures, tc.failures) || !slices.Equal(notes, tc.notes) {
+			t.Errorf("Check(%v, %d) = %q, %q; want %q, %q", tc.calls, tc.modelCalls, failures, notes, tc.failures, tc.notes)
+		}
+	}
+}
+
+// Both scenarios bound the path; their expectations load and accept what
+// a healthy run on staging did (core-agent 3.1.0, 2026-11-06: the pod and
+// its logs, then the Deployment, in four model calls).
+func TestScenarioTrajectories(t *testing.T) {
+	healthy := []string{"gke_get_k8s_resource", "gke_get_k8s_logs", "gke_get_k8s_resource"}
+	for _, name := range []string{"missing-env", "oom-killed"} {
+		s, err := Load("../../e2e/scenarios/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Expect.Trajectory == nil {
+			t.Fatalf("%s: no trajectory", name)
+		}
+		if failures, _ := s.Expect.Trajectory.Check(healthy, 4); len(failures) != 0 {
+			t.Errorf("%s: a healthy run fails %q", name, failures)
+		}
+		if failures, _ := s.Expect.Trajectory.Check(append(healthy, "gke_patch_k8s_resource"), 5); len(failures) == 0 {
+			t.Errorf("%s: a write passes", name)
+		}
+	}
+}
+
+func TestToolMatches(t *testing.T) {
+	for _, tc := range []struct {
+		call, name string
+		want       bool
+	}{
+		{"gke_get_k8s_resource", "get_k8s_resource", true},
+		{"get_k8s_resource", "get_k8s_resource", true},
+		{"gke_get_k8s_resource", "resource", false},
+		{"gke_get_k8s_resource", "k8s_resource", false},
+		{"_get_k8s_resource", "get_k8s_resource", false},
+		{"gke_delete_k8s_resource", "delete_k8s_resource", true},
+	} {
+		if got := toolMatches(tc.call, tc.name); got != tc.want {
+			t.Errorf("toolMatches(%q, %q) = %v", tc.call, tc.name, got)
+		}
+	}
+}
+
+// The scenarios' tool catalog is the bundles' tool_catalog, so a
+// trajectory can't name a tool that doesn't exist; a typo is refused.
+func TestToolCatalog(t *testing.T) {
+	known, err := loadTools("../../e2e/scenarios/tools.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bundle := range []string{"gke-triage-f", "gke-chat"} {
+		b, err := os.ReadFile("../../agents/sre-triage/" + bundle + "/workload.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var w struct {
+			Catalog struct {
+				Tools []struct {
+					Name string `yaml:"name"`
+				} `yaml:"tools"`
+			} `yaml:"tool_catalog"`
+		}
+		if err := yaml.Unmarshal(b, &w); err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, tl := range w.Catalog.Tools {
+			names = append(names, tl.Name)
+		}
+		if len(names) == 0 || len(names) != len(known) {
+			t.Errorf("%s: tool_catalog has %d tools, e2e/scenarios/tools.yaml %d", bundle, len(names), len(known))
+		}
+		for _, n := range names {
+			if !known[n] {
+				t.Errorf("%s: tool %q isn't in e2e/scenarios/tools.yaml", bundle, n)
+			}
+		}
+	}
+
+	dir := filepath.Join(t.TempDir(), "typo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := "namespace: lab\nworkload: w.yaml\nexpect:\n  mentions: [X]\n  trajectory:\n    never_call: [delete_k8s_resources]\nlimits:\n  incident: 1m\n  diagnose: 1m\n  suspend: 1m\n"
+	for name, body := range map[string]string{filepath.Join(dir, "scenario.yaml"): doc, filepath.Join(dir, "w.yaml"): "kind: X\n", filepath.Join(filepath.Dir(dir), "tools.yaml"): "tools: [delete_k8s_resource]\n"} {
+		if err := os.WriteFile(name, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), `"delete_k8s_resources" isn't a tool`) {
+		t.Errorf("a misspelled never_call loaded: %v", err)
 	}
 }

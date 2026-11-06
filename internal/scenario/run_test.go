@@ -58,6 +58,9 @@ type world struct {
 	failTasks    bool
 	failDelete   bool
 	failUsage    bool
+	// calls are the agent's tool calls before its answer (nil: a read of
+	// the pod and its logs).
+	calls []string
 }
 
 func (w *world) Apply(_ context.Context, m []byte, _ bool) (string, error) {
@@ -199,7 +202,13 @@ func (w *world) Events(_ context.Context, task, _ string) (*Transcript, error) {
 	tr := &Transcript{Cost: 0.05, Events: []Event{{Seq: 3, Author: "user", Texts: []string{
 		`{"kind":"k8s-event","namespace":"triage-lab","name":"` + w.name + `-64544d6c4b-x58zg"}`}}}}
 	if w.answerAt >= 0 && w.since() >= w.answerAt {
-		tr.Events = append(tr.Events, Event{Seq: 29, Author: "gke-triage_coordinator", Role: "model", Texts: []string{w.answer}})
+		calls := w.calls
+		if calls == nil {
+			calls = []string{"gke_get_k8s_resource", "gke_get_k8s_logs"}
+		}
+		tr.Events = append(tr.Events,
+			Event{Seq: 10, Author: "gke-triage_coordinator", Role: "model", Calls: calls},
+			Event{Seq: 29, Author: "gke-triage_coordinator", Role: "model", Texts: []string{w.answer}})
 	}
 	if w.suspended() && w.wokeEvents > 0 {
 		tr.Events = tr.Events[:min(w.wokeEvents, len(tr.Events))]
@@ -250,6 +259,9 @@ func TestRunPasses(t *testing.T) {
 	if r.IncidentAfter != "2m0s" || r.SuspendAfter == "" || len(logs) == 0 {
 		t.Errorf("timings %+v, logs %v", r, logs)
 	}
+	if r.Trajectory == nil || !slices.Equal(r.Trajectory.ToolCalls, []string{"gke_get_k8s_resource", "gke_get_k8s_logs"}) || len(r.Trajectory.Failures) != 0 || r.Trajectory.ModelCalls != 2 {
+		t.Errorf("trajectory %+v", r.Trajectory)
+	}
 	if r.Usage == nil || r.Usage.ModelCalls != 2 || len(r.Usage.Calls) != 2 || r.Usage.ReadAt == "" || !slices.Contains(logs, "usage: 2 model calls, 1000 input tokens (60% cached), 50 output, 7 thinking") {
 		t.Errorf("usage %+v, logs %v", r.Usage, logs)
 	}
@@ -262,6 +274,9 @@ func TestRunUsageUnavailable(t *testing.T) {
 	var logs []string
 	o.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
 	r := run(t, w, s, o)
+	if r.Trajectory == nil || !slices.Contains(r.Trajectory.Notes, "max_model_calls not checked: the agent's usage wasn't read") {
+		t.Errorf("trajectory without usage: %+v", r.Trajectory)
+	}
 	if !r.Pass || r.Usage != nil || !slices.ContainsFunc(logs, func(l string) bool { return strings.HasPrefix(l, "usage: not read:") }) {
 		t.Errorf("pass %v, usage %+v, logs %v", r.Pass, r.Usage, logs)
 	}
@@ -280,6 +295,9 @@ func TestRunFailures(t *testing.T) {
 		{"wrong answer", func(w *world) { w.answer = "The pod is crash-looping." }, "the answer lacks DATABASE_URL"},
 		{"no suspend", func(w *world) { w.suspendAfter = -1 }, "did not suspend"},
 		{"restarted", func(w *world) { w.wokeStatus = "idle" }, "the agent restarted instead of resuming"},
+		{"no read", func(w *world) { w.calls = []string{"gke_list_k8s_events"} }, "trajectory: never called get_k8s_resource or describe_k8s_resource"},
+		{"a write", func(w *world) { w.calls = []string{"gke_get_k8s_resource", "gke_patch_k8s_resource"} }, "trajectory: called gke_patch_k8s_resource, which it must not"},
+		{"a runaway", func(w *world) { w.calls = slices.Repeat([]string{"gke_get_k8s_resource"}, 11) }, "trajectory: 11 tool calls, more than 10"},
 		{"lost history", func(w *world) { w.wokeEvents = 1 }, "lost history"},
 		{"cleanup fails", func(w *world) { w.failDelete = true }, "deleting task lookout-0123456789abcdef"},
 	} {
@@ -603,5 +621,25 @@ func TestRunArchiveWhenCancelled(t *testing.T) {
 	}
 	if len(w.tasksGone) != 1 {
 		t.Errorf("tasks deleted %v", w.tasksGone)
+	}
+}
+
+// A run over its model-call bound fails; a run that never settles still
+// records the path it took (a runaway is that case).
+func TestRunTrajectoryBounds(t *testing.T) {
+	w, s, o := newWorld(t)
+	tj := *s.Expect.Trajectory
+	tj.MaxModelCalls = 1
+	s.Expect.Trajectory = &tj
+	r := run(t, w, s, o)
+	if r.Pass || !slices.Contains(r.Failures, "trajectory: 2 model calls, more than 1") {
+		t.Errorf("over the model-call bound: %+v", r.Failures)
+	}
+
+	w, s, o = newWorld(t)
+	w.neverIdle = true
+	r = run(t, w, s, o)
+	if r.Pass || r.Trajectory == nil || len(r.Trajectory.ToolCalls) != 2 {
+		t.Errorf("unsettled run: pass %v, trajectory %+v, failures %v", r.Pass, r.Trajectory, r.Failures)
 	}
 }

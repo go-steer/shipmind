@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -352,5 +353,47 @@ func TestRouterReplay(t *testing.T) {
 	}
 	if _, err := r.Replay(context.Background(), "t", "nope"); err == nil {
 		t.Error("Replay of a missing session succeeded")
+	}
+}
+
+// Tool calls come out of the stream in order, from functionCall parts,
+// as core-agent's attach frames carry them.
+func TestParseEventsCalls(t *testing.T) {
+	stream := `event: agent
+data: {"seq":2,"event":{"author":"core_agent","content":{"role":"model","parts":[{"functionCall":{"name":"gke_get_k8s_resource","args":{"name":"p"}}},{"functionCall":{"name":"gke_get_k8s_logs","args":{}}}]}}}
+
+event: agent
+data: {"seq":5,"event":{"author":"core_agent","content":{"role":"user","parts":[{"functionResponse":{"name":"gke_get_k8s_resource","response":{}}}]}}}
+
+event: agent
+data: {"seq":6,"event":{"author":"core_agent","content":{"role":"model","parts":[{"text":"thinking"},{"functionCall":{"name":"gke_get_k8s_resource"}}]}}}
+`
+	tr, err := ParseEvents(strings.NewReader(stream))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := tr.Calls(), []string{"gke_get_k8s_resource", "gke_get_k8s_logs", "gke_get_k8s_resource"}; !slices.Equal(got, want) {
+		t.Errorf("Calls() = %v, want %v", got, want)
+	}
+}
+
+// The calls for an answer stop at a message that supersedes it: what the
+// agent did for a re-sent incident isn't counted against the first.
+func TestAnswerCalls(t *testing.T) {
+	tr := &Transcript{Events: []Event{
+		{Seq: 1, Author: "user", Texts: []string{"incident"}},
+		{Seq: 2, Author: "core_agent", Role: "model", Calls: []string{"gke_get_k8s_resource"}},
+		{Seq: 3, Author: "core_agent", Role: "model", Texts: []string{"the diagnosis"}},
+		{Seq: 4, Author: "user", Texts: []string{"incident again"}},
+		{Seq: 5, Author: "core_agent", Role: "model", Calls: []string{"gke_get_k8s_logs"}},
+	}}
+	if answer, superseded := tr.Answer(); answer != "the diagnosis" || !superseded {
+		t.Errorf("Answer = %q, %v", answer, superseded)
+	}
+	if got := tr.AnswerCalls(); !slices.Equal(got, []string{"gke_get_k8s_resource"}) {
+		t.Errorf("AnswerCalls = %v", got)
+	}
+	if got := tr.Calls(); len(got) != 2 {
+		t.Errorf("Calls = %v", got)
 	}
 }
