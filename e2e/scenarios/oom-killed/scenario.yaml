@@ -30,6 +30,24 @@ expect:
     - "oom.?kill|out.of.memory"
     - "\\b64 ?(mi|mib|mb|m)\\b"
     - "memory.?limit|limits\\W+memory|limit\\w* (of|on|for) (the )?memory"
+  # How it may get there (#89): checked against the session's tool calls
+  # (names match with or without the MCP server's prefix) and its usage.
+  # A healthy run reads the pod and its owner in two or three calls, in
+  # about four model calls; the bounds catch a runaway, not a slow day.
+  trajectory:
+    must_call:
+      - get_k8s_resource|describe_k8s_resource
+    never_call:
+      - patch_k8s_resource
+      - apply_k8s_manifest
+      - delete_k8s_resource
+      - create_cluster
+      - update_cluster
+      - create_node_pool
+      - update_node_pool
+      - cancel_operation
+    max_tool_calls: 10
+    max_model_calls: 10
 limits:
   # Break to incident, incident to answer, workload removed to suspend.
   incident: 10m

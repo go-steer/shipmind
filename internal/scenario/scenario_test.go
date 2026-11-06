@@ -100,6 +100,10 @@ func TestLoadErrors(t *testing.T) {
 		{"bad regex", "ok", strings.Replace(good, "mentions: [X]", "mentions: ['(']", 1), "expect.mentions"},
 		{"bad template", "ok", strings.Replace(good, "mentions: [X]", "mentions: ['{{.Nope}}']", 1), "expect.mentions"},
 		{"limits", "ok", strings.Replace(good, "suspend: 1m", "suspend: 0s", 1), "limits"},
+		{"trajectory name", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    must_call: ['get pod']", 1), "expect.trajectory"},
+		{"trajectory empty alternative", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    never_call: ['a|']", 1), "expect.trajectory"},
+		{"trajectory negative", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    max_tool_calls: -1", 1), "expect.trajectory"},
+		{"trajectory unknown key", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    must: [x]", 1), "must"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), tc.dir)
@@ -195,6 +199,51 @@ func TestNightlyScenariosExist(t *testing.T) {
 	for _, r := range refs {
 		if !have[r[1]] {
 			t.Errorf("a CronJob runs /scenarios/%s, which e2e/scenarios doesn't have", r[1])
+		}
+	}
+}
+
+func TestTrajectoryCheck(t *testing.T) {
+	tj := &Trajectory{MustCall: []string{"get_k8s_resource|describe_k8s_resource", "get_k8s_logs"}, NeverCall: []string{"delete_k8s_resource"}, MaxToolCalls: 3, MaxModelCalls: 5}
+	for _, tc := range []struct {
+		calls      []string
+		modelCalls int
+		failures   []string
+		notes      []string
+	}{
+		{[]string{"gke_describe_k8s_resource", "gke_get_k8s_logs"}, 4, nil, nil},
+		{[]string{"get_k8s_resource", "get_k8s_logs"}, 4, nil, nil}, // no prefix
+		{[]string{"gke_get_k8s_logs"}, 4, []string{"never called get_k8s_resource or describe_k8s_resource"}, nil},
+		{[]string{"gke_get_k8s_resource", "gke_get_k8s_logs", "gke_delete_k8s_resource"}, 4, []string{"called gke_delete_k8s_resource, which it must not"}, nil},
+		{[]string{"gke_get_k8s_resource", "gke_get_k8s_logs", "x", "y"}, 6, []string{"4 tool calls, more than 3", "6 model calls, more than 5"}, nil},
+		{[]string{"gke_get_k8s_resource", "gke_get_k8s_logs"}, -1, nil, []string{"max_model_calls not checked: the agent's usage wasn't read"}},
+		{[]string{"gke_get_k8s_resourcex", "gke_get_k8s_logs"}, 4, []string{"never called get_k8s_resource or describe_k8s_resource"}, nil}, // suffix match is on a whole name
+	} {
+		failures, notes := tj.Check(tc.calls, tc.modelCalls)
+		if !slices.Equal(failures, tc.failures) || !slices.Equal(notes, tc.notes) {
+			t.Errorf("Check(%v, %d) = %q, %q; want %q, %q", tc.calls, tc.modelCalls, failures, notes, tc.failures, tc.notes)
+		}
+	}
+}
+
+// Both scenarios bound the path; their expectations load and accept what
+// a healthy run on staging did (core-agent 3.1.0, 2026-11-06: the pod and
+// its logs, then the Deployment, in four model calls).
+func TestScenarioTrajectories(t *testing.T) {
+	healthy := []string{"gke_get_k8s_resource", "gke_get_k8s_logs", "gke_get_k8s_resource"}
+	for _, name := range []string{"missing-env", "oom-killed"} {
+		s, err := Load("../../e2e/scenarios/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Expect.Trajectory == nil {
+			t.Fatalf("%s: no trajectory", name)
+		}
+		if failures, _ := s.Expect.Trajectory.Check(healthy, 4); len(failures) != 0 {
+			t.Errorf("%s: a healthy run fails %q", name, failures)
+		}
+		if failures, _ := s.Expect.Trajectory.Check(append(healthy, "gke_patch_k8s_resource"), 5); len(failures) == 0 {
+			t.Errorf("%s: a write passes", name)
 		}
 	}
 }

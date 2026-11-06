@@ -339,6 +339,8 @@ type Event struct {
 	Author string
 	Role   string
 	Texts  []string
+	// Calls are the tools the event calls, as the agent names them.
+	Calls []string
 }
 
 // ParseEvents reads the agent's server-sent events (mast's and
@@ -362,7 +364,10 @@ func ParseEvents(r io.Reader) (*Transcript, error) {
 				Content *struct {
 					Role  string `json:"role"`
 					Parts []struct {
-						Text string `json:"text"`
+						Text         string `json:"text"`
+						FunctionCall *struct {
+							Name string `json:"name"`
+						} `json:"functionCall"`
 					} `json:"parts"`
 				} `json:"content"`
 			} `json:"event"`
@@ -388,11 +393,23 @@ func ParseEvents(r io.Reader) (*Transcript, error) {
 				if p.Text != "" {
 					e.Texts = append(e.Texts, p.Text)
 				}
+				if p.FunctionCall != nil && p.FunctionCall.Name != "" {
+					e.Calls = append(e.Calls, p.FunctionCall.Name)
+				}
 			}
 		}
 		t.Events = append(t.Events, e)
 	}
 	return t, sc.Err()
+}
+
+// Calls returns every tool the session called, in order.
+func (t *Transcript) Calls() []string {
+	var calls []string
+	for _, e := range t.Events {
+		calls = append(calls, e.Calls...)
+	}
+	return calls
 }
 
 // isUser reports whether e is a message sent to the agent: authored by

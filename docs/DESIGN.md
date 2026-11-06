@@ -298,6 +298,30 @@ fork.
 | Scenarios | nightly (from M1) | GKE, substrate profile, real model | Each scenario breaks a workload, waits for the platform's answer and scores it: the right diagnosis, the cost, idle suspend afterwards, wake without a restart. |
 | Release | before a tag | the nightly result for that commit | The pinned set works together. |
 
+### How a scenario run is graded
+
+A scenario (`e2e/scenarios/<name>/scenario.yaml`) states what a correct
+handling looks like, and every run is checked against it (epic #93):
+
+- **The answer** (`expect.mentions`): case-insensitive regular expressions
+  the final answer must all match.
+- **The path** (`expect.trajectory`, #89): tools it must call (`a|b` for
+  either), tools it must never call, and bounds on tool calls and model
+  calls, checked against the session's tool calls (from its event stream)
+  and the agent's usage. Tool names match with or without the MCP server's
+  prefix. A failed check fails the run like a missing mention, and the run's
+  result lists the calls it made.
+- **The lifecycle**: the incident opens, the task suspends once the workload
+  is gone, and wakes with the session in memory.
+
+With `-archive`, the run's record (event stream, usage, result, metadata)
+goes to `gs://shipmind-scenario-runs/<env>/<scenario>/<date>/<workload>/`,
+`meta.json` last (#88). Next: an LLM judge scoring the answer against a
+ground-truth diagnosis (`expect.diagnosis`, #90), and a re-grade command
+that applies today's checks to archived runs and reports per agent version
+and model (#91). The trajectory check is one function used by a run and by
+a re-grade alike.
+
 Nothing long-running runs on a workstation; scenarios run in CI or as
 Jobs on the cluster. The prompt A/B experiments from October (generalist
 against routed specialists) become scenario runs with two agent variants.

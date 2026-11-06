@@ -137,6 +137,9 @@ type Result struct {
 	// arrived before the answer settled, so Usage may include calls
 	// made for it.
 	Superseded bool `json:"superseded,omitempty"`
+	// Trajectory is the path the agent took to its answer and how it
+	// fared against the scenario's expect.trajectory (#89).
+	Trajectory *TrajectoryResult `json:"trajectory,omitempty"`
 	// Usage is the session's model usage once the answer settled, in
 	// one meaning whichever agent answered: model calls, tokens and the
 	// cached share, cost per call. Absent when the read failed, which
@@ -152,6 +155,15 @@ type Result struct {
 
 	Pass     bool     `json:"pass"`
 	Failures []string `json:"failures,omitempty"`
+}
+
+// TrajectoryResult is a run's tool calls, in order, and what checking
+// them found.
+type TrajectoryResult struct {
+	ToolCalls  []string `json:"tool_calls"`
+	ModelCalls int      `json:"model_calls,omitempty"`
+	Failures   []string `json:"failures,omitempty"`
+	Notes      []string `json:"notes,omitempty"`
 }
 
 // Options control Run.
@@ -475,6 +487,19 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		}
 		o.Log("usage: %d model calls, %d input tokens (%.0f%% cached), %d output, %d thinking",
 			r.Usage.ModelCalls, r.Usage.InputTokens, cached, r.Usage.OutputTokens, r.Usage.ThinkingTokens)
+	}
+	if tj := s.Expect.Trajectory; tj != nil {
+		modelCalls := -1
+		if r.Usage != nil {
+			modelCalls = r.Usage.ModelCalls
+		}
+		path := &TrajectoryResult{ToolCalls: tr.Calls(), ModelCalls: max(modelCalls, 0)}
+		path.Failures, path.Notes = tj.Check(path.ToolCalls, modelCalls)
+		r.Trajectory = path
+		for _, f := range path.Failures {
+			failf("trajectory: %s", f)
+		}
+		o.Log("trajectory: %d tool calls (%s); %d failures", len(path.ToolCalls), strings.Join(path.ToolCalls, ", "), len(path.Failures))
 	}
 	events := len(tr.Events)
 
