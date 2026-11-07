@@ -147,11 +147,11 @@ components:
 
   - name: agent
     source: github.com/go-steer/shipmind
-    version: 2ef5d3b1b7d784adec7752a149cb17ff5cf40339
+    version: d695f90f6b68063995ae65150009192006229738
     profiles: [substrate]
     images:
       - name: agent
-        ref: ghcr.io/go-steer/shipmind/agent:2ef5d3b1b7d784adec7752a149cb17ff5cf40339@sha256:e78f0a5903f9e388534806b78cd86958f7b33c0d45986a69610dc59d9297c7d9
+        ref: ghcr.io/go-steer/shipmind/agent:d695f90f6b68063995ae65150009192006229738@sha256:36a4b746f314190b94b1dc0f685f05ba85d2be7e934bcd5cd7ccd7432c5538b2
     note: >-
       The agent image on core-agent (#48), built by this repository
       (images/agent) at the commit in version: the core-agent and
@@ -204,11 +204,11 @@ components:
 
   - name: e2e-runner
     source: github.com/go-steer/shipmind
-    version: f4f07d9a95fc50efb5acb1d9e08790c8ef4087e7
+    version: d695f90f6b68063995ae65150009192006229738
     profiles: [substrate]
     images:
       - name: e2e-runner
-        ref: ghcr.io/go-steer/shipmind/e2e-runner:f4f07d9a95fc50efb5acb1d9e08790c8ef4087e7@sha256:8feed51105d1b6163d8e53b246f28bcd80fb39f7c3a469c0ea8820d99c05cbdf
+        ref: ghcr.io/go-steer/shipmind/e2e-runner:d695f90f6b68063995ae65150009192006229738@sha256:6d9f9ea82eab3b2f476abe0078b546a7d945ff9ac5d628dcc70f15acb8149bb6
     note: >-
       The end-to-end runner (images/e2e-runner: shipmind, the ax CLI,
       kubectl, the scenarios) at the commit in version, which the nightly
