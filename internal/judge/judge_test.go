@@ -181,3 +181,12 @@ func TestRubricSlots(t *testing.T) {
 		t.Error("Rubric no longer has core-agent's two slots in order")
 	}
 }
+
+func TestTruncateKeepsRunes(t *testing.T) {
+	if got := truncate("ééé", 2); got != "éé…" {
+		t.Errorf("truncate = %q", got)
+	}
+	if got := truncate("ok", 5); got != "ok" {
+		t.Errorf("truncate = %q", got)
+	}
+}

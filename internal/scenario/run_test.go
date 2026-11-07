@@ -652,10 +652,16 @@ type fakeGrader struct {
 	err                error
 	expected, answered string
 	calls              int
+	world              *world
+	deadline           bool
 }
 
-func (f *fakeGrader) Grade(_ context.Context, expected, answer string) (judge.Grade, error) {
+func (f *fakeGrader) Grade(ctx context.Context, expected, answer string) (judge.Grade, error) {
 	f.calls++
+	_, f.deadline = ctx.Deadline()
+	if f.world != nil {
+		f.world.ops = append(f.world.ops, "grade")
+	}
 	f.expected, f.answered = expected, answer
 	g := f.grade
 	if f.err != nil {
@@ -681,8 +687,14 @@ func TestRunJudge(t *testing.T) {
 			w, s, o := newWorld(t)
 			var logs []string
 			o.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+			tc.g.world = w
 			o.Judge = tc.g
 			r := run(t, w, s, o)
+			// Graded once the workload is gone, so lookout isn't re-sending
+			// the incident while the judge waits, and on a deadline.
+			if i, j := slices.Index(w.ops, "delete workload"), slices.Index(w.ops, "grade"); i < 0 || j < i || !tc.g.deadline {
+				t.Errorf("ops %v, deadline %v", w.ops, tc.g.deadline)
+			}
 			if !r.Pass || r.Judge == nil || r.Judge.Model != "m" || tc.g.calls != 1 {
 				t.Fatalf("pass %v, judge %+v, %d calls, failures %v", r.Pass, r.Judge, tc.g.calls, r.Failures)
 			}
@@ -715,5 +727,24 @@ func TestRunJudgeSkips(t *testing.T) {
 	o.Judge = g
 	if r := run(t, w, s, o); r.Judge != nil || g.calls != 0 || !r.Pass {
 		t.Errorf("graded without a diagnosis: %+v", r.Judge)
+	}
+
+	// With -keep the workload stays, and the answer is still graded.
+	w, s, o = newWorld(t)
+	o.Keep = true
+	g = &fakeGrader{grade: judge.Grade{Model: "m", Score: 4}}
+	o.Judge = g
+	if r := run(t, w, s, o); r.Judge == nil || g.calls != 1 {
+		t.Errorf("kept run not graded: %+v", r.Judge)
+	}
+}
+
+// A judge that couldn't be set up reaches the result as its error.
+func TestRunBrokenJudge(t *testing.T) {
+	w, s, o := newWorld(t)
+	o.Judge = judge.Broken{Model: "m", Err: errors.New("no credentials")}
+	r := run(t, w, s, o)
+	if !r.Pass || r.Judge == nil || r.Judge.Error != "no credentials" || r.Judge.Score != 0 {
+		t.Errorf("pass %v, judge %+v", r.Pass, r.Judge)
 	}
 }

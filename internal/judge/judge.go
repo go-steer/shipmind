@@ -86,6 +86,8 @@ type Grade struct {
 	Rubric string `json:"rubric"`
 	Effort string `json:"effort,omitempty"`
 
+	// Score is 1-5; 0 with Error set means no grade, and then the three
+	// flags below are not findings either.
 	Score            int    `json:"score,omitempty"`
 	CorrectDiagnosis bool   `json:"correct_diagnosis"`
 	Specific         bool   `json:"specific"`
@@ -123,7 +125,7 @@ const DefaultEffort = "high"
 // NewVertex returns a Judge calling model on Vertex AI in project and
 // region ("global" unless set), with Application Default Credentials: a
 // workstation's gcloud login, or a pod's workload identity.
-func NewVertex(ctx context.Context, model, project, region, effort string) (*Judge, error) {
+func NewVertex(ctx context.Context, model, project, region, effort string) (j *Judge, err error) {
 	if model == "" || project == "" {
 		return nil, errors.New("judge: want a model and a Google Cloud project")
 	}
@@ -133,8 +135,8 @@ func NewVertex(ctx context.Context, model, project, region, effort string) (*Jud
 	if effort == "" {
 		effort = DefaultEffort
 	}
-	if !validEffort(effort) {
-		return nil, fmt.Errorf("judge: effort %q: want low, medium, high, xhigh or max", effort)
+	if err := CheckEffort(effort); err != nil {
+		return nil, err
 	}
 	// vertex.WithGoogleAuth panics without credentials; finding them here
 	// makes that an error.
@@ -142,6 +144,13 @@ func NewVertex(ctx context.Context, model, project, region, effort string) (*Jud
 	if err != nil {
 		return nil, fmt.Errorf("judge: Google credentials: %w", err)
 	}
+	// It still panics if it can't build the HTTP client (a bad client
+	// certificate setting): an error too, so a judge never stops a run.
+	defer func() {
+		if p := recover(); p != nil {
+			j, err = nil, fmt.Errorf("judge: Vertex AI client: %v", p)
+		}
+	}()
 	c := anthropic.NewClient(vertex.WithCredentials(ctx, region, project, creds))
 	return &Judge{Model: model, Effort: effort, Messages: &c.Messages}, nil
 }
@@ -159,13 +168,14 @@ func (b Broken) Grade(context.Context, string, string) (Grade, error) {
 	return Grade{Model: b.Model, Rubric: RubricID, Error: b.Err.Error()}, b.Err
 }
 
-func validEffort(e string) bool {
+// CheckEffort checks an effort level the API accepts.
+func CheckEffort(e string) error {
 	switch anthropic.OutputConfigEffort(e) {
 	case anthropic.OutputConfigEffortLow, anthropic.OutputConfigEffortMedium, anthropic.OutputConfigEffortHigh,
 		anthropic.OutputConfigEffortXhigh, anthropic.OutputConfigEffortMax:
-		return true
+		return nil
 	}
-	return false
+	return fmt.Errorf("judge: effort %q: want low, medium, high, xhigh or max", e)
 }
 
 // Grade grades answer against expected, the scenario's ground truth. It
@@ -253,8 +263,9 @@ func cost(model string, u anthropic.Usage) float64 {
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string(r[:n]) + "…"
 }

@@ -224,6 +224,8 @@ func TestScenarioJudgeCommand(t *testing.T) {
 	good := write("good.json", `{"scenario": "missing-env", "workload": "missing-env-1101-120000", "answer": "DATABASE_URL is missing", "want": "1-2"}`)
 	noScenario := write("bad.json", `{"answer": "x"}`)
 	unknown := write("unknown.json", `{"scenario": "nope", "workload": "nope-1", "answer": "x"}`)
+	unsettled := write("unsettled.json", `{"scenario": "missing-env", "workload": "missing-env-1", "answer": "still looking", "failures": ["no settled answer within 15m0s"]}`)
+	empty := write("empty.json", `{"scenario": "missing-env", "workload": "missing-env-1", "failures": ["no lookout incident task named missing-env-1 within 10m0s"]}`)
 	scenarios := "../../e2e/scenarios"
 
 	for _, tc := range []struct {
@@ -237,7 +239,8 @@ func TestScenarioJudgeCommand(t *testing.T) {
 		{"no project", []string{"scenario", "judge", "-model", "m", good}, 2, "", "wants its Google Cloud project"},
 		{"graded", []string{"scenario", "judge", "-model", "m", "-project", "p", "-scenarios", scenarios, good}, 0, "good.json: 2/5 (want 1-2) correct=false", ""},
 		{"json", []string{"scenario", "judge", "-json", "-model", "m", "-project", "p", "-scenarios", scenarios, good}, 0, `"want":"1-2","model":"stub"`, ""},
-		{"bad files", []string{"scenario", "judge", "-model", "m", "-project", "p", "-scenarios", scenarios, noScenario, unknown, good}, 1, "3 graded", "want scenario and workload"},
+		{"bad files", []string{"scenario", "judge", "-model", "m", "-project", "p", "-scenarios", scenarios, noScenario, unknown, good}, 1, "1 of 3 graded", "want scenario and workload"},
+		{"unsettled", []string{"scenario", "judge", "-model", "m", "-project", "p", "-scenarios", scenarios, unsettled, empty, good}, 0, "1 of 3 graded", "skipped: the run has no settled answer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out, errOut strings.Builder
@@ -256,7 +259,8 @@ func TestScenarioJudgeCommand(t *testing.T) {
 	// The project falls back to the machine's own.
 	metadataProject = func(context.Context) string { return "from-metadata" }
 	var out, errOut strings.Builder
-	if code := run([]string{"scenario", "judge", "-model", "m", "-scenarios", scenarios, good}, &out, &errOut); code != 0 || gotProject != "from-metadata" {
+	if code := run([]string{"scenario", "judge", "-model", "m", "-scenarios", scenarios, good}, &out, &errOut); code != 0 || gotProject != "from-metadata" ||
+		!strings.Contains(errOut.String(), "judge: project from-metadata, from the metadata server") {
 		t.Errorf("exit %d, project %q, stderr %s", code, gotProject, errOut.String())
 	}
 
@@ -297,7 +301,13 @@ func TestScenarioRunBrokenJudge(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A bad effort is a flag error, before anything runs.
 	var out, errOut strings.Builder
+	if code := run([]string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-judge", "m", "-judge-effort", "extreme", dir}, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "effort") {
+		t.Errorf("bad effort: exit %d, stderr %s", code, errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
 	code := run([]string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-judge", "claude-sonnet-5-5", dir}, &out, &errOut)
 	// The run itself times out at once (exit 1), as it would without a
 	// judge: the missing project is reported, not fatal.

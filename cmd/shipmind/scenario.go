@@ -25,6 +25,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
 
 	"cloud.google.com/go/compute/metadata"
@@ -57,7 +59,11 @@ var (
 	newScenarioArchiver = func(g *archive.GCS) scenario.Archiver { return g }
 	newRouterClient     = func(t scenario.RouterTLS) (*http.Client, func() error, error) { return t.Client() }
 	newJudge            = func(ctx context.Context, model, project, region, effort string) (scenario.Grader, error) {
-		return judge.NewVertex(ctx, model, project, region, effort)
+		j, err := judge.NewVertex(ctx, model, project, region, effort)
+		if err != nil {
+			return nil, err
+		}
+		return j, nil
 	}
 	// metadataProject is the project of the Google Cloud machine this runs
 	// on (a GKE pod's, under workload identity), or "" off Google Cloud.
@@ -98,13 +104,25 @@ func addJudgeFlags(fs *flag.FlagSet, prefix string) judgeFlags {
 	}
 }
 
-func (f judgeFlags) grader(ctx context.Context) (scenario.Grader, error) {
+// check rejects judge flags that can't work, before anything runs.
+func (f judgeFlags) check() error {
+	if *f.model == "" {
+		return nil
+	}
+	return judge.CheckEffort(*f.effort)
+}
+
+func (f judgeFlags) grader(ctx context.Context, log io.Writer) (scenario.Grader, error) {
 	if *f.model == "" {
 		return nil, nil
 	}
 	project := *f.project
 	if project == "" {
-		project = metadataProject(ctx)
+		// Any Google Cloud VM answers, a workstation too: say which
+		// project, since it bills the judge.
+		if project = metadataProject(ctx); project != "" {
+			fmt.Fprintf(log, "judge: project %s, from the metadata server\n", project)
+		}
 	}
 	if project == "" {
 		return nil, errors.New("a judge model wants its Google Cloud project: set it, or $GOOGLE_CLOUD_PROJECT, off Google Cloud")
@@ -184,6 +202,10 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "shipmind scenario run: -router is required outside the cluster")
 		return 2
 	}
+	if err := jf.check(); err != nil {
+		fmt.Fprintf(stderr, "shipmind scenario run: %v\n", err)
+		return 2
+	}
 
 	s, err := scenario.Load(fs.Arg(0))
 	if err != nil {
@@ -229,7 +251,7 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 	}
 	// A judge that can't be set up is recorded in the result, not a
 	// reason to skip the run: the judge reports, it doesn't gate (#90).
-	grader, err := jf.grader(ctx)
+	grader, err := jf.grader(ctx, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "shipmind scenario run: judge: %v\n", err)
 		grader = judge.Broken{Model: *jf.model, Err: err}
@@ -271,11 +293,17 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 // answer). Want, if set, is the score band a calibration answer should
 // get, such as "1-2", printed beside the grade.
 type graded struct {
-	Scenario string `json:"scenario"`
-	Workload string `json:"workload"`
-	Answer   string `json:"answer"`
-	Want     string `json:"want,omitempty"`
+	Scenario string   `json:"scenario"`
+	Workload string   `json:"workload"`
+	Answer   string   `json:"answer"`
+	Want     string   `json:"want,omitempty"`
+	Failures []string `json:"failures,omitempty"`
 }
+
+// noSettledAnswer is the failure a run records when the agent never
+// settled on an answer; a run grades only settled answers, and so does a
+// re-grade.
+const noSettledAnswer = "no settled answer"
 
 // runJudge implements `shipmind scenario judge`: grade stored answers
 // against their scenarios' diagnoses, for calibrating a judge and for
@@ -298,14 +326,22 @@ func runJudge(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
-	grader, err := jf.grader(ctx)
+	if err := jf.check(); err != nil {
+		fmt.Fprintf(stderr, "shipmind scenario judge: %v\n", err)
+		return 2
+	}
+	grader, err := jf.grader(ctx, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "shipmind scenario judge: %v\n", err)
 		return 2
 	}
 	loaded := map[string]*scenario.Scenario{}
-	status, total := 0, 0.0
+	status, total, count := 0, 0.0, 0
 	for _, path := range fs.Args() {
+		if ctx.Err() != nil {
+			fmt.Fprintf(stderr, "shipmind scenario judge: stopped: %v\n", ctx.Err())
+			return 1
+		}
 		b, err := os.ReadFile(filepath.Clean(path))
 		var in graded
 		if err == nil {
@@ -317,6 +353,10 @@ func runJudge(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", path, err)
 			status = 1
+			continue
+		}
+		if strings.TrimSpace(in.Answer) == "" || slices.ContainsFunc(in.Failures, func(f string) bool { return strings.HasPrefix(f, noSettledAnswer) }) {
+			fmt.Fprintf(stderr, "%s: skipped: the run has no settled answer, and a run grades only settled answers\n", path)
 			continue
 		}
 		s, ok := loaded[in.Scenario]
@@ -338,6 +378,7 @@ func runJudge(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		g, err := grader.Grade(ctx, expected, in.Answer)
+		count++
 		total += g.CostUSD
 		if err != nil {
 			status = 1
@@ -363,7 +404,7 @@ func runJudge(args []string, stdout, stderr io.Writer) int {
 			path, g.Score, want, g.CorrectDiagnosis, g.Specific, g.Actionable, g.CostUSD, g.Reasoning)
 	}
 	if !*jsonOut {
-		fmt.Fprintf(stdout, "%d graded by %s at %s effort, $%.4f\n", fs.NArg(), *jf.model, *jf.effort, total)
+		fmt.Fprintf(stdout, "%d of %d graded by %s at %s effort, $%.4f\n", count, fs.NArg(), *jf.model, *jf.effort, total)
 	}
 	return status
 }

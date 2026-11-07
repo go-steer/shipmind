@@ -62,7 +62,10 @@ github.com/go-steer/shipmind/internal/scenario  91.0  # 92.1
 # The scenario archive's GCS writer, against a fake metadata server and
 # JSON API; the error paths it doesn't reach are transport failures.
 github.com/go-steer/shipmind/internal/archive   82.0  # 83.0
-github.com/go-steer/shipmind/internal/judge     85.0  # 86.4
+
+# The answer judge, against a fake Messages client; the credential lookup
+# and the Vertex client's panic recovery need a real client.
+github.com/go-steer/shipmind/internal/judge     83.0  # 84.1
 
 github.com/go-steer/shipmind/internal/slackapp  94.0  # 95.4
 

@@ -529,17 +529,20 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 			r.Usage.ModelCalls, r.Usage.InputTokens, cached, r.Usage.OutputTokens, r.Usage.ThinkingTokens)
 	}
 	checkTrajectory(tr)
-	gradeAnswer(ctx, s, name, r, &o)
 	events := len(tr.Events)
 
 	if o.Keep {
+		gradeAnswer(ctx, s, name, r, &o)
 		return r, nil
 	}
 
 	// 3. With the workload gone, lookout sends "resolved" and stops; the
-	// task suspends once idle.
+	// task suspends once idle. The judge grades the answer meanwhile: only
+	// after the removal, so lookout doesn't re-send the incident (another
+	// agent turn, outside the usage already read) while it waits.
 	removeWorkload()
 	removedAt := o.Now()
+	gradeAnswer(ctx, s, name, r, &o)
 	werr = until(ctx, &o, s.Limits.Suspend, func(ctx context.Context) (bool, error) {
 		now, err := tasks.Tasks(ctx)
 		if err != nil {

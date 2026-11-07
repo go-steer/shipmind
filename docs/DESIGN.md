@@ -324,12 +324,13 @@ handling looks like, and every run is checked against it (epic #93):
   into `internal/judge` rather than imported so a scenario's scores stay
   comparable over time. The grade is recorded in the result, never a
   failure, until there is a baseline to gate on; a judge that can't be set
-  up or a call that fails is recorded too, and the run goes on. The judge is
+  up or a call that fails is recorded in place of the grade (or, without a
+  settled answer to grade, only logged), and the run goes on. The judge is
   Claude, a different model family from the agent's Gemini, so no model
   grades its own answers; the project comes from the metadata server on the
   cluster. `shipmind scenario judge` grades stored answers (an archived
-  `result.json`, or a hand-written answer) the same way: it is how a judge
-  is calibrated (`e2e/calibration/`) and the start of re-grading (#91).
+  `result.json`, or a hand-written answer) the same way, skipping runs
+  without a settled answer as a run does: it is how a judge is calibrated (`e2e/calibration/`) and the start of re-grading (#91).
 
 With `-archive`, the run's record (event stream, usage, result, metadata)
 goes to `gs://shipmind-scenario-runs/<env>/<scenario>/<date>/<workload>/`,
