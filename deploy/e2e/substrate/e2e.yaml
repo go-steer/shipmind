@@ -125,7 +125,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: run
-              image: ghcr.io/go-steer/shipmind/e2e-runner:d695f90f6b68063995ae65150009192006229738@sha256:6d9f9ea82eab3b2f476abe0078b546a7d945ff9ac5d628dcc70f15acb8149bb6
+              image: ghcr.io/go-steer/shipmind/e2e-runner:5656dea26b19baced0abc14ab58dd430edab0f0a@sha256:7bff049fa679a1c3c63436de907607f0888590a47f16d3eea772cff59fc1e193
               args:
                 - scenario
                 - run
@@ -139,6 +139,11 @@ spec:
                 # router's trust bundle. Both rotate in place.
                 - -router-cert=/run/podidentity/credential-bundle.pem
                 - -router-trust=/run/servicedns-ca/trust-bundle.pem
+                # A judge model grades each answer against the scenario's
+                # expect.diagnosis (#90), reported and never a failure; the
+                # cluster's project comes from the metadata server, and the
+                # pod's workload identity needs roles/aiplatform.user there.
+                - -judge=claude-sonnet-5-5
                 - /scenarios/missing-env
               securityContext:
                 allowPrivilegeEscalation: false
@@ -220,7 +225,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: run
-              image: ghcr.io/go-steer/shipmind/e2e-runner:d695f90f6b68063995ae65150009192006229738@sha256:6d9f9ea82eab3b2f476abe0078b546a7d945ff9ac5d628dcc70f15acb8149bb6
+              image: ghcr.io/go-steer/shipmind/e2e-runner:5656dea26b19baced0abc14ab58dd430edab0f0a@sha256:7bff049fa679a1c3c63436de907607f0888590a47f16d3eea772cff59fc1e193
               args:
                 - scenario
                 - run
@@ -234,6 +239,11 @@ spec:
                 # router's trust bundle. Both rotate in place.
                 - -router-cert=/run/podidentity/credential-bundle.pem
                 - -router-trust=/run/servicedns-ca/trust-bundle.pem
+                # A judge model grades each answer against the scenario's
+                # expect.diagnosis (#90), reported and never a failure; the
+                # cluster's project comes from the metadata server, and the
+                # pod's workload identity needs roles/aiplatform.user there.
+                - -judge=claude-sonnet-5-5
                 - /scenarios/oom-killed
               securityContext:
                 allowPrivilegeEscalation: false
