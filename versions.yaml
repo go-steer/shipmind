@@ -27,35 +27,35 @@
 components:
   - name: substrate
     source: github.com/agent-substrate/substrate
-    version: v1.0.0-rc.1
+    version: v1.0.0
     profiles: [substrate]
     images:
       - name: ateapi
-        ref: ghcr.io/agent-substrate/substrate/ateapi:v1.0.0-rc.1@sha256:53afaaabe07c6caa71036dc880b514da9ca08973f4ba03586ccb4dbfe28931e3
+        ref: ghcr.io/agent-substrate/substrate/ateapi:v1.0.0@sha256:2f1ee444b126b6e3620045b61d2a87507fb0f889da0249656c474ab59dc2beaf
       - name: atecontroller
-        ref: ghcr.io/agent-substrate/substrate/atecontroller:v1.0.0-rc.1@sha256:b280e6ee6c9e4ebf01a18a271549c3294da3ced85f49b2deb88de4a8b035ea24
+        ref: ghcr.io/agent-substrate/substrate/atecontroller:v1.0.0@sha256:44b3a127048e1da8c15dff35f65defe73f4e54ebb985bc020aa9bb0e6eb029b2
       - name: atelet
-        ref: ghcr.io/agent-substrate/substrate/atelet:v1.0.0-rc.1@sha256:5c117b06276e709d023bf6c090b0a65f42d3f1bdeb2ffe99265d34c7ddbe453c
+        ref: ghcr.io/agent-substrate/substrate/atelet:v1.0.0@sha256:79abc69f982392adbcbc3332cd8191cf74ac3cd1f4a43c44e9c8a3ce16488b6e
       - name: atenet
-        ref: ghcr.io/agent-substrate/substrate/atenet:v1.0.0-rc.1@sha256:e2633da825fe45bcf32c23f96e7d434370a0fd6bdeb9eb50cd3f7ee3d8c311b8
+        ref: ghcr.io/agent-substrate/substrate/atenet:v1.0.0@sha256:04f7d93dc3fb3deda688137077226c12ce2da41cd4753adff708e3737dc59e20
       - name: ate-idp-server
-        ref: ghcr.io/agent-substrate/substrate/ate-idp-server:v1.0.0-rc.1@sha256:e12ba06ad37b792daed6fdc0517b176174fb8814429ac8662cc02848f47732d1
+        ref: ghcr.io/agent-substrate/substrate/ate-idp-server:v1.0.0@sha256:9553c0e60a8ad8bbb1c54c59e59cf0d33a338bf4f883b6f806610dc407f49f7c
       - name: objectstore-plugin
-        ref: ghcr.io/agent-substrate/substrate/objectstore-plugin:v1.0.0-rc.1@sha256:d621b8cb79a75b908928d33a0646abb8eb5ab96504d1fa25108c9be5bf59c3cc
+        ref: ghcr.io/agent-substrate/substrate/objectstore-plugin:v1.0.0@sha256:485cf92b31fed761c53f478d17ed69bf552a2cd8e8cf3b24b98a3e06789ee274
       - name: kubernetes-secrets
-        ref: ghcr.io/agent-substrate/substrate/kubernetes-secrets:v1.0.0-rc.1@sha256:d0e376e7abfe4548316b8dc37e7f26b6da4763637ad7a3b33a6e8311ce23bcdd
+        ref: ghcr.io/agent-substrate/substrate/kubernetes-secrets:v1.0.0@sha256:21d494e2461d920bb03a66a0cdf574835c7d2e019b7941acef675ecff5702344
       - name: podcertcontroller
-        ref: ghcr.io/agent-substrate/substrate/podcertcontroller:v1.0.0-rc.1@sha256:8bcdeb6b5c63587dc60ec1d968233f143067d0eb4803b39dc78911b467a09e28
+        ref: ghcr.io/agent-substrate/substrate/podcertcontroller:v1.0.0@sha256:1005579b2142f63412507342f095894eb435fe3736607f32dbad406d0e05c5a5
       - name: ateworker-gvisor
-        ref: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0-rc.1@sha256:02a31963cdfb1d250d205a55fb870385b1ba5bad1be1308d556a6296f76bf145
+        ref: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0@sha256:f8987236c6256f58c4b2625e543b43f4ae4bdded6ee6821c03d966effb7c0f17
       - name: envoy-dataplane
-        ref: ghcr.io/agent-substrate/substrate/envoy-dataplane:v1.0.0-rc.1@sha256:c8dcfc127ec4381b31da9b9190b3231e2a98ccd207dd97a5c0b39bf25eeb20dd
+        ref: ghcr.io/agent-substrate/substrate/envoy-dataplane:v1.0.0@sha256:fc8e4c3ee9060a01153e4d4af571f3db294e60d536422e8a8c2996fa4a72bf8b
       - name: postgres
         ref: docker.io/library/postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
       - name: envoy
         ref: docker.io/envoyproxy/envoy:v1.39.5@sha256:8fc594a5d85eb76dca24155cfb9208882406873932b20cf33649a0a611194c43
     note: >-
-      Upstream Substrate v1.0.0-rc.1 (f86fde9), installed with its own
+      Upstream Substrate v1.0.0 (b34fbee74), installed with its own
       ate-setup from the same tag, its images straight from upstream's
       registry by digest (ateworker-microvm is published too; the
       substrate profile runs gVisor only). postgres and envoy are the
@@ -66,37 +66,39 @@ components:
 
   - name: ax
     source: github.com/mastersingh24/ax
-    version: 04de9135a27b2c8a63e80d58d2d72ffc3867f439
+    version: 7c50347497bcb6b0179860a21000e4ce268aa236
     profiles: [substrate]
     images:
       - name: ax-server
-        ref: ghcr.io/go-steer/shipmind/ax-server:04de9135a27b2c8a63e80d58d2d72ffc3867f439@sha256:3aa706143e4127cd88304f92dbb7277ca559fe21c4edb53e65558350f6fcf9f7
+        ref: ghcr.io/go-steer/shipmind/ax-server:7c50347497bcb6b0179860a21000e4ce268aa236@sha256:0d6680c87cdc1133a89624010214af094e6f678918f0521243e2ef79349ae567
       - name: postgres
         ref: docker.io/library/postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     manifests:
       - deploy/ax-server.yaml
       - deploy/postgres.yaml
     note: >-
-      ax-server, tag substrate-v1-04de913 (branch substrate-v1-r2). Fork
-      of google/ax: upstream main 6e970c5 (Substrate rc.1 upstream #553,
-      router TLS cache honouring cert expiry #541, ax ssh fixes #544,
-      workspace refs validated #461) plus the fork's own task fields
-      (egress, HTTP pass-through, idle suspend, on completion; proto
-      numbers 100 and up, ax.proto unchanged from 12dbe16) and a stable
-      Ready updateTime (google/ax#539), built against Substrate
-      v1.0.0-rc.1. The runner is unchanged, so ax-runner stays at
-      12dbe16. State in Postgres; its
-      password is a Secret `shipmind up` generates. google/ax does not
-      take PRs, so the fork is the source.
+      ax-server, tag substrate-v1-7c50347 (branch substrate-v1-r4). Fork of
+      google/ax: upstream main 241bc4d with go.ate.dev/substrate v1.0.0,
+      plus the fork's own task fields (egress, HTTP pass-through, idle
+      suspend, on completion; proto numbers 100 and up, ax.proto unchanged
+      since 12dbe16), a stable Ready updateTime (google/ax#539), and the
+      runner's pass-through sending Host 127.0.0.1:<port> with the
+      router's name in X-Forwarded-Host. State in Postgres; its password
+      is a Secret `shipmind up` generates. google/ax does not take PRs, so
+      the fork is the source.
 
   - name: ax-runner
     source: github.com/mastersingh24/ax
-    version: 12dbe163b207888b743b10705d5ce26c8f5c2697
+    version: 7c50347497bcb6b0179860a21000e4ce268aa236
     profiles: [substrate]
     note: >-
       The task runner baked into both agent images, at ax's commit. The v1
       port's runner reads one workspace (AX_WORKSPACE_YAML), so it rolls
-      with ax-server: an older runner finds no workspace.
+      with ax-server: an older runner finds no workspace. At 7c50347 its
+      pass-through sends the task Host 127.0.0.1:<port> (the router's name
+      in X-Forwarded-Host), and the workspace's first-run marker lives on
+      the workspace volume (upstream #551), so a cold resume doesn't redo
+      setup over the agent's edits.
 
   - name: mast
     source: github.com/go-steer/mast
