@@ -317,9 +317,12 @@ func TestScenarioRunBrokenJudge(t *testing.T) {
 }
 
 func TestScenarioJudgeEdges(t *testing.T) {
-	oldM := metadataProject
-	t.Cleanup(func() { metadataProject = oldM })
+	oldM, oldJ := metadataProject, newJudge
+	t.Cleanup(func() { metadataProject, newJudge = oldM, oldJ })
 	metadataProject = func(context.Context) string { return "" }
+	newJudge = func(context.Context, string, string, string, string) (scenario.Grader, error) {
+		return stubGrader{score: 3}, nil
+	}
 
 	// A scenario without a diagnosis can't be graded.
 	root := t.TempDir()
@@ -345,8 +348,7 @@ func TestScenarioJudgeEdges(t *testing.T) {
 		{"help", []string{"scenario", "judge", "-h"}, 0, ""},
 		{"bad flag", []string{"scenario", "judge", "-bogus"}, 2, "flag provided but not defined"},
 		{"missing file", []string{"scenario", "judge", "-model", "m", "-project", "p", filepath.Join(root, "nope.json")}, 1, "no such file"},
-		// The real constructor checks the effort before it looks for
-		// credentials.
+		// The effort is checked before any judge is made.
 		{"bad effort", []string{"scenario", "judge", "-model", "m", "-project", "p", "-effort", "extreme", filepath.Join(sc, "answer.json")}, 2, "effort"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -357,11 +359,6 @@ func TestScenarioJudgeEdges(t *testing.T) {
 		})
 	}
 
-	oldJ := newJudge
-	t.Cleanup(func() { newJudge = oldJ })
-	newJudge = func(context.Context, string, string, string, string) (scenario.Grader, error) {
-		return stubGrader{score: 3}, nil
-	}
 	var out, errOut strings.Builder
 	if code := run([]string{"scenario", "judge", "-model", "m", "-project", "p", "-scenarios", root, filepath.Join(sc, "answer.json")}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "no expect.diagnosis") {
 		t.Errorf("exit %d, stderr %s", code, errOut.String())
