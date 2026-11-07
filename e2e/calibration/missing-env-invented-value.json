@@ -1,0 +1,6 @@
+{
+  "scenario": "missing-env",
+  "workload": "missing-env-1101-120000",
+  "answer": "**Root cause:** the `checkout` container of Deployment `missing-env-1101-120000` (namespace `triage-lab`) exits with code 1 because `DATABASE_URL` is not set; it reads its environment from ConfigMap `missing-env-1101-120000-config`, which only has `PAYMENTS_URL`.\n\n**Fix:** add the variable and restart:\n```\nkubectl patch configmap missing-env-1101-120000-config -n triage-lab --type merge -p '{\"data\":{\"DATABASE_URL\":\"postgres://orders:orders@orders-db.triage-lab.svc:5432/orders\"}}'\nkubectl rollout restart deployment/missing-env-1101-120000 -n triage-lab\n```",
+  "want": "3-4"
+}

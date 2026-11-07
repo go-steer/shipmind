@@ -1,0 +1,6 @@
+{
+  "scenario": "missing-env",
+  "workload": "missing-env-1101-120000",
+  "answer": "Deployment `missing-env-1101-120000` (namespace `triage-lab`) is in CrashLoopBackOff. Its `checkout` container exits with code 1, logging `FATAL: DATABASE_URL is not set; cannot connect to the orders database`. The container's environment comes from ConfigMap `missing-env-1101-120000-config` via envFrom, and that ConfigMap only defines `PAYMENTS_URL`.",
+  "want": "3-4"
+}

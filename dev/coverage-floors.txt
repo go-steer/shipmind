@@ -63,6 +63,10 @@ github.com/go-steer/shipmind/internal/scenario  91.0  # 92.1
 # JSON API; the error paths it doesn't reach are transport failures.
 github.com/go-steer/shipmind/internal/archive   82.0  # 83.0
 
+# The answer judge, against a fake Messages client; the credential lookup
+# and the Vertex client's panic recovery need a real client.
+github.com/go-steer/shipmind/internal/judge     83.0  # 84.1
+
 github.com/go-steer/shipmind/internal/slackapp  94.0  # 95.4
 
 github.com/go-steer/shipmind/internal/secrets  89.0  # 90.0

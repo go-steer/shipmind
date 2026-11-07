@@ -1,0 +1,6 @@
+{
+  "scenario": "oom-killed",
+  "workload": "oom-killed-1101-120000",
+  "answer": "**Root cause:** the node running `oom-killed-1101-120000` is under memory pressure. The kubelet is evicting pods to reclaim memory, and the `reports` container keeps getting killed as a result.\n\n**Fix:** add capacity to the node pool or move the workload to a larger machine type, and set a PodDisruptionBudget so it is not evicted again.",
+  "want": "1-2"
+}

@@ -1,0 +1,6 @@
+{
+  "scenario": "oom-killed",
+  "workload": "oom-killed-1101-120000",
+  "answer": "The container is being OOMKilled: it runs out of memory when it starts. Increase its memory limit and redeploy.",
+  "want": "3-4"
+}

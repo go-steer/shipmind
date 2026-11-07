@@ -64,6 +64,10 @@ type Expect struct {
 	// Trajectory is how the agent may get there (#89), checked against
 	// the session's tool calls and usage; nil checks nothing.
 	Trajectory *Trajectory `yaml:"trajectory"`
+	// Diagnosis is the ground truth a judge model grades the answer
+	// against (#90): the root cause, the resources involved and the fix,
+	// as a template over the run's Name and Namespace. Empty: no judge.
+	Diagnosis string `yaml:"diagnosis"`
 }
 
 // Trajectory bounds the path to the answer, over the main agent's tool
@@ -138,6 +142,11 @@ func Load(dir string) (*Scenario, error) {
 			fail("expect.mentions %q: %v", m, err)
 		}
 	}
+	if s.Expect.Diagnosis != "" {
+		if _, err := s.Diagnosis("probe"); err != nil {
+			fail("expect.diagnosis: %v", err)
+		}
+	}
 	if s.Expect.Trajectory != nil {
 		if err := s.Expect.Trajectory.check(); err != nil {
 			fail("%v", err)
@@ -209,6 +218,15 @@ func (s *Scenario) Score(answer, name string) ([]string, error) {
 		}
 	}
 	return missing, nil
+}
+
+// Diagnosis renders the ground-truth diagnosis for a run named name, or
+// "" when the scenario has none.
+func (s *Scenario) Diagnosis(name string) (string, error) {
+	if s.Expect.Diagnosis == "" {
+		return "", nil
+	}
+	return fill(s.Expect.Diagnosis, "diagnosis", s.data(name))
 }
 
 // RunName names a run's workload: the scenario's name and the time, to

@@ -1,0 +1,6 @@
+{
+  "scenario": "oom-killed",
+  "workload": "oom-killed-1101-120000",
+  "answer": "Deployment `oom-killed-1101-120000` in `triage-lab` keeps restarting. The `reports` container is OOMKilled right after it logs \"loading the daily index\": the Python process has a memory leak while building the index.\n\nThe application team should profile the index loading code and fix the leak, then roll out a new image.",
+  "want": "2-3"
+}

@@ -1,0 +1,6 @@
+{
+  "scenario": "oom-killed",
+  "workload": "oom-killed-1101-120000",
+  "answer": "**Root cause:** the container exits with code 1 because the required environment variable `DATABASE_URL` is not set in ConfigMap `oom-killed-1101-120000-config`.\n\n**Fix:** add `DATABASE_URL` to the ConfigMap and restart the deployment.",
+  "want": "1"
+}

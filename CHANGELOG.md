@@ -10,6 +10,16 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- An answer judge (#90): each scenario states its ground truth
+  (`expect.diagnosis`), and `shipmind scenario run -judge MODEL` has a
+  Claude model on Vertex AI grade the settled answer against it with
+  core-agent's response-quality rubric: a 1-5 score, whether the diagnosis
+  is correct, specific and actionable, the reasoning, tokens and cost, in
+  `result.json` (`judge`). Reported, never a failure; a judge that can't be
+  set up or fails is recorded and the run goes on. On the cluster the
+  project comes from the metadata server. `shipmind scenario judge` grades
+  stored answers the same way: archived `result.json` files, and the
+  hand-written answers with known flaws in `e2e/calibration/`.
 - Trajectory checks in `scenario.yaml` (`expect.trajectory`, #89): tools
   the agent must call (`a|b` for either) and must never call, and bounds on
   tool calls and model calls, checked against the session's tool calls and

@@ -1,0 +1,6 @@
+{
+  "scenario": "missing-env",
+  "workload": "missing-env-1101-120000",
+  "answer": "Deployment `missing-env-1101-120000` in `triage-lab` crash-loops: the logs say `DATABASE_URL is not set`. The deployment expects the database credentials from Secret `orders-db-credentials`, which does not exist in the namespace.\n\nCreate the Secret with the database URL and restart the deployment:\n```\nkubectl create secret generic orders-db-credentials -n triage-lab --from-literal=DATABASE_URL=<url>\nkubectl rollout restart deployment/missing-env-1101-120000 -n triage-lab\n```",
+  "want": "2-3"
+}

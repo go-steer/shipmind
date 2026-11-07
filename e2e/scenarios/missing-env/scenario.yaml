@@ -45,6 +45,20 @@ expect:
       - cancel_operation
     max_tool_calls: 10
     max_model_calls: 10
+  # The ground truth a judge model grades the answer against (#90),
+  # alongside the mentions above: reported in the result, not gated.
+  diagnosis: |
+    Deployment {{.Name}} in namespace {{.Namespace}} is in CrashLoopBackOff:
+    its checkout container exits with code 1 at startup, logging "FATAL:
+    DATABASE_URL is not set; cannot connect to the orders database". The
+    container takes its environment from ConfigMap {{.Name}}-config
+    (envFrom), which defines only PAYMENTS_URL and has no DATABASE_URL key.
+    Root cause: the DATABASE_URL entry is missing from that ConfigMap, a
+    configuration error, not a code, image, resource or node problem.
+    Fix: add DATABASE_URL, with the orders database's real connection string
+    from whoever owns that database, to ConfigMap {{.Name}}-config, then
+    restart the Deployment (the variable is read only at container start).
+    A good answer does not invent a value for DATABASE_URL.
 limits:
   # Break to incident, incident to answer, workload removed to suspend.
   incident: 10m

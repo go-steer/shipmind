@@ -57,6 +57,26 @@ func TestRepoScenarios(t *testing.T) {
 	}
 }
 
+// Every repo scenario states its ground truth for the judge (#90), naming
+// the run's own resources.
+func TestRepoDiagnoses(t *testing.T) {
+	for _, name := range []string{"missing-env", "oom-killed"} {
+		s, err := Load("../../e2e/scenarios/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := RunName(s.Name, t0)
+		d, err := s.Diagnosis(run)
+		if err != nil || !strings.Contains(d, "Deployment "+run+" in namespace triage-lab") || strings.Contains(d, "{{") {
+			t.Errorf("%s: diagnosis %q, %v", name, d, err)
+		}
+	}
+	s := &Scenario{Namespace: "lab"}
+	if d, err := s.Diagnosis("x"); d != "" || err != nil {
+		t.Errorf("no diagnosis: %q, %v", d, err)
+	}
+}
+
 func TestScore(t *testing.T) {
 	s, err := Load("../../e2e/scenarios/missing-env")
 	if err != nil {
@@ -104,6 +124,7 @@ func TestLoadErrors(t *testing.T) {
 		{"trajectory empty alternative", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    never_call: ['a|']", 1), "expect.trajectory"},
 		{"trajectory negative", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    max_tool_calls: -1", 1), "expect.trajectory"},
 		{"trajectory unknown key", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    must: [x]", 1), "must"},
+		{"diagnosis template", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  diagnosis: 'ConfigMap {{.Nope}}'", 1), "expect.diagnosis"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), tc.dir)
