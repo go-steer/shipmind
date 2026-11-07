@@ -204,11 +204,11 @@ components:
 
   - name: e2e-runner
     source: github.com/go-steer/shipmind
-    version: d695f90f6b68063995ae65150009192006229738
+    version: 5656dea26b19baced0abc14ab58dd430edab0f0a
     profiles: [substrate]
     images:
       - name: e2e-runner
-        ref: ghcr.io/go-steer/shipmind/e2e-runner:d695f90f6b68063995ae65150009192006229738@sha256:6d9f9ea82eab3b2f476abe0078b546a7d945ff9ac5d628dcc70f15acb8149bb6
+        ref: ghcr.io/go-steer/shipmind/e2e-runner:5656dea26b19baced0abc14ab58dd430edab0f0a@sha256:7bff049fa679a1c3c63436de907607f0888590a47f16d3eea772cff59fc1e193
     note: >-
       The end-to-end runner (images/e2e-runner: shipmind, the ax CLI,
       kubectl, the scenarios) at the commit in version, which the nightly
@@ -216,8 +216,9 @@ components:
       commit that touches its inputs; move this pin deliberately. This
       build reads core-agent's sessions as well as mast's (#68) and
       records each answer's model usage (#73); it carries the
-      oom-killed scenario (#79), can archive each run (#86), and checks
-      each run's trajectory (#94).
+      oom-killed scenario (#79), can archive each run (#86), checks
+      each run's trajectory (#94), and has a judge model grade each answer
+      (#99).
 
   - name: switchboard
     source: github.com/go-steer/switchboard

@@ -132,6 +132,13 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- The nightly scenarios run on e2e-runner 5656dea and grade each answer
+  with a judge (`-judge=claude-sonnet-5-5`, #90): the grade is in
+  `result.json` and the archive. The runner's workload identity needs
+  `roles/aiplatform.user` in the cluster's project, as the agents'
+  token-refresher has; until then the result records the judge's error
+  and the run is unaffected.
+
 - Substrate v1.0.0 (GA) and the ax fork at 7c50347 (ax-server and
   ax-runner), rebased onto upstream google/ax 241bc4d with Substrate
   v1.0.0. The runner's pass-through now sends the agent Host
