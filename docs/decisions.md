@@ -4,6 +4,29 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-07: The scenario judge is Claude Sonnet 5.5, on a fixed rubric
+
+Nightly scenario answers are graded by `claude-sonnet-5-5` on Vertex AI at
+high effort, against each scenario's `expect.diagnosis`, with core-agent's
+response-quality rubric copied in at ae922c2b (#90). The grade is reported,
+not gated, until there is a baseline.
+
+**Why:** a judge from another model family than the agent's (Gemini) can't
+favour its own answers. Before choosing, both Claude Sonnet 5.5 and Opus
+5.5 graded the 14 archived runs and 10 hand-written answers with known
+flaws (`e2e/calibration/`), twice each, with the rule set beforehand: take
+Sonnet if it does as well as Opus. Both put all 48 grades in the expected
+band and gave the same score both times; Sonnet costs about $0.006 a grade
+to Opus's $0.012. The rubric is copied rather than imported so a trend
+moves only when the agent does: changing the judge model or the rubric
+means re-grading the archive (#91) and a new decision here, not an upgrade.
+
+**Rejected:** Opus 5.5 (no better on this set, at twice the cost; worth
+re-running the calibration against when scenarios grow harder, #15);
+Gemini Pro (the agent's own family); importing core-agent's `Judge` (it
+sends a temperature, which Claude 5.5 models reject, and would move with
+core-agent releases).
+
 ## 2026-11-06: core-agent is the agent harness; mast is maintenance-only
 
 New agent work goes to core-agent only: specialists (deep dives, issues and

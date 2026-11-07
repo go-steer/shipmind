@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/go-steer/shipmind/internal/archive"
+	"github.com/go-steer/shipmind/internal/judge"
 	"github.com/go-steer/shipmind/internal/scenario"
 )
 
@@ -185,3 +186,174 @@ func TestScenarioCommand(t *testing.T) {
 type fakeArchiver struct{}
 
 func (fakeArchiver) Save(context.Context, string, map[string][]byte) error { return nil }
+
+// stubGrader grades every answer the same, or fails.
+type stubGrader struct {
+	score int
+	err   error
+}
+
+func (s stubGrader) Grade(_ context.Context, expected, answer string) (judge.Grade, error) {
+	g := judge.Grade{Model: "stub", Rubric: judge.RubricID, Score: s.score, CorrectDiagnosis: s.score >= 4, Reasoning: "graded " + answer[:min(len(answer), 12)]}
+	if s.err != nil {
+		g.Score, g.Error = 0, s.err.Error()
+	}
+	return g, s.err
+}
+
+func TestScenarioJudgeCommand(t *testing.T) {
+	oldJ, oldM := newJudge, metadataProject
+	t.Cleanup(func() { newJudge, metadataProject = oldJ, oldM })
+	var gotProject string
+	grader := stubGrader{score: 2}
+	newJudge = func(_ context.Context, model, project, region, effort string) (scenario.Grader, error) {
+		gotProject = project
+		return grader, nil
+	}
+	metadataProject = func(context.Context) string { return "" }
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	good := write("good.json", `{"scenario": "missing-env", "workload": "missing-env-1101-120000", "answer": "DATABASE_URL is missing", "want": "1-2"}`)
+	noScenario := write("bad.json", `{"answer": "x"}`)
+	unknown := write("unknown.json", `{"scenario": "nope", "workload": "nope-1", "answer": "x"}`)
+	scenarios := "../../e2e/scenarios"
+
+	for _, tc := range []struct {
+		name           string
+		args           []string
+		code           int
+		stdout, stderr string
+	}{
+		{"usage", []string{"scenario", "judge"}, 2, "", "usage:"},
+		{"no model", []string{"scenario", "judge", good}, 2, "", "usage:"},
+		{"no project", []string{"scenario", "judge", "-model", "m", good}, 2, "", "wants its Google Cloud project"},
+		{"graded", []string{"scenario", "judge", "-model", "m", "-project", "p", "-scenarios", scenarios, good}, 0, "good.json: 2/5 (want 1-2) correct=false", ""},
+		{"json", []string{"scenario", "judge", "-json", "-model", "m", "-project", "p", "-scenarios", scenarios, good}, 0, `"want":"1-2","model":"stub"`, ""},
+		{"bad files", []string{"scenario", "judge", "-model", "m", "-project", "p", "-scenarios", scenarios, noScenario, unknown, good}, 1, "3 graded", "want scenario and workload"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut strings.Builder
+			if code := run(tc.args, &out, &errOut); code != tc.code {
+				t.Fatalf("exit %d, want %d\nstdout %s\nstderr %s", code, tc.code, out.String(), errOut.String())
+			}
+			if !strings.Contains(out.String(), tc.stdout) || !strings.Contains(errOut.String(), tc.stderr) {
+				t.Errorf("stdout %q (want %q)\nstderr %q (want %q)", out.String(), tc.stdout, errOut.String(), tc.stderr)
+			}
+		})
+	}
+	if gotProject != "p" {
+		t.Errorf("project %q", gotProject)
+	}
+
+	// The project falls back to the machine's own.
+	metadataProject = func(context.Context) string { return "from-metadata" }
+	var out, errOut strings.Builder
+	if code := run([]string{"scenario", "judge", "-model", "m", "-scenarios", scenarios, good}, &out, &errOut); code != 0 || gotProject != "from-metadata" {
+		t.Errorf("exit %d, project %q, stderr %s", code, gotProject, errOut.String())
+	}
+
+	// A failed grade is printed and fails the command.
+	grader = stubGrader{err: errors.New("403 permission denied")}
+	out.Reset()
+	if code := run([]string{"scenario", "judge", "-model", "m", "-project", "p", "-scenarios", scenarios, good}, &out, &errOut); code != 1 || !strings.Contains(out.String(), "403 permission denied") {
+		t.Errorf("exit %d, stdout %s", code, out.String())
+	}
+}
+
+// A judge that can't be set up is reported and the run goes ahead.
+func TestScenarioRunBrokenJudge(t *testing.T) {
+	oldK, oldT, oldA, oldJ, oldM := newScenarioKube, newScenarioTasks, newScenarioAgent, newJudge, metadataProject
+	t.Cleanup(func() {
+		newScenarioKube, newScenarioTasks, newScenarioAgent, newJudge, metadataProject = oldK, oldT, oldA, oldJ, oldM
+	})
+	fake := scenarioFake{token: "tok"}
+	newScenarioKube = func(string) scenarioKube { return fake }
+	newScenarioTasks = func(scenario.Ax) scenario.Tasks { return fake }
+	newScenarioAgent = func(r *scenario.Router) scenario.Agent { return r }
+	metadataProject = func(context.Context) string { return "" }
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+	called := false
+	newJudge = func(context.Context, string, string, string, string) (scenario.Grader, error) {
+		called = true
+		return nil, errors.New("unreachable")
+	}
+	dir := filepath.Join(t.TempDir(), "quick")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"scenario.yaml": "namespace: lab\nworkload: w.yaml\nexpect:\n  mentions: [X]\n  diagnosis: d\nlimits:\n  incident: 1ns\n  diagnose: 1ns\n  suspend: 1ns\n",
+		"w.yaml":        "kind: ConfigMap\nmetadata:\n  name: {{.Name}}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out, errOut strings.Builder
+	code := run([]string{"scenario", "run", "-atespace", "a", "-context", "c", "-router", "http://r", "-judge", "claude-sonnet-5-5", dir}, &out, &errOut)
+	// The run itself times out at once (exit 1), as it would without a
+	// judge: the missing project is reported, not fatal.
+	if code != 1 || called || !strings.Contains(errOut.String(), "judge: a judge model wants its Google Cloud project") || !strings.Contains(out.String(), `"scenario": "quick"`) {
+		t.Errorf("exit %d, newJudge called %v\nstdout %s\nstderr %s", code, called, out.String(), errOut.String())
+	}
+}
+
+func TestScenarioJudgeEdges(t *testing.T) {
+	oldM := metadataProject
+	t.Cleanup(func() { metadataProject = oldM })
+	metadataProject = func(context.Context) string { return "" }
+
+	// A scenario without a diagnosis can't be graded.
+	root := t.TempDir()
+	sc := filepath.Join(root, "plain")
+	if err := os.MkdirAll(sc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"scenario.yaml": "namespace: lab\nworkload: w.yaml\nexpect:\n  mentions: [X]\nlimits:\n  incident: 1m\n  diagnose: 1m\n  suspend: 1m\n",
+		"w.yaml":        "kind: ConfigMap\n",
+		"answer.json":   `{"scenario": "plain", "workload": "plain-1", "answer": "x"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(sc, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		code   int
+		stderr string
+	}{
+		{"help", []string{"scenario", "judge", "-h"}, 0, ""},
+		{"bad flag", []string{"scenario", "judge", "-bogus"}, 2, "flag provided but not defined"},
+		{"missing file", []string{"scenario", "judge", "-model", "m", "-project", "p", filepath.Join(root, "nope.json")}, 1, "no such file"},
+		// The real constructor checks the effort before it looks for
+		// credentials.
+		{"bad effort", []string{"scenario", "judge", "-model", "m", "-project", "p", "-effort", "extreme", filepath.Join(sc, "answer.json")}, 2, "effort"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut strings.Builder
+			if code := run(tc.args, &out, &errOut); code != tc.code || !strings.Contains(errOut.String(), tc.stderr) {
+				t.Errorf("exit %d (want %d), stderr %q (want %q)", code, tc.code, errOut.String(), tc.stderr)
+			}
+		})
+	}
+
+	oldJ := newJudge
+	t.Cleanup(func() { newJudge = oldJ })
+	newJudge = func(context.Context, string, string, string, string) (scenario.Grader, error) {
+		return stubGrader{score: 3}, nil
+	}
+	var out, errOut strings.Builder
+	if code := run([]string{"scenario", "judge", "-model", "m", "-project", "p", "-scenarios", root, filepath.Join(sc, "answer.json")}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "no expect.diagnosis") {
+		t.Errorf("exit %d, stderr %s", code, errOut.String())
+	}
+}

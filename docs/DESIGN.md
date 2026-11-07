@@ -317,13 +317,25 @@ handling looks like, and every run is checked against it (epic #93):
   it gets a trajectory; the incident profile triages in its main agent.
 - **The lifecycle**: the incident opens, the task suspends once the workload
   is gone, and wakes with the session in memory.
+- **The judge** (`expect.diagnosis`, #90): with `-judge MODEL`, a model on
+  Vertex AI grades the settled answer against the scenario's ground-truth
+  diagnosis with core-agent's response-quality rubric (a 1-5 score; whether
+  the diagnosis is correct, specific and actionable; the reasoning), copied
+  into `internal/judge` rather than imported so a scenario's scores stay
+  comparable over time. The grade is recorded in the result, never a
+  failure, until there is a baseline to gate on; a judge that can't be set
+  up or a call that fails is recorded too, and the run goes on. The judge is
+  Claude, a different model family from the agent's Gemini, so no model
+  grades its own answers; the project comes from the metadata server on the
+  cluster. `shipmind scenario judge` grades stored answers (an archived
+  `result.json`, or a hand-written answer) the same way: it is how a judge
+  is calibrated (`e2e/calibration/`) and the start of re-grading (#91).
 
 With `-archive`, the run's record (event stream, usage, result, metadata)
 goes to `gs://shipmind-scenario-runs/<env>/<scenario>/<date>/<workload>/`,
-`meta.json` last (#88). Next: an LLM judge scoring the answer against a
-ground-truth diagnosis (`expect.diagnosis`, #90), and a re-grade command
-that applies today's checks to archived runs and reports per agent version
-and model (#91). The trajectory check is one function used by a run and by
+`meta.json` last (#88). Next: a re-grade command that applies today's
+checks to archived runs and reports per agent version and model (#91). The
+trajectory check and the judge are each one function used by a run and by
 a re-grade alike.
 
 Nothing long-running runs on a workstation; scenarios run in CI or as

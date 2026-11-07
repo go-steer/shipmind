@@ -48,6 +48,19 @@ expect:
       - cancel_operation
     max_tool_calls: 10
     max_model_calls: 10
+  # The ground truth a judge model grades the answer against (#90),
+  # alongside the mentions above: reported in the result, not gated.
+  diagnosis: |
+    Deployment {{.Name}} in namespace {{.Namespace}} is crash-looping: its
+    reports container is killed with reason OOMKilled (exit code 137) during
+    startup, right after logging "loading the daily index", which allocates
+    about 200 MiB. The container's memory limit is 64Mi (request 32Mi), so the
+    kernel kills it every time it starts.
+    Root cause: the memory limit is far below what the workload needs at
+    startup, not a node memory shortage, a code bug or an image problem.
+    Fix: raise resources.limits.memory on the reports container to above the
+    index's size (for example 256Mi, raising the request to match), or make
+    the process load less; then let the Deployment roll out.
 limits:
   # Break to incident, incident to answer, workload removed to suspend.
   incident: 10m

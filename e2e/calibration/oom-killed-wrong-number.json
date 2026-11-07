@@ -1,0 +1,6 @@
+{
+  "scenario": "oom-killed",
+  "workload": "oom-killed-1101-120000",
+  "answer": "**Root cause:** Deployment `oom-killed-1101-120000` in `triage-lab` is OOMKilled (exit 137) at startup. The `reports` container's memory limit is 128Mi, and loading the daily index needs more than that.\n\n**Fix:** raise `resources.limits.memory` on the `reports` container to 512Mi:\n```\nkubectl set resources deployment/oom-killed-1101-120000 -n triage-lab -c reports --limits=memory=512Mi\n```",
+  "want": "3-4"
+}

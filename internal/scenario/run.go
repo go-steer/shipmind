@@ -26,6 +26,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/go-steer/shipmind/internal/judge"
 )
 
 // Kube applies and deletes manifests (cluster.Kube satisfies it).
@@ -145,6 +147,10 @@ type Result struct {
 	// cached share, cost per call. Absent when the read failed, which
 	// doesn't fail the run.
 	Usage *Usage `json:"usage,omitempty"`
+	// Judge is a model's grade of the answer against the scenario's
+	// expect.diagnosis (#90), when the run had a judge: reported, never a
+	// failure, until there is a baseline to gate on.
+	Judge *judge.Grade `json:"judge,omitempty"`
 
 	Correct bool `json:"correct"`
 	// Suspended: the task suspended once the workload was gone.
@@ -183,7 +189,21 @@ type Options struct {
 	// under <scenario>/<date>/<workload>/. A failed save is logged and
 	// doesn't fail the run.
 	Archive Archiver
+	// Judge, when set, grades a settled answer against the scenario's
+	// expect.diagnosis (#90). Its grade goes in the result; neither a low
+	// score nor a failed call fails the run.
+	Judge Grader
 }
+
+// Grader grades an answer against a ground-truth diagnosis (judge.Judge
+// is one). It returns a Grade naming the grader even on an error.
+type Grader interface {
+	Grade(ctx context.Context, expected, answer string) (judge.Grade, error)
+}
+
+// judgeTimeout bounds grading: one model call, at most a few minutes at
+// high effort.
+const judgeTimeout = 3 * time.Minute
 
 // Archiver stores a run's files under dir.
 type Archiver interface {
@@ -509,6 +529,7 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 			r.Usage.ModelCalls, r.Usage.InputTokens, cached, r.Usage.OutputTokens, r.Usage.ThinkingTokens)
 	}
 	checkTrajectory(tr)
+	gradeAnswer(ctx, s, name, r, &o)
 	events := len(tr.Events)
 
 	if o.Keep {
@@ -564,6 +585,33 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		o.Log("woke with the session in memory")
 	}
 	return r, nil
+}
+
+// gradeAnswer has the run's judge, if any, grade its settled answer
+// against the scenario's diagnosis, and records the grade.
+func gradeAnswer(ctx context.Context, s *Scenario, name string, r *Result, o *Options) {
+	if o.Judge == nil {
+		return
+	}
+	expected, err := s.Diagnosis(name)
+	switch {
+	case err != nil:
+		o.Log("judge: not grading: expect.diagnosis: %v", err)
+		return
+	case expected == "":
+		o.Log("judge: not grading: the scenario has no expect.diagnosis")
+		return
+	}
+	jctx, cancel := context.WithTimeout(ctx, judgeTimeout)
+	defer cancel()
+	g, err := o.Judge.Grade(jctx, expected, r.Answer)
+	r.Judge = &g
+	if err != nil {
+		o.Log("judge: %v", err)
+		return
+	}
+	o.Log("judge: %s scored %d/5 (correct diagnosis %v, specific %v, actionable %v), $%.3f",
+		g.Model, g.Score, g.CorrectDiagnosis, g.Specific, g.Actionable, g.CostUSD)
 }
 
 // incidentTask matches the tasks lookout opens per incident:

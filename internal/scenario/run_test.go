@@ -26,6 +26,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-steer/shipmind/internal/judge"
 )
 
 var t0 = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
@@ -641,5 +643,77 @@ func TestRunTrajectoryBounds(t *testing.T) {
 	r = run(t, w, s, o)
 	if r.Pass || r.Trajectory == nil || len(r.Trajectory.ToolCalls) != 2 {
 		t.Errorf("unsettled run: pass %v, trajectory %+v, failures %v", r.Pass, r.Trajectory, r.Failures)
+	}
+}
+
+// fakeGrader returns grade (or err), and keeps what it was asked to grade.
+type fakeGrader struct {
+	grade              judge.Grade
+	err                error
+	expected, answered string
+	calls              int
+}
+
+func (f *fakeGrader) Grade(_ context.Context, expected, answer string) (judge.Grade, error) {
+	f.calls++
+	f.expected, f.answered = expected, answer
+	g := f.grade
+	if f.err != nil {
+		g.Error = f.err.Error()
+	}
+	return g, f.err
+}
+
+// A judge grades the settled answer against the run's own diagnosis and
+// its grade goes in the result; a low score or a failed call doesn't fail
+// the run (#90).
+func TestRunJudge(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		g    *fakeGrader
+		log  string
+	}{
+		{"graded", &fakeGrader{grade: judge.Grade{Model: "m", Score: 5, CorrectDiagnosis: true, CostUSD: 0.006}}, "judge: m scored 5/5"},
+		{"low score", &fakeGrader{grade: judge.Grade{Model: "m", Score: 1}}, "judge: m scored 1/5"},
+		{"judge failed", &fakeGrader{grade: judge.Grade{Model: "m"}, err: errors.New("403 permission denied")}, "judge: 403 permission denied"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, s, o := newWorld(t)
+			var logs []string
+			o.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+			o.Judge = tc.g
+			r := run(t, w, s, o)
+			if !r.Pass || r.Judge == nil || r.Judge.Model != "m" || tc.g.calls != 1 {
+				t.Fatalf("pass %v, judge %+v, %d calls, failures %v", r.Pass, r.Judge, tc.g.calls, r.Failures)
+			}
+			if tc.g.answered != w.answer || !strings.Contains(tc.g.expected, "Deployment "+w.name+" in namespace triage-lab") {
+				t.Errorf("graded %q against %q", tc.g.answered, tc.g.expected)
+			}
+			if !slices.ContainsFunc(logs, func(l string) bool { return strings.HasPrefix(l, tc.log) }) {
+				t.Errorf("logs %v, want %q", logs, tc.log)
+			}
+			if (tc.g.err != nil) != (r.Judge.Error != "") {
+				t.Errorf("judge error recorded as %q", r.Judge.Error)
+			}
+		})
+	}
+}
+
+// Without a settled answer, or a scenario without a diagnosis, nothing is
+// graded.
+func TestRunJudgeSkips(t *testing.T) {
+	w, s, o := newWorld(t)
+	w.neverIdle = true
+	g := &fakeGrader{}
+	o.Judge = g
+	if r := run(t, w, s, o); r.Judge != nil || g.calls != 0 {
+		t.Errorf("unsettled answer graded: %+v", r.Judge)
+	}
+
+	w, s, o = newWorld(t)
+	s.Expect.Diagnosis = ""
+	o.Judge = g
+	if r := run(t, w, s, o); r.Judge != nil || g.calls != 0 || !r.Pass {
+		t.Errorf("graded without a diagnosis: %+v", r.Judge)
 	}
 }

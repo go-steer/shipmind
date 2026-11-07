@@ -23,6 +23,8 @@
 //	shipmind slack-app [-root .] <env-dir>              print the environment's Slack app manifest
 //	shipmind scenario run -atespace A (-context C -router URL | -in-cluster) <scenario-dir>
 //	                                                    run an end-to-end scenario against a deployment
+//	shipmind scenario judge -model M -project P <result.json>...
+//	                                                    grade stored answers with a judge model
 //
 // An environment directory is an overlay: a kustomization.yaml that pins
 // a shipmind profile, and a shipmind.yaml (internal/env). The deploy
@@ -89,7 +91,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "slack-app":
 		return runSlackApp(args, stdout, stderr)
 	case "scenario":
-		return runScenario(args, stdout, stderr)
+		return runScenarioCmd(args, stdout, stderr)
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0

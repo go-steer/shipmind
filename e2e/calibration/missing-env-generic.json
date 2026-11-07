@@ -1,0 +1,6 @@
+{
+  "scenario": "missing-env",
+  "workload": "missing-env-1101-120000",
+  "answer": "The pod is crashing on startup and restarting repeatedly (CrashLoopBackOff). This is usually caused by a configuration problem or a bug in the application. Check the pod's logs and events, review recent changes to the deployment, and restart it once the problem is fixed.",
+  "want": "1-2"
+}
