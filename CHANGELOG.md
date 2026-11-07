@@ -122,6 +122,14 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Substrate v1.0.0 (GA) and the ax fork at 7c50347 (ax-server and
+  ax-runner), rebased onto upstream google/ax 241bc4d with Substrate
+  v1.0.0. The runner's pass-through now sends the agent Host
+  127.0.0.1:<port>, so core-agent's `attach.allowed_hosts` router entries
+  are no longer needed (kept for now, harmless); its workspace setup no
+  longer re-runs after a cold resume. ax.proto is unchanged, so lookout,
+  switchboard and substrate-scope stay. Clusters move by reinstall
+  (deploy repo runbook), stage first.
 - core-agent v3.1.0 (GA) in images/agent: rc.2 plus its changelog and
   core-models v0.15.2.
 - core-agent v3.1.0-rc.2 in images/agent. Its importer now gives each
