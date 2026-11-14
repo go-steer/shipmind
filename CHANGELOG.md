@@ -132,6 +132,8 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Go 1.26.11 (`go.mod`), for GO-2026-6859 in `net/http`.
+
 - switchboard answers end with a usage footer (model, tokens, cost and
   latency of the turn) and render as Slack Block Kit (headers, lists,
   tables): `show_usage` and `slack_rich_blocks` in the switchboard config.
