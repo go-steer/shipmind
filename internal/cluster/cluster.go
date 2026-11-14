@@ -381,14 +381,22 @@ func (k Kube) DeleteWorkerPod(ctx context.Context, ip string) (string, error) {
 	if net.ParseIP(ip) == nil {
 		return "", fmt.Errorf("worker pod IP %q: not an IP", ip)
 	}
+	// A live worker only: Running, and not already terminating, so a stale
+	// IP can't take out a pod that has since been given it.
 	out, _, err := k.run(ctx, k.kubectl(), nil, "get", "pods", "-n", WorkersNamespace,
-		"--field-selector", "status.podIP="+ip, "-o", "jsonpath={.items[*].metadata.name}")
+		"--field-selector", "status.podIP="+ip+",status.phase=Running",
+		"-o", `jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.deletionTimestamp}{"\n"}{end}`)
 	if err != nil {
 		return "", err
 	}
-	names := strings.Fields(string(out))
+	var names []string
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if f := strings.Fields(l); len(f) == 1 {
+			names = append(names, f[0])
+		}
+	}
 	if len(names) != 1 {
-		return "", fmt.Errorf("want one pod in %s with IP %s, found %d", WorkersNamespace, ip, len(names))
+		return "", fmt.Errorf("want one live pod in %s with IP %s, found %d", WorkersNamespace, ip, len(names))
 	}
 	if _, _, err := k.run(ctx, k.kubectl(), nil, "delete", "pod", "-n", WorkersNamespace, names[0], "--wait=false"); err != nil {
 		return "", err

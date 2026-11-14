@@ -1,0 +1,50 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The nightly end-to-end scenario for the substrate profile. Not part of
+# the profile itself: an environment opts in by referencing this
+# directory, at the same shipmind commit as its profile, and setting the
+# agents' atespace. The scenario's namespace (triage-lab) must exist: it
+# is the cluster's lab namespace, which lookout watches.
+# The worker-drain scenario's right (#105) to delete the worker pod hosting
+# a task's actor, as a node drain does: pods in the workers' namespace only,
+# found by IP and deleted with their default grace period.
+#
+# Opt-in: deleting a worker pod drains every actor on it, so an environment
+# takes this only once its ax-server suspends a draining worker's actors
+# (mastersingh24/ax#1). The runner also refuses to drain a worker that hosts
+# another task in its atespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shipmind-e2e-drain
+  namespace: ax-workers
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shipmind-e2e-drain
+  namespace: ax-workers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: shipmind-e2e-drain
+subjects:
+  - kind: ServiceAccount
+    name: shipmind-e2e
+    namespace: shipmind-e2e

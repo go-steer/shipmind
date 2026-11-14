@@ -14,8 +14,10 @@ release is a tested set of component versions (see "Cutting a release" in
   pod hosting the awake task's actor is deleted, as a node drain does, and
   the task must suspend with reason `WorkerDraining` and wake with its
   session in memory. It fails until ax-server suspends a draining worker's
-  actors (mastersingh24/ax#1), so it has no CronJob yet. The runner may now
-  get, list and delete pods in `ax-workers`.
+  actors (mastersingh24/ax#1), so it has no CronJob yet. It won't drain a
+  worker that hosts another task in its atespace. The right to list and
+  delete pods in `ax-workers` is opt-in: an overlay adds
+  `deploy/e2e/substrate/drain`.
 - An answer judge (#90): each scenario states its ground truth
   (`expect.diagnosis`), and `shipmind scenario run -judge MODEL` has a
   Claude model on Vertex AI grade the settled answer against it with

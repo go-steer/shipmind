@@ -18,7 +18,8 @@
 # reads the agent's answer through Substrate's router, and deletes its
 # workload and task afterwards. Its permissions are exactly that: manage
 # Deployments and ConfigMaps in triage-lab, and read the agent's attach
-# token. The ax CLI reaches ax-server over the network; ax has no
+# token. The worker-drain scenario's right to delete worker pods is not
+# here: an overlay opts in with deploy/e2e/substrate/drain. The ax CLI reaches ax-server over the network; ax has no
 # per-caller authorization of its own.
 apiVersion: v1
 kind: Namespace
@@ -78,33 +79,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: shipmind-e2e-agent-token
-subjects:
-  - kind: ServiceAccount
-    name: shipmind-e2e
-    namespace: shipmind-e2e
----
-# The worker-drain scenario (#105) deletes the worker pod hosting a task's
-# actor, as a node drain does: pods in the workers' namespace only, found by
-# IP and deleted with their default grace period.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: shipmind-e2e-drain
-  namespace: ax-workers
-rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: shipmind-e2e-drain
-  namespace: ax-workers
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: shipmind-e2e-drain
 subjects:
   - kind: ServiceAccount
     name: shipmind-e2e

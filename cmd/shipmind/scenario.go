@@ -45,6 +45,13 @@ const (
 	inClusterRouterTLS = "https://atenet-router.ate-system.svc.cluster.local"
 )
 
+// What a drain scenario (#105) needs from the real ax CLI and kubectl,
+// checked here rather than on a live cluster.
+var (
+	_ scenario.TaskInspector = scenario.Ax{}
+	_ scenario.WorkerPods    = cluster.Kube{}
+)
+
 // scenarioKube is what a run needs from kubectl.
 type scenarioKube interface {
 	scenario.Kube
