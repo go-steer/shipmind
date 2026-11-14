@@ -132,6 +132,13 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Go 1.26.11 (`go.mod`), for GO-2026-6859 in `net/http`.
+
+- switchboard answers end with a usage footer (model, tokens, cost and
+  latency of the turn) and render as Slack Block Kit (headers, lists,
+  tables): `show_usage` and `slack_rich_blocks` in the switchboard config.
+  The footer shows the turn's spend to everyone in the channel.
+
 - The nightly scenarios run on e2e-runner 5656dea and grade each answer
   with a judge (`-judge=claude-sonnet-5-5`, #90): the grade is in
   `result.json` and the archive. The runner's workload identity needs
