@@ -140,6 +140,14 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- ax-server and ax-runner at mastersingh24/ax d03b3e0 (ax#1): ax-server
+  suspends a draining worker's actors synchronously (task AutoSuspended
+  `WorkerDraining`) and reverts an actor lost with its worker
+  (`RevertedAfterWorkerLoss`) instead of leaving the task Failed; the runner
+  keeps the agent alive through a first SIGTERM so the suspend snapshots it.
+  The agent image is rebuilt with that runner, and the e2e-runner (c3f78e2)
+  carries the worker-drain scenario. Stage first (#105).
+
 - Go 1.26.11 (`go.mod`), for GO-2026-6859 in `net/http`.
 
 - switchboard answers end with a usage footer (model, tokens, cost and
