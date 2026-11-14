@@ -124,6 +124,8 @@ func TestLoadErrors(t *testing.T) {
 		{"trajectory empty alternative", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    never_call: ['a|']", 1), "expect.trajectory"},
 		{"trajectory negative", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    max_tool_calls: -1", 1), "expect.trajectory"},
 		{"trajectory unknown key", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  trajectory:\n    must: [x]", 1), "must"},
+		{"drain without reason", "ok", good + "drain:\n  within: 1m\n", "drain: want a reason"},
+		{"drain without within", "ok", good + "drain:\n  reason: WorkerDraining\n", "drain: want a reason"},
 		{"diagnosis template", "ok", strings.Replace(good, "mentions: [X]", "mentions: [X]\n  diagnosis: 'ConfigMap {{.Nope}}'", 1), "expect.diagnosis"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -53,7 +53,21 @@ type Scenario struct {
 	// Workload is the template file, relative to Dir.
 	Workload string `yaml:"workload"`
 	Expect   Expect `yaml:"expect"`
-	Limits   Limits `yaml:"limits"`
+	// Drain, when set, replaces the lifecycle's idle suspend with a worker
+	// drain (#105): once the answer has settled and the workload is gone,
+	// the worker pod hosting the task's actor is deleted, as a node drain
+	// does, and the task must suspend for that reason.
+	Drain  *Drain `yaml:"drain"`
+	Limits Limits `yaml:"limits"`
+}
+
+// Drain is what a worker drain must do to a running task.
+type Drain struct {
+	// Reason is the task's AutoSuspended condition reason a drain must
+	// leave (ax's WorkerDraining).
+	Reason string `yaml:"reason"`
+	// Within bounds the wait from the pod's deletion to the suspend.
+	Within time.Duration `yaml:"within"`
 }
 
 // Expect is what a correct handling of the scenario looks like.
@@ -160,6 +174,9 @@ func Load(dir string) (*Scenario, error) {
 				fail("expect.trajectory: %q isn't a tool in %s", name, filepath.Join(filepath.Dir(dir), "tools.yaml"))
 			}
 		}
+	}
+	if s.Drain != nil && (strings.TrimSpace(s.Drain.Reason) == "" || s.Drain.Within <= 0) {
+		fail("drain: want a reason and a positive within")
 	}
 	if s.Limits.Incident <= 0 || s.Limits.Diagnose <= 0 || s.Limits.Suspend <= 0 {
 		fail("limits: want incident, diagnose and suspend, all positive")

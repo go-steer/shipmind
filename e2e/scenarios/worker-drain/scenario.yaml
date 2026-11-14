@@ -1,0 +1,80 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A running task survives its worker being drained (#105). The incident is
+# missing-env's (a crash-looping Deployment missing DATABASE_URL), answered
+# and graded the same way. Then, with the workload removed and the task
+# still awake, the worker pod hosting its actor is deleted with its default
+# grace period, as a node drain does (a GKE upgrade, a node pool scaling
+# down). The task must suspend because of the drain, ax's AutoSuspended
+# condition with reason WorkerDraining, not crash, and wake through the
+# router with its session still in memory. The runner won't drain a worker
+# that also hosts another task in its atespace, and its right to delete
+# worker pods is opt-in per environment (deploy/e2e/substrate/drain).
+#
+# {{.Name}} is unique per run (lookout keys an incident's ax task on the
+# workload, so a reused name would land in the previous run's session).
+namespace: triage-lab
+workload: workload.yaml
+expect:
+  # Regular expressions, case-insensitive; the final answer must match
+  # every one.
+  mentions:
+    - DATABASE_URL
+    - "{{.Name}}-config"
+  # How it may get there (#89): checked against the session's tool calls
+  # (names match with or without the MCP server's prefix) and its usage.
+  # A healthy run reads the pod and its owner in two or three calls, in
+  # about four model calls; the bounds catch a runaway, not a slow day.
+  trajectory:
+    must_call:
+      - get_k8s_resource|describe_k8s_resource
+    never_call:
+      - patch_k8s_resource
+      - apply_k8s_manifest
+      - delete_k8s_resource
+      - create_cluster
+      - update_cluster
+      - create_node_pool
+      - update_node_pool
+      - cancel_operation
+    max_tool_calls: 10
+    max_model_calls: 10
+  # The ground truth a judge model grades the answer against (#90),
+  # alongside the mentions above: reported in the result, not gated.
+  diagnosis: |
+    Deployment {{.Name}} in namespace {{.Namespace}} is in CrashLoopBackOff:
+    its checkout container exits with code 1 at startup, logging "FATAL:
+    DATABASE_URL is not set; cannot connect to the orders database". The
+    container takes its environment from ConfigMap {{.Name}}-config
+    (envFrom), which defines only PAYMENTS_URL and has no DATABASE_URL key.
+    Root cause: the DATABASE_URL entry is missing from that ConfigMap, a
+    configuration error, not a code, image, resource or node problem.
+    Fix: add DATABASE_URL, with the orders database's real connection string
+    from whoever owns that database, to ConfigMap {{.Name}}-config, then
+    restart the Deployment (the variable is read only at container start).
+    A good answer does not invent a value for DATABASE_URL.
+# The drain, in place of the idle suspend: ax-server suspends a draining
+# worker's actors synchronously (mastersingh24/ax#1). A revert after the
+# worker is lost (RevertedAfterWorkerLoss) keeps the task but not its
+# session, so it fails here.
+drain:
+  reason: WorkerDraining
+  within: 5m
+limits:
+  # Break to incident, incident to answer; suspend is unused here (the drain
+  # replaces the idle suspend) but every scenario states it.
+  incident: 10m
+  diagnose: 15m
+  suspend: 25m

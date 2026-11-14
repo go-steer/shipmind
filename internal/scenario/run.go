@@ -27,6 +27,8 @@ import (
 	"strings"
 	"time"
 
+	"go.yaml.in/yaml/v3"
+
 	"github.com/go-steer/shipmind/internal/judge"
 )
 
@@ -115,6 +117,64 @@ func ParseTasks(out string) (map[string]string, error) {
 	return tasks, nil
 }
 
+// TaskWorkers implements TaskInspector from `ax get tasks`' WORKER-IP column.
+func (a Ax) TaskWorkers(ctx context.Context) (map[string]string, error) {
+	out, err := a.run(ctx, "get", "tasks")
+	if err != nil {
+		return nil, err
+	}
+	return parseTaskWorkers(out)
+}
+
+func parseTaskWorkers(out string) (map[string]string, error) {
+	workers := map[string]string{}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
+		return workers, nil
+	}
+	header := strings.Fields(lines[0])
+	name, ip := slices.Index(header, "NAME"), slices.Index(header, "WORKER-IP")
+	if name < 0 || ip < 0 {
+		return nil, fmt.Errorf("ax get tasks: no NAME and WORKER-IP columns in %q", lines[0])
+	}
+	for _, l := range lines[1:] {
+		f := strings.Fields(l)
+		if len(f) > max(name, ip) && f[ip] != "<none>" {
+			workers[f[name]] = f[ip]
+		}
+	}
+	return workers, nil
+}
+
+// TaskConditions implements TaskInspector from `ax get task -o yaml`.
+func (a Ax) TaskConditions(ctx context.Context, task string) (map[string]Condition, error) {
+	// ax prints a task as YAML.
+	out, err := a.run(ctx, "get", "task", task)
+	if err != nil {
+		return nil, err
+	}
+	return parseTaskConditions(out)
+}
+
+func parseTaskConditions(out string) (map[string]Condition, error) {
+	var doc struct {
+		Status struct {
+			Conditions []struct {
+				Type, Status, Reason, Message string
+				UpdateTime                    time.Time `yaml:"updateTime"`
+			} `yaml:"conditions"`
+		} `yaml:"status"`
+	}
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		return nil, fmt.Errorf("ax get task: %w", err)
+	}
+	conds := map[string]Condition{}
+	for _, c := range doc.Status.Conditions {
+		conds[c.Type] = Condition{Status: c.Status, Reason: c.Reason, Message: c.Message, Updated: c.UpdateTime}
+	}
+	return conds, nil
+}
+
 // DeleteTask implements Tasks.
 func (a Ax) DeleteTask(ctx context.Context, name string) error {
 	_, err := a.run(ctx, "delete", "task", name)
@@ -147,6 +207,9 @@ type Result struct {
 	// cached share, cost per call. Absent when the read failed, which
 	// doesn't fail the run.
 	Usage *Usage `json:"usage,omitempty"`
+	// Drain is what a worker drain did to the task, for a scenario with a
+	// drain block (#105).
+	Drain *DrainResult `json:"drain,omitempty"`
 	// Judge is a model's grade of the answer against the scenario's
 	// expect.diagnosis (#90), when the run had a judge: reported, never a
 	// failure, until there is a baseline to gate on.
@@ -170,6 +233,41 @@ type TrajectoryResult struct {
 	ModelCalls int      `json:"model_calls,omitempty"`
 	Failures   []string `json:"failures,omitempty"`
 	Notes      []string `json:"notes,omitempty"`
+}
+
+// DrainResult is a worker drain's effect on the task.
+type DrainResult struct {
+	// WorkerPod is the pod deleted, the one hosting the task's actor.
+	WorkerPod string `json:"worker_pod,omitempty"`
+	// Reason and Message are the task's AutoSuspended condition after it.
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+	// After is the time from the pod's deletion to the suspend.
+	After string `json:"after,omitempty"`
+}
+
+// Condition is one of a task's status conditions.
+type Condition struct {
+	Status, Reason, Message string
+	// Updated is when ax last wrote it.
+	Updated time.Time
+}
+
+// TaskInspector reads where a task runs and its conditions (Ax is one); a
+// drain scenario needs it.
+type TaskInspector interface {
+	// TaskWorkers maps each task on a worker to that worker's IP; a task
+	// with none (suspended, or not yet placed) is left out.
+	TaskWorkers(ctx context.Context) (map[string]string, error)
+	// TaskConditions are the task's conditions by type.
+	TaskConditions(ctx context.Context, task string) (map[string]Condition, error)
+}
+
+// WorkerPods deletes the worker pod with an IP (cluster.Kube is one).
+type WorkerPods interface {
+	// DeleteWorkerPod deletes the pod with podIP ip in the workers'
+	// namespace, with its default grace period, and names it.
+	DeleteWorkerPod(ctx context.Context, ip string) (string, error)
 }
 
 // Options control Run.
@@ -543,23 +641,30 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	removeWorkload()
 	removedAt := o.Now()
 	gradeAnswer(ctx, s, name, r, &o)
-	werr = until(ctx, &o, s.Limits.Suspend, func(ctx context.Context) (bool, error) {
-		now, err := tasks.Tasks(ctx)
-		if err != nil {
-			return false, nil // ax unreachable for a moment: try again
+	if s.Drain != nil {
+		// 3'. A worker drain, in place of the idle suspend (#105).
+		if ok, err := drainWorker(ctx, s, k, tasks, r, &o); !ok || err != nil {
+			return r, err
 		}
-		return now[r.Task] == "Suspended", nil
-	})
-	switch {
-	case errors.Is(werr, errTimeout):
-		failf("task %s did not suspend within %s of the workload's removal", r.Task, s.Limits.Suspend)
-		return r, nil
-	case werr != nil:
-		return r, werr
+	} else {
+		werr = until(ctx, &o, s.Limits.Suspend, func(ctx context.Context) (bool, error) {
+			now, err := tasks.Tasks(ctx)
+			if err != nil {
+				return false, nil // ax unreachable for a moment: try again
+			}
+			return now[r.Task] == "Suspended", nil
+		})
+		switch {
+		case errors.Is(werr, errTimeout):
+			failf("task %s did not suspend within %s of the workload's removal", r.Task, s.Limits.Suspend)
+			return r, nil
+		case werr != nil:
+			return r, werr
+		}
+		r.Suspended = true
+		r.SuspendAfter = o.Now().Sub(removedAt).Round(time.Second).String()
+		o.Log("suspended after %s", r.SuspendAfter)
 	}
-	r.Suspended = true
-	r.SuspendAfter = o.Now().Sub(removedAt).Round(time.Second).String()
-	o.Log("suspended after %s", r.SuspendAfter)
 
 	// 4. Wake it through the router. The agent lists a session in its
 	// memory as "active" (a restarted mast lists none until one is used;
@@ -588,6 +693,109 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		o.Log("woke with the session in memory")
 	}
 	return r, nil
+}
+
+// revertedAfterWorkerLoss is ax's AutoSuspended reason for an actor it
+// reverted to its last snapshot after its worker went away: the task
+// survives, its session doesn't.
+const revertedAfterWorkerLoss = "RevertedAfterWorkerLoss"
+
+// drainWorker deletes the worker pod hosting the task's actor, as a node
+// drain does, and waits for the task to suspend for the scenario's reason.
+// It reports whether the run should go on to the wake; a failure is
+// recorded in r.
+func drainWorker(ctx context.Context, s *Scenario, k Kube, tasks Tasks, r *Result, o *Options) (bool, error) {
+	failf := func(format string, args ...any) { r.Failures = append(r.Failures, fmt.Sprintf(format, args...)) }
+	ti, ok1 := tasks.(TaskInspector)
+	wp, ok2 := k.(WorkerPods)
+	if !ok1 || !ok2 {
+		failf("drain: this runner can't find or delete a task's worker")
+		return false, nil
+	}
+	// The task is still awake: the runner's own reads of its session keep
+	// it from idling, and lookout's resolved signal comes only after its
+	// recovery window.
+	var ip string
+	var others []string
+	werr := until(ctx, o, time.Minute, func(ctx context.Context) (bool, error) {
+		workers, err := ti.TaskWorkers(ctx)
+		if err != nil {
+			return false, nil
+		}
+		ip, others = workers[r.Task], nil
+		for t, w := range workers {
+			if t != r.Task && w == ip {
+				others = append(others, t)
+			}
+		}
+		return ip != "", nil
+	})
+	switch {
+	case errors.Is(werr, errTimeout):
+		failf("drain: task %s isn't on a worker to drain", r.Task)
+		return false, nil
+	case werr != nil:
+		return false, werr
+	}
+	// Deleting the pod drains every actor on it. Until every environment's
+	// ax-server suspends on drain, another task there (a real incident, a
+	// Slack thread) would lose its work, so don't. This sees the runner's
+	// atespace only.
+	if len(others) > 0 {
+		slices.Sort(others)
+		failf("drain: worker %s also hosts %s; not draining it", ip, strings.Join(others, ", "))
+		return false, nil
+	}
+	pod, err := wp.DeleteWorkerPod(ctx, ip)
+	if err != nil {
+		failf("drain: deleting the worker pod at %s: %v", ip, err)
+		return false, nil
+	}
+	drainedAt := o.Now()
+	r.Drain = &DrainResult{WorkerPod: pod}
+	o.Log("drain: deleted worker pod %s (%s), hosting task %s", pod, ip, r.Task)
+
+	// Done when ax has written AutoSuspended since the deletion: for the
+	// drain, or as a revert after the worker was lost. Not the phase at the
+	// moment of a poll: lookout's resolved signal (after its recovery
+	// window) or the runner's own reads can wake the task again between
+	// polls, and an AutoSuspended left from an earlier idle suspend is not
+	// this drain's.
+	var last Condition
+	var phase string
+	werr = until(ctx, o, s.Drain.Within, func(ctx context.Context) (bool, error) {
+		if now, err := tasks.Tasks(ctx); err == nil {
+			phase = now[r.Task]
+		}
+		conds, err := ti.TaskConditions(ctx, r.Task)
+		if err != nil {
+			return false, nil
+		}
+		c := conds["AutoSuspended"]
+		if c.Status != "True" || c.Updated.Before(drainedAt) {
+			return false, nil
+		}
+		last = c
+		return c.Reason == s.Drain.Reason || c.Reason == revertedAfterWorkerLoss, nil
+	})
+	r.Drain.Reason, r.Drain.Message = last.Reason, last.Message
+	switch {
+	case errors.Is(werr, errTimeout):
+		failf("drain: task %s did not suspend for the drain within %s of its worker's deletion (phase %s)", r.Task, s.Drain.Within, phase)
+		return false, nil
+	case werr != nil:
+		return false, werr
+	}
+	r.Drain.After = last.Updated.Sub(drainedAt).Round(time.Second).String()
+	r.Suspended = true
+	o.Log("drain: suspended %s after the deletion, reason %s: %s", r.Drain.After, last.Reason, last.Message)
+	if last.Reason != s.Drain.Reason {
+		// A revert keeps the task but not its session; the wake check
+		// below would misreport it.
+		failf("drain: task %s suspended with reason %s, want %s", r.Task, last.Reason, s.Drain.Reason)
+		return false, nil
+	}
+	return true, nil
 }
 
 // gradeAnswer has the run's judge, if any, grade its settled answer

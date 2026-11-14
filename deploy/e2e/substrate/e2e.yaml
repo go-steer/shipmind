@@ -18,7 +18,8 @@
 # reads the agent's answer through Substrate's router, and deletes its
 # workload and task afterwards. Its permissions are exactly that: manage
 # Deployments and ConfigMaps in triage-lab, and read the agent's attach
-# token. The ax CLI reaches ax-server over the network; ax has no
+# token. The worker-drain scenario's right to delete worker pods is not
+# here: an overlay opts in with deploy/e2e/substrate/drain. The ax CLI reaches ax-server over the network; ax has no
 # per-caller authorization of its own.
 apiVersion: v1
 kind: Namespace

@@ -39,7 +39,8 @@ case "$*" in
   *" get namespaces "*) printf 'default\nlab\n'; exit 0 ;;
   *" get daemonset "*) [ -f "$d/object.json" ] && cat "$d/object.json"; exit 0 ;;
   *" get deployment "*) [ -f "$d/selector.json" ] && cat "$d/selector.json"; exit 0 ;;
-  *" get pods "*) echo "$*" > "$d/pods.args"; [ -f "$d/starts.txt" ] && cat "$d/starts.txt"; exit 0 ;;
+  *" delete pod "*) if [ -f "$d/delete.fail" ]; then echo 'pods "x" is forbidden' >&2; exit 1; fi; echo deleted ;;
+  *" get pods "*) printf "%s\n" "$*" > "$d/pods.args"; [ -f "$d/starts.txt" ] && cat "$d/starts.txt"; exit 0 ;;
   *" apply --server-side "*) if [ -f "$d/ssa.fail" ]; then echo "error when applying patch: data: c2VjcmV0" >&2; exit 1; fi; echo applied ;;
   *" get workspace "*) if [ -f "$d/workspace.yaml" ]; then cat "$d/workspace.yaml"; else echo 'Error: getting workspace: rpc error: code = NotFound desc = workspace "ws" not found' >&2; exit 1; fi ;;
   *) echo ok ;;
@@ -435,5 +436,46 @@ func TestGetAndPatch(t *testing.T) {
 	}
 	if err := k.Patch(ctx, "deployment", "ns", "fail", "json", []byte(`[]`), false); err == nil {
 		t.Error("kubectl failure not returned")
+	}
+}
+
+func TestDeleteWorkerPod(t *testing.T) {
+	k, dir := fake(t)
+	// One live pod, and one terminating that a stale IP could still name.
+	put(t, filepath.Join(dir, "starts.txt"), "ax-pool-ddc648b47-5t8j9 \nax-pool-old 2026-11-14T21:00:00Z\n")
+	pod, err := k.DeleteWorkerPod(context.Background(), "10.48.0.7")
+	if err != nil || pod != "ax-pool-ddc648b47-5t8j9" {
+		t.Fatalf("DeleteWorkerPod = %q, %v", pod, err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "pods.args"))
+	if got := strings.TrimSpace(string(b)); got != `--context demo get pods -n ax-workers --field-selector status.podIP=10.48.0.7,status.phase=Running -o jsonpath={range .items[*]}{.metadata.name}{" "}{.metadata.deletionTimestamp}{"\n"}{end}` {
+		t.Errorf("find args %q", got)
+	}
+	// The default grace period: no --grace-period, no --force.
+	if got := lastArgs(t, dir); got != "--context demo delete pod -n ax-workers ax-pool-ddc648b47-5t8j9 --wait=false" {
+		t.Errorf("delete args %q", got)
+	}
+
+	for _, tc := range []struct{ ip, pods, want string }{
+		{"not-an-ip", "", "not an IP"},
+		{"10.48.0.8", "", "found 0"},
+		{"10.48.0.9", "a\nb\n", "found 2"},
+		{"10.48.0.10", "a 2026-11-14T21:00:00Z\n", "found 0"},
+	} {
+		put(t, filepath.Join(dir, "starts.txt"), tc.pods)
+		if _, err := k.DeleteWorkerPod(context.Background(), tc.ip); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s with pods %q: %v, want %q", tc.ip, tc.pods, err, tc.want)
+		}
+	}
+
+	// The delete refused (RBAC), and kubectl missing altogether.
+	put(t, filepath.Join(dir, "starts.txt"), "ax-pool-1")
+	put(t, filepath.Join(dir, "delete.fail"), "")
+	if _, err := k.DeleteWorkerPod(context.Background(), "10.48.0.7"); err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Errorf("refused delete: %v", err)
+	}
+	none := Kube{Context: "demo", Kubectl: filepath.Join(t.TempDir(), "no-kubectl")}
+	if _, err := none.DeleteWorkerPod(context.Background(), "10.48.0.7"); err == nil {
+		t.Error("no kubectl: want an error")
 	}
 }
