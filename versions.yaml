@@ -66,11 +66,11 @@ components:
 
   - name: ax
     source: github.com/mastersingh24/ax
-    version: 7c50347497bcb6b0179860a21000e4ce268aa236
+    version: d03b3e0dc6eada60ffd0fdfb976828938cd0b6dc
     profiles: [substrate]
     images:
       - name: ax-server
-        ref: ghcr.io/go-steer/shipmind/ax-server:7c50347497bcb6b0179860a21000e4ce268aa236@sha256:0d6680c87cdc1133a89624010214af094e6f678918f0521243e2ef79349ae567
+        ref: ghcr.io/go-steer/shipmind/ax-server:d03b3e0dc6eada60ffd0fdfb976828938cd0b6dc@sha256:d1823f54d4700718cfd9be934b29e9e9efe4e1776230095ff7b9ed2ab4c8975e
       - name: postgres
         ref: docker.io/library/postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     manifests:
@@ -89,7 +89,7 @@ components:
 
   - name: ax-runner
     source: github.com/mastersingh24/ax
-    version: 7c50347497bcb6b0179860a21000e4ce268aa236
+    version: d03b3e0dc6eada60ffd0fdfb976828938cd0b6dc
     profiles: [substrate]
     note: >-
       The task runner baked into both agent images, at ax's commit. The v1
@@ -98,7 +98,9 @@ components:
       pass-through sends the task Host 127.0.0.1:<port> (the router's name
       in X-Forwarded-Host), and the workspace's first-run marker lives on
       the workspace volume (upstream #551), so a cold resume doesn't redo
-      setup over the agent's edits.
+      setup over the agent's edits. At d03b3e0 (mastersingh24/ax#1) a first
+      SIGTERM keeps the agent running for AX_RUNNER_SIGTERM_GRACE (25m), so
+      ax-server's suspend on drain snapshots a live process.
 
   - name: mast
     source: github.com/go-steer/mast
@@ -147,16 +149,17 @@ components:
 
   - name: agent
     source: github.com/go-steer/shipmind
-    version: d695f90f6b68063995ae65150009192006229738
+    version: c3f78e227c519e2a29e94f77fa284164d9c2cab5
     profiles: [substrate]
     images:
       - name: agent
-        ref: ghcr.io/go-steer/shipmind/agent:d695f90f6b68063995ae65150009192006229738@sha256:36a4b746f314190b94b1dc0f685f05ba85d2be7e934bcd5cd7ccd7432c5538b2
+        ref: ghcr.io/go-steer/shipmind/agent:c3f78e227c519e2a29e94f77fa284164d9c2cab5-runner-d03b3e0dc6ea@sha256:c623bfabca6aa50ea9efa0f2180f6770bb3a738ac5ef27a32d09bd38b2316c47
     note: >-
       The agent image on core-agent (#48), built by this repository
       (images/agent) at the commit in version: the core-agent and
       ax-runner pins above plus agents/sre-triage's bundles, converted at
-      build time. An environment's agent.chatImage runs switchboard's
+      build time; this build carries the ax-runner at d03b3e0 (tag
+      <commit>-runner-d03b3e0dc6ea). An environment's agent.chatImage runs switchboard's
       threads on it, and agent.incidentImage lookout's incidents. CI publishes
       a new build from every main commit that touches those inputs; move
       this pin to one deliberately.
@@ -204,11 +207,11 @@ components:
 
   - name: e2e-runner
     source: github.com/go-steer/shipmind
-    version: 5656dea26b19baced0abc14ab58dd430edab0f0a
+    version: c3f78e227c519e2a29e94f77fa284164d9c2cab5
     profiles: [substrate]
     images:
       - name: e2e-runner
-        ref: ghcr.io/go-steer/shipmind/e2e-runner:5656dea26b19baced0abc14ab58dd430edab0f0a@sha256:7bff049fa679a1c3c63436de907607f0888590a47f16d3eea772cff59fc1e193
+        ref: ghcr.io/go-steer/shipmind/e2e-runner:c3f78e227c519e2a29e94f77fa284164d9c2cab5-ax-d03b3e0dc6ea@sha256:ef5500745ae77b31ff16f5e54fbc2e5fd2496b697fb7885d4c945d8dc5a701d9
     note: >-
       The end-to-end runner (images/e2e-runner: shipmind, the ax CLI,
       kubectl, the scenarios) at the commit in version, which the nightly
@@ -217,8 +220,9 @@ components:
       build reads core-agent's sessions as well as mast's (#68) and
       records each answer's model usage (#73); it carries the
       oom-killed scenario (#79), can archive each run (#86), checks
-      each run's trajectory (#94), and has a judge model grade each answer
-      (#99).
+      each run's trajectory (#94), has a judge model grade each answer
+      (#99), and carries the worker-drain scenario (#106). Built with the
+      ax CLI at d03b3e0.
 
   - name: switchboard
     source: github.com/go-steer/switchboard
