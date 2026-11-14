@@ -10,6 +10,12 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- A `worker-drain` scenario (#105): missing-env's incident, then the worker
+  pod hosting the awake task's actor is deleted, as a node drain does, and
+  the task must suspend with reason `WorkerDraining` and wake with its
+  session in memory. It fails until ax-server suspends a draining worker's
+  actors (mastersingh24/ax#1), so it has no CronJob yet. The runner may now
+  get, list and delete pods in `ax-workers`.
 - An answer judge (#90): each scenario states its ground truth
   (`expect.diagnosis`), and `shipmind scenario run -judge MODEL` has a
   Claude model on Vertex AI grade the settled answer against it with

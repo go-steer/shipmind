@@ -316,7 +316,15 @@ handling looks like, and every run is checked against it (epic #93):
   session of its own, so a profile that delegates needs them merged before
   it gets a trajectory; the incident profile triages in its main agent.
 - **The lifecycle**: the incident opens, the task suspends once the workload
-  is gone, and wakes with the session in memory.
+  is gone, and wakes with the session in memory. A scenario with a `drain`
+  block (#105, `e2e/scenarios/worker-drain`) suspends it a harder way: with
+  the workload gone and the task still awake, the runner deletes the worker
+  pod hosting its actor (default grace period, as a node drain does), and
+  the task must suspend with ax's `AutoSuspended` reason `WorkerDraining`
+  within `drain.within`, then wake with its session. A revert after the
+  worker is lost (`RevertedAfterWorkerLoss`) keeps the task but not its
+  session, so it fails. The runner may get, list and delete pods in
+  `ax-workers` and nowhere else.
 - **The judge** (`expect.diagnosis`, #90): with `-judge MODEL`, a model on
   Vertex AI grades the settled answer against the scenario's ground-truth
   diagnosis with core-agent's response-quality rubric (a 1-5 score; whether

@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -368,6 +369,31 @@ func (k Kube) RolloutRestart(ctx context.Context, namespace, name string) error 
 func (k Kube) DeleteLabeled(ctx context.Context, namespace, kinds, selector string) (string, error) {
 	out, _, err := k.run(ctx, k.kubectl(), nil, "delete", kinds, "-n", namespace, "-l", selector, "--ignore-not-found")
 	return string(out), err
+}
+
+// WorkersNamespace is where Substrate's WorkerPool runs its worker pods.
+const WorkersNamespace = "ax-workers"
+
+// DeleteWorkerPod deletes the worker pod with podIP ip, with its default
+// grace period, as a node drain would, and returns its name. A scenario
+// uses it to drain the worker hosting a task's actor (#105).
+func (k Kube) DeleteWorkerPod(ctx context.Context, ip string) (string, error) {
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("worker pod IP %q: not an IP", ip)
+	}
+	out, _, err := k.run(ctx, k.kubectl(), nil, "get", "pods", "-n", WorkersNamespace,
+		"--field-selector", "status.podIP="+ip, "-o", "jsonpath={.items[*].metadata.name}")
+	if err != nil {
+		return "", err
+	}
+	names := strings.Fields(string(out))
+	if len(names) != 1 {
+		return "", fmt.Errorf("want one pod in %s with IP %s, found %d", WorkersNamespace, ip, len(names))
+	}
+	if _, _, err := k.run(ctx, k.kubectl(), nil, "delete", "pod", "-n", WorkersNamespace, names[0], "--wait=false"); err != nil {
+		return "", err
+	}
+	return names[0], nil
 }
 
 // Delete implements Cluster.

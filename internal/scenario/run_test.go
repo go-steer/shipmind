@@ -63,6 +63,45 @@ type world struct {
 	// calls are the agent's tool calls before its answer (nil: a read of
 	// the pod and its logs).
 	calls []string
+	// A worker drain (#105): drainedAt is when the worker pod was deleted;
+	// the task suspends drainAfter later with drainReason (never if
+	// drainAfter < 0).
+	drainedAt   time.Time
+	drainAfter  time.Duration
+	drainReason string
+	drainedPods []string
+}
+
+// TaskWorker implements TaskInspector: the incident task is on a worker
+// while it runs.
+func (w *world) TaskWorker(ctx context.Context, task string) (string, error) {
+	tasks, err := w.Tasks(ctx)
+	if err != nil {
+		return "", err
+	}
+	if task == "lookout-0123456789abcdef" && tasks[task] == "Running" {
+		return "10.48.0.7", nil
+	}
+	return "", nil
+}
+
+// TaskConditions implements TaskInspector.
+func (w *world) TaskConditions(context.Context, string) (map[string]Condition, error) {
+	if w.drainedAt.IsZero() || w.drainAfter < 0 || w.now.Sub(w.drainedAt) < w.drainAfter {
+		return map[string]Condition{}, nil
+	}
+	return map[string]Condition{"AutoSuspended": {Status: "True", Reason: w.drainReason, Message: "worker draining; no requests in flight"}}, nil
+}
+
+// DeleteWorkerPod implements WorkerPods.
+func (w *world) DeleteWorkerPod(_ context.Context, ip string) (string, error) {
+	if ip != "10.48.0.7" {
+		return "", errors.New("no pod at " + ip)
+	}
+	w.drainedAt = w.now
+	w.drainedPods = append(w.drainedPods, "ax-pool-abc")
+	w.ops = append(w.ops, "delete worker pod")
+	return "ax-pool-abc", nil
 }
 
 func (w *world) Apply(_ context.Context, m []byte, _ bool) (string, error) {
@@ -111,6 +150,9 @@ func (w *world) Tasks(context.Context) (map[string]string, error) {
 	if w.incidentAt >= 0 && w.since() >= w.incidentAt {
 		phase := "Running"
 		if !w.removedAt.IsZero() && w.suspendAfter >= 0 && w.now.Sub(w.removedAt) >= w.suspendAfter {
+			phase = "Suspended"
+		}
+		if !w.drainedAt.IsZero() && w.drainAfter >= 0 && w.now.Sub(w.drainedAt) >= w.drainAfter {
 			phase = "Suspended"
 		}
 		tasks["lookout-0123456789abcdef"] = phase
@@ -746,5 +788,101 @@ func TestRunBrokenJudge(t *testing.T) {
 	r := run(t, w, s, o)
 	if !r.Pass || r.Judge == nil || r.Judge.Error != "no credentials" || r.Judge.Score != 0 {
 		t.Errorf("pass %v, judge %+v", r.Pass, r.Judge)
+	}
+}
+
+// A drain scenario deletes the awake task's worker pod once the workload is
+// gone, and passes when the task suspends for the drain and wakes with its
+// session (#105).
+func TestRunDrain(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		reason     string
+		drainAfter time.Duration
+		fail       string
+	}{
+		{"suspended for the drain", "WorkerDraining", 40 * time.Second, ""},
+		{"reverted, not drained", "RevertedAfterWorkerLoss", 40 * time.Second, "suspended with reason RevertedAfterWorkerLoss, want WorkerDraining"},
+		{"never suspends", "", -1, "did not suspend within 5m0s of its worker's deletion"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, s, o := newWorld(t)
+			s.Drain = &Drain{Reason: "WorkerDraining", Within: 5 * time.Minute}
+			w.suspendAfter = -1 // no idle suspend: only the drain suspends it
+			w.drainAfter, w.drainReason = tc.drainAfter, tc.reason
+			var logs []string
+			o.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+			r := run(t, w, s, o)
+			if len(w.drainedPods) != 1 || r.Drain == nil || r.Drain.WorkerPod != "ax-pool-abc" {
+				t.Fatalf("drained %v, result %+v", w.drainedPods, r.Drain)
+			}
+			if i, j := slices.Index(w.ops, "delete workload"), slices.Index(w.ops, "delete worker pod"); i < 0 || j < i {
+				t.Errorf("ops %v: the worker must be drained after the workload is gone", w.ops)
+			}
+			if tc.fail == "" {
+				if !r.Pass || !r.Suspended || !r.Woke || r.Drain.Reason != "WorkerDraining" || r.Drain.After == "" || r.SuspendAfter != r.Drain.After {
+					t.Errorf("result %+v, drain %+v, failures %v", r, r.Drain, r.Failures)
+				}
+				return
+			}
+			if r.Pass || r.Woke || !slices.ContainsFunc(r.Failures, func(f string) bool { return strings.Contains(f, tc.fail) }) {
+				t.Errorf("failures %v, want %q", r.Failures, tc.fail)
+			}
+		})
+	}
+}
+
+// A runner whose Kube or Tasks can't drain a worker says so.
+func TestRunDrainUnsupported(t *testing.T) {
+	w, s, o := newWorld(t)
+	s.Drain = &Drain{Reason: "WorkerDraining", Within: time.Minute}
+	r, err := Run(context.Background(), s, plainKube{w}, w, w, o)
+	if err != nil || r.Pass || !slices.ContainsFunc(r.Failures, func(f string) bool { return strings.Contains(f, "can't find or delete a task's worker") }) {
+		t.Errorf("err %v, failures %v", err, r.Failures)
+	}
+}
+
+// plainKube is a Kube without WorkerPods.
+type plainKube struct{ w *world }
+
+func (p plainKube) Apply(ctx context.Context, m []byte, dry bool) (string, error) {
+	return p.w.Apply(ctx, m, dry)
+}
+func (p plainKube) Delete(ctx context.Context, m []byte) (string, error) { return p.w.Delete(ctx, m) }
+
+func TestParseTaskWorker(t *testing.T) {
+	out := "NAME                       ATESPACE   PHASE       ACTOR   WORKER-IP   AGE\n" +
+		"lookout-0123456789abcdef   agents     Running     a       10.48.0.7   1m\n" +
+		"sb-triage-1                agents     Suspended   b       <none>      2d\n"
+	for task, want := range map[string]string{"lookout-0123456789abcdef": "10.48.0.7", "sb-triage-1": "", "gone": ""} {
+		if got, err := parseTaskWorker(out, task); err != nil || got != want {
+			t.Errorf("%s: %q, %v; want %q", task, got, err, want)
+		}
+	}
+	if _, err := parseTaskWorker("NAME PHASE\nx Running\n", "x"); err == nil {
+		t.Error("no WORKER-IP column: want an error")
+	}
+}
+
+func TestParseTaskConditions(t *testing.T) {
+	out := `apiVersion: ax.io/v1alpha1
+kind: Task
+status:
+    phase: Suspended
+    conditions:
+        - type: AutoSuspended
+          status: "True"
+          reason: WorkerDraining
+          message: Worker ax-pool-abc is draining; 1 request in flight was interrupted.
+        - type: Ready
+          status: "False"
+          reason: Suspended
+`
+	c, err := parseTaskConditions(out)
+	if err != nil || c["AutoSuspended"].Reason != "WorkerDraining" || c["AutoSuspended"].Status != "True" || c["Ready"].Reason != "Suspended" {
+		t.Errorf("%+v, %v", c, err)
+	}
+	if _, err := parseTaskConditions(":\n  - ["); err == nil {
+		t.Error("bad YAML: want an error")
 	}
 }
