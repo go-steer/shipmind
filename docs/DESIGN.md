@@ -328,8 +328,9 @@ handling looks like, and every run is checked against it (epic #93):
   signal can wake the task again in between. Deleting a worker pod drains
   every actor on it, so the runner refuses a worker that hosts another task
   in its atespace, and the right to list and delete pods in `ax-workers` is
-  opt-in per environment (`deploy/e2e/substrate/drain`), taken only once
-  that environment's ax-server suspends on drain.
+  opt-in per environment (`deploy/e2e/substrate/drain`, which also holds
+  its nightly at 04:17 UTC), taken only once that environment's ax-server
+  suspends on drain.
 - **The judge** (`expect.diagnosis`, #90): with `-judge MODEL`, a model on
   Vertex AI grades the settled answer against the scenario's ground-truth
   diagnosis with core-agent's response-quality rubric (a 1-5 score; whether

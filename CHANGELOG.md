@@ -10,6 +10,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- The worker-drain scenario runs nightly at 04:17 UTC (#105) in every
+  environment that opts into `deploy/e2e/substrate/drain`, which now carries
+  its CronJob beside its RBAC. It passed on stage on 2026-11-14 with ax
+  d03b3e0: suspended for the drain 11s after its worker pod was deleted, and
+  woke with its session.
 - A `worker-drain` scenario (#105): missing-env's incident, then the worker
   pod hosting the awake task's actor is deleted, as a node drain does, and
   the task must suspend with reason `WorkerDraining` and wake with its

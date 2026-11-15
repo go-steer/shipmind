@@ -1,0 +1,124 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The nightly end-to-end scenario for the substrate profile. Not part of
+# the profile itself: an environment opts in by referencing this
+# directory, at the same shipmind commit as its profile, and setting the
+# agents' atespace. The scenario's namespace (triage-lab) must exist: it
+# is the cluster's lab namespace, which lookout watches.
+# The worker-drain scenario's nightly (#105): missing-env's incident, then
+# the worker pod hosting the awake task is deleted, as a node drain does, and
+# the task must suspend (ax's WorkerDraining) and wake with its session. It
+# rides with the opt-in RBAC beside it, so only an environment that takes
+# both runs it. Same runner image and layout as the CronJobs in
+# ../e2e.yaml, so an overlay's patch for shipmind.dev/nightly=scenario
+# (atespace at arg 3, archive at arg 4) applies to it too.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: worker-drain
+  namespace: shipmind-e2e
+  # Every nightly scenario's CronJob carries this, so an overlay patches
+  # them all with one target.
+  labels:
+    shipmind.dev/nightly: scenario
+spec:
+  # 04:17 UTC: after oom-killed is done with the shared triage-lab
+  # namespace. An overlay may move it.
+  schedule: "17 4 * * *"
+  # Stated, so the field is managed: a hand-set suspend shows in
+  # status and the next up undoes it (client-side apply leaves fields the
+  # manifest never mentions alone, and kubectl diff merges the same way).
+  suspend: false
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      # The scenario's limits add to 50 minutes (incident 10, diagnose 15,
+      # suspend 25); with the sweep, the wake and up to 6 minutes of
+      # cleanup, a worst case is about 57. 70 leaves room.
+      activeDeadlineSeconds: 4200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: shipmind-e2e
+        spec:
+          serviceAccountName: shipmind-e2e
+          restartPolicy: Never
+          # On SIGTERM (the deadline, a drain) the runner cleans up: the
+          # workload, then the task, each within 3 minutes. Let it finish.
+          terminationGracePeriodSeconds: 390
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: run
+              image: ghcr.io/go-steer/shipmind/e2e-runner:c3f78e227c519e2a29e94f77fa284164d9c2cab5-ax-d03b3e0dc6ea@sha256:ef5500745ae77b31ff16f5e54fbc2e5fd2496b697fb7885d4c945d8dc5a701d9
+              args:
+                - scenario
+                - run
+                - -in-cluster
+                # The agents' atespace; an overlay replaces it (arg 3).
+                - -atespace=ATESPACE
+                # Substrate's router takes only mTLS clients: this pod's
+                # podidentity certificate (its SPIFFE ID,
+                # spiffe://cluster.local/ns/shipmind-e2e/sa/shipmind-e2e,
+                # must be in the router's allowed list), and the
+                # router's trust bundle. Both rotate in place.
+                - -router-cert=/run/podidentity/credential-bundle.pem
+                - -router-trust=/run/servicedns-ca/trust-bundle.pem
+                # A judge model grades each answer against the scenario's
+                # expect.diagnosis (#90), reported and never a failure; the
+                # cluster's project comes from the metadata server, and the
+                # pod's workload identity needs roles/aiplatform.user there.
+                - -judge=claude-sonnet-5-5
+                - /scenarios/worker-drain
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: podidentity
+                  mountPath: /run/podidentity
+                  readOnly: true
+                - name: servicedns-ca
+                  mountPath: /run/servicedns-ca
+                  readOnly: true
+          volumes:
+            - name: podidentity
+              projected:
+                sources:
+                  - podCertificate:
+                      signerName: podidentity.podcert.ate.dev/identity
+                      keyType: ECDSAP256
+                      credentialBundlePath: credential-bundle.pem
+            - name: servicedns-ca
+              projected:
+                sources:
+                  - clusterTrustBundle:
+                      signerName: servicedns.podcert.ate.dev/identity
+                      labelSelector:
+                        matchLabels:
+                          podcert.ate.dev/canarying: live
+                      path: trust-bundle.pem
