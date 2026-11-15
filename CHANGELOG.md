@@ -12,17 +12,19 @@ release is a tested set of component versions (see "Cutting a release" in
 
 - The worker-drain scenario runs nightly at 04:17 UTC (#105) in every
   environment that opts into `deploy/e2e/substrate/drain`, which now carries
-  its CronJob beside its RBAC. It passed on stage on 2026-11-14 with ax
+  its CronJob beside its RBAC (dev and stage; prod keeps it suspended for
+  runs by hand). It passed on stage on 2026-11-14 with ax
   d03b3e0: suspended for the drain 11s after its worker pod was deleted, and
   woke with its session.
 - A `worker-drain` scenario (#105): missing-env's incident, then the worker
   pod hosting the awake task's actor is deleted, as a node drain does, and
   the task must suspend with reason `WorkerDraining` and wake with its
   session in memory. It fails until ax-server suspends a draining worker's
-  actors (mastersingh24/ax#1), so it has no CronJob yet. It won't drain a
-  worker that hosts another task in its atespace. The right to list and
-  delete pods in `ax-workers` is opt-in: an overlay adds
-  `deploy/e2e/substrate/drain`.
+  actors (mastersingh24/ax#1). A worker shared with other tasks is drained
+  anyway, as a real node drain is, and every task that was on it (in the
+  runner's atespace) must suspend for the drain too; the result lists how
+  each fared. The right to list and delete pods in `ax-workers` is opt-in:
+  an overlay adds `deploy/e2e/substrate/drain`.
 - An answer judge (#90): each scenario states its ground truth
   (`expect.diagnosis`), and `shipmind scenario run -judge MODEL` has a
   Claude model on Vertex AI grade the settled answer against it with
