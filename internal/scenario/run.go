@@ -244,6 +244,17 @@ type DrainResult struct {
 	Message string `json:"message,omitempty"`
 	// After is the time from the pod's deletion to the suspend.
 	After string `json:"after,omitempty"`
+	// Neighbours are the other tasks that were on the worker, in the
+	// runner's atespace, and how each came through the drain.
+	Neighbours []NeighbourResult `json:"neighbours,omitempty"`
+}
+
+// NeighbourResult is how another task on the drained worker fared: the
+// scenario's reason (WorkerDraining), resumed before it was seen
+// suspended, or what went wrong.
+type NeighbourResult struct {
+	Task    string `json:"task"`
+	Outcome string `json:"outcome"`
 }
 
 // Condition is one of a task's status conditions.
@@ -701,11 +712,15 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 const revertedAfterWorkerLoss = "RevertedAfterWorkerLoss"
 
 // drainWorker deletes the worker pod hosting the task's actor, as a node
-// drain does, and waits for the task to suspend for the scenario's reason.
-// It reports whether the run should go on to the wake; a failure is
-// recorded in r.
+// drain does, and waits for the task, and every other task that was on that
+// worker, to suspend for the scenario's reason. It reports whether the run
+// should go on to the wake; failures are recorded in r and logged.
 func drainWorker(ctx context.Context, s *Scenario, k Kube, tasks Tasks, r *Result, o *Options) (bool, error) {
-	failf := func(format string, args ...any) { r.Failures = append(r.Failures, fmt.Sprintf(format, args...)) }
+	failf := func(format string, args ...any) {
+		msg := fmt.Sprintf(format, args...)
+		r.Failures = append(r.Failures, msg)
+		o.Log("%s", msg)
+	}
 	ti, ok1 := tasks.(TaskInspector)
 	wp, ok2 := k.(WorkerPods)
 	if !ok1 || !ok2 {
@@ -737,15 +752,11 @@ func drainWorker(ctx context.Context, s *Scenario, k Kube, tasks Tasks, r *Resul
 	case werr != nil:
 		return false, werr
 	}
-	// Deleting the pod drains every actor on it. Until every environment's
-	// ax-server suspends on drain, another task there (a real incident, a
-	// Slack thread) would lose its work, so don't. This sees the runner's
-	// atespace only.
-	if len(others) > 0 {
-		slices.Sort(others)
-		failf("drain: worker %s also hosts %s; not draining it", ip, strings.Join(others, ", "))
-		return false, nil
-	}
+	slices.Sort(others)
+	// Deleting the pod drains every actor on it, as a node drain does: the
+	// other tasks there (incidents, Slack threads) must come through it too,
+	// suspended for the drain and resumed at their next request. The
+	// runner sees its own atespace's tasks only.
 	pod, err := wp.DeleteWorkerPod(ctx, ip)
 	if err != nil {
 		failf("drain: deleting the worker pod at %s: %v", ip, err)
@@ -753,49 +764,155 @@ func drainWorker(ctx context.Context, s *Scenario, k Kube, tasks Tasks, r *Resul
 	}
 	drainedAt := o.Now()
 	r.Drain = &DrainResult{WorkerPod: pod}
-	o.Log("drain: deleted worker pod %s (%s), hosting task %s", pod, ip, r.Task)
+	if len(others) > 0 {
+		o.Log("drain: deleted worker pod %s (%s), hosting task %s and %s", pod, ip, r.Task, strings.Join(others, ", "))
+	} else {
+		o.Log("drain: deleted worker pod %s (%s), hosting task %s", pod, ip, r.Task)
+	}
 
-	// Done when ax has written AutoSuspended since the deletion: for the
-	// drain, or as a revert after the worker was lost. Not the phase at the
-	// moment of a poll: lookout's resolved signal (after its recovery
-	// window) or the runner's own reads can wake the task again between
-	// polls, and an AutoSuspended left from an earlier idle suspend is not
-	// this drain's.
-	var last Condition
-	var phase string
+	// Each task is settled once ax has written AutoSuspended=True since the
+	// deletion (for the drain, or any other reason, recorded), once it has
+	// Failed or gone from ax, or, for another task, once a request has
+	// resumed it on a different worker. Not the phase at the moment of a
+	// poll: lookout's resolved signal, the runner's reads or a person's
+	// message can wake a task again between polls, and an AutoSuspended left
+	// from an earlier suspend is not this drain's. What a task showed is
+	// kept once seen; a phase is read before the condition, so a task seen
+	// Failed in the same poll counts as Failed. The scenario's own task must be seen suspended: the
+	// wake that follows checks its session, so a resume before a poll saw it
+	// suspended doesn't count for it.
+	seen := map[string]*drainSeen{r.Task: {}}
+	for _, t := range others {
+		seen[t] = &drainSeen{}
+	}
+	poll := func(ctx context.Context) {
+		phases, perr := tasks.Tasks(ctx)
+		var workers map[string]string
+		for t, v := range seen {
+			if v.done {
+				continue
+			}
+			if perr == nil {
+				p, ok := phases[t]
+				if !ok {
+					v.gone, v.done = true, true
+					continue
+				}
+				v.phase = p
+			}
+			if v.phase == "Failed" {
+				v.done = true
+				continue
+			}
+			conds, err := ti.TaskConditions(ctx, t)
+			if err != nil {
+				continue
+			}
+			if c := conds["AutoSuspended"]; !c.Updated.Before(drainedAt) {
+				switch {
+				case c.Status == "True":
+					v.cond, v.done = c, true
+					continue
+				case c.Status == "False" && c.Reason == "ResumedByRequest":
+					v.resumed = true
+				}
+			}
+			// A resume ax records within its pass interval of the deletion
+			// can be one from just before it; still being on the drained
+			// worker would mean the drain left the task alone.
+			if v.resumed && t != r.Task {
+				if workers == nil {
+					if workers, err = ti.TaskWorkers(ctx); err != nil {
+						continue
+					}
+				}
+				if workers[t] != ip {
+					v.movedOff, v.done = true, true
+				}
+			}
+		}
+	}
 	werr = until(ctx, o, s.Drain.Within, func(ctx context.Context) (bool, error) {
-		if now, err := tasks.Tasks(ctx); err == nil {
-			phase = now[r.Task]
+		poll(ctx)
+		for _, v := range seen {
+			if !v.done {
+				return false, nil
+			}
 		}
-		conds, err := ti.TaskConditions(ctx, r.Task)
-		if err != nil {
-			return false, nil
-		}
-		c := conds["AutoSuspended"]
-		if c.Status != "True" || c.Updated.Before(drainedAt) {
-			return false, nil
-		}
-		last = c
-		return c.Reason == s.Drain.Reason || c.Reason == revertedAfterWorkerLoss, nil
+		return true, nil
 	})
-	r.Drain.Reason, r.Drain.Message = last.Reason, last.Message
-	switch {
-	case errors.Is(werr, errTimeout):
-		failf("drain: task %s did not suspend for the drain within %s of its worker's deletion (phase %s)", r.Task, s.Drain.Within, phase)
-		return false, nil
-	case werr != nil:
+	if werr != nil && !errors.Is(werr, errTimeout) {
 		return false, werr
 	}
-	r.Drain.After = last.Updated.Sub(drainedAt).Round(time.Second).String()
+	for _, t := range others {
+		outcome, ok := seen[t].outcome(s.Drain.Reason)
+		r.Drain.Neighbours = append(r.Drain.Neighbours, NeighbourResult{Task: t, Outcome: outcome})
+		if !ok {
+			failf("drain: task %s, on the same worker: %s", t, outcome)
+		}
+	}
+	own := seen[r.Task]
+	r.Drain.Reason, r.Drain.Message = own.cond.Reason, own.cond.Message
+	switch {
+	case own.phase == "Failed":
+		failf("drain: task %s Failed after its worker's deletion", r.Task)
+		return false, nil
+	case own.cond.Reason == "":
+		failf("drain: task %s did not suspend for the drain within %s of its worker's deletion (phase %s)", r.Task, s.Drain.Within, own.phase)
+		return false, nil
+	}
+	r.Drain.After = own.cond.Updated.Sub(drainedAt).Round(time.Second).String()
 	r.Suspended = true
-	o.Log("drain: suspended %s after the deletion, reason %s: %s", r.Drain.After, last.Reason, last.Message)
-	if last.Reason != s.Drain.Reason {
-		// A revert keeps the task but not its session; the wake check
-		// below would misreport it.
-		failf("drain: task %s suspended with reason %s, want %s", r.Task, last.Reason, s.Drain.Reason)
+	o.Log("drain: suspended %s after the deletion, reason %s: %s", r.Drain.After, own.cond.Reason, own.cond.Message)
+	if own.cond.Reason != s.Drain.Reason {
+		// A revert keeps the task but not its session, and another reason
+		// isn't this drain's; the wake check below would misreport either.
+		failf("drain: task %s suspended with reason %s, want %s", r.Task, own.cond.Reason, s.Drain.Reason)
 		return false, nil
 	}
 	return true, nil
+}
+
+// neighbourResumed is a neighbour's outcome when ax shows a request resumed
+// it on another worker since the deletion, before the runner saw it
+// suspended: the drain suspended it between two polls.
+const neighbourResumed = "resumed on another worker before it was seen suspended"
+
+// drainSeen is what the runner has seen of one task since the deletion.
+type drainSeen struct {
+	done bool
+	// cond is the first AutoSuspended=True written since the deletion.
+	cond    Condition
+	phase   string
+	gone    bool
+	resumed bool
+	// movedOff: resumed, and no longer on the drained worker.
+	movedOff bool
+}
+
+// outcome says how a task that shared the drained worker came through it,
+// and whether that's fine. Its state is safe when it was suspended (for the
+// drain, or idle at the same moment), resumed elsewhere, or deleted; not
+// when it was reverted to an older snapshot, failed, or left where it was.
+func (v *drainSeen) outcome(reason string) (string, bool) {
+	switch {
+	case v.phase == "Failed":
+		return "Failed", false
+	case v.gone:
+		return "deleted during the drain", true
+	case v.cond.Reason == reason:
+		return reason, true
+	case v.cond.Reason == revertedAfterWorkerLoss:
+		return "suspended with reason " + v.cond.Reason + ", want " + reason, false
+	case v.cond.Reason != "":
+		return "suspended with reason " + v.cond.Reason + " (not the drain's)", true
+	case v.movedOff:
+		return neighbourResumed, true
+	case v.resumed:
+		return "resumed but still on the drained worker", false
+	default:
+		return "no sign of a drain suspend (phase " + v.phase + ")", false
+	}
 }
 
 // gradeAnswer has the run's judge, if any, grade its settled answer

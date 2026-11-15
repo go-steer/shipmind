@@ -23,8 +23,8 @@
 #
 # Opt-in: deleting a worker pod drains every actor on it, so an environment
 # takes this only once its ax-server suspends a draining worker's actors
-# (mastersingh24/ax#1). The runner also refuses to drain a worker that hosts
-# another task in its atespace.
+# (mastersingh24/ax#1). Every task on the worker is drained with it, and the
+# scenario checks each came through suspended.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

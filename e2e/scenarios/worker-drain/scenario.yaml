@@ -19,8 +19,9 @@
 # grace period, as a node drain does (a GKE upgrade, a node pool scaling
 # down). The task must suspend because of the drain, ax's AutoSuspended
 # condition with reason WorkerDraining, not crash, and wake through the
-# router with its session still in memory. The runner won't drain a worker
-# that also hosts another task in its atespace, and its right to delete
+# router with its session still in memory. A worker shared with other tasks
+# is drained anyway, as a real node drain is, and each of them (in the
+# runner's atespace) must suspend for the drain too. The right to delete
 # worker pods is opt-in per environment (deploy/e2e/substrate/drain).
 #
 # {{.Name}} is unique per run (lookout keys an incident's ax task on the
