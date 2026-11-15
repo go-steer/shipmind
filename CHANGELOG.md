@@ -148,6 +148,9 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- e2e-runner 0ce27ac: worker-drain drains a shared worker and checks its
+  other tasks (#109).
+
 - ax-server and ax-runner at mastersingh24/ax d03b3e0 (ax#1): ax-server
   suspends a draining worker's actors synchronously (task AutoSuspended
   `WorkerDraining`) and reverts an actor lost with its worker

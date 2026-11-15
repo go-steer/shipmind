@@ -207,11 +207,11 @@ components:
 
   - name: e2e-runner
     source: github.com/go-steer/shipmind
-    version: c3f78e227c519e2a29e94f77fa284164d9c2cab5
+    version: 0ce27ac8fab83fd0f38cd55779b4f029e506947e
     profiles: [substrate]
     images:
       - name: e2e-runner
-        ref: ghcr.io/go-steer/shipmind/e2e-runner:c3f78e227c519e2a29e94f77fa284164d9c2cab5-ax-d03b3e0dc6ea@sha256:ef5500745ae77b31ff16f5e54fbc2e5fd2496b697fb7885d4c945d8dc5a701d9
+        ref: ghcr.io/go-steer/shipmind/e2e-runner:0ce27ac8fab83fd0f38cd55779b4f029e506947e@sha256:673c5ee14b4b56e45de996930a93ea88f952c5b3a81a3d77688b95ae11b5e9d2
     note: >-
       The end-to-end runner (images/e2e-runner: shipmind, the ax CLI,
       kubectl, the scenarios) at the commit in version, which the nightly
@@ -221,8 +221,8 @@ components:
       records each answer's model usage (#73); it carries the
       oom-killed scenario (#79), can archive each run (#86), checks
       each run's trajectory (#94), has a judge model grade each answer
-      (#99), and carries the worker-drain scenario (#106). Built with the
-      ax CLI at d03b3e0.
+      (#99), and carries the worker-drain scenario (#106), which drains a
+      shared worker and checks its other tasks (#109).
 
   - name: switchboard
     source: github.com/go-steer/switchboard
