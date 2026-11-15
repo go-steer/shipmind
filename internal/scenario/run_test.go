@@ -76,11 +76,16 @@ type world struct {
 	// before the run (an earlier idle suspend, or an earlier drain).
 	staleReason string
 	// sharedWorker: another task, sb-triage-1, is on the incident task's
-	// worker; neighbour is what ax shows for it after the drain: "drained",
-	// "reverted", "resumed" (woken before a poll saw it suspended) or ""
-	// (nothing).
-	sharedWorker bool
-	neighbour    string
+	// worker; neighbour is what happens to it after the drain: "drained",
+	// "reverted", "idle" (idle-suspended at the same moment), "resumed"
+	// (woken on another worker before a poll saw it suspended), "stuck"
+	// (resumed but still on the drained worker), "failed", "gone" or ""
+	// (nothing). secondDrained adds sb-triage-2, drained.
+	sharedWorker  bool
+	neighbour     string
+	secondDrained bool
+	// ownFailed: the incident task goes Failed after the drain.
+	ownFailed bool
 	// neverPlaced: the incident task never shows a worker.
 	neverPlaced bool
 	// deleteRefused: deleting the worker pod fails.
@@ -112,6 +117,17 @@ func (w *world) TaskWorkers(ctx context.Context) (map[string]string, error) {
 		workers["lookout-0123456789abcdef"] = "10.48.0.7"
 		if w.sharedWorker {
 			workers["sb-triage-1"] = "10.48.0.7"
+			if w.secondDrained {
+				workers["sb-triage-2"] = "10.48.0.7"
+			}
+		}
+	}
+	if !w.drainedAt.IsZero() && w.sharedWorker {
+		switch w.neighbour {
+		case "resumed":
+			workers["sb-triage-1"] = "10.48.0.8"
+		case "stuck":
+			workers["sb-triage-1"] = "10.48.0.7"
 		}
 	}
 	return workers, nil
@@ -120,17 +136,23 @@ func (w *world) TaskWorkers(ctx context.Context) (map[string]string, error) {
 // TaskConditions implements TaskInspector.
 func (w *world) TaskConditions(_ context.Context, task string) (map[string]Condition, error) {
 	conds := map[string]Condition{}
-	if task == "sb-triage-1" {
+	if task == "sb-triage-1" || task == "sb-triage-2" {
 		if w.drainedAt.IsZero() || w.now.Before(w.drainedAt.Add(w.drainAfter)) {
 			return conds, nil
 		}
 		at := w.drainedAt.Add(w.drainAfter)
-		switch w.neighbour {
+		mode := w.neighbour
+		if task == "sb-triage-2" {
+			mode = "drained"
+		}
+		switch mode {
 		case "drained":
 			conds["AutoSuspended"] = Condition{Status: "True", Reason: "WorkerDraining", Updated: at}
 		case "reverted":
 			conds["AutoSuspended"] = Condition{Status: "True", Reason: "RevertedAfterWorkerLoss", Updated: at}
-		case "resumed":
+		case "idle":
+			conds["AutoSuspended"] = Condition{Status: "True", Reason: "IdleSuspended", Updated: at}
+		case "resumed", "stuck":
 			conds["AutoSuspended"] = Condition{Status: "False", Reason: "ResumedByRequest", Updated: at.Add(time.Second)}
 		}
 		return conds, nil
@@ -198,8 +220,18 @@ func (w *world) Tasks(context.Context) (map[string]string, error) {
 	}
 	tasks := map[string]string{"lookout-00000000000000aa": "Suspended", "demo-agent-1": "Suspended", "lookout-wb-demo-1234abcd": "Running",
 		"lookout-2222222222222222": "Running"}
+	drained := !w.drainedAt.IsZero() && !w.now.Before(w.drainedAt.Add(w.drainAfter))
 	if w.sharedWorker {
 		tasks["sb-triage-1"] = "Running"
+		switch {
+		case drained && w.neighbour == "failed":
+			tasks["sb-triage-1"] = "Failed"
+		case drained && w.neighbour == "gone":
+			delete(tasks, "sb-triage-1")
+		}
+		if w.secondDrained {
+			tasks["sb-triage-2"] = "Running"
+		}
 	}
 	if w.leftover && !contains(w.tasksGone, "lookout-1111111111111111") {
 		tasks["lookout-1111111111111111"] = "Running"
@@ -211,6 +243,9 @@ func (w *world) Tasks(context.Context) (map[string]string, error) {
 		}
 		if w.drainSuspended() {
 			phase = "Suspended"
+		}
+		if w.ownFailed && drained {
+			phase = "Failed"
 		}
 		tasks["lookout-0123456789abcdef"] = phase
 	}
@@ -855,26 +890,41 @@ func TestRunDrain(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		setup func(w *world)
-		fail  string
+		// fail is the failure the run must record ("": it passes);
+		// outcome is sb-triage-1's, when it shares the worker.
+		fail, outcome string
+		// woke: the incident task still wakes (its own drain went fine).
+		woke bool
 	}{
-		{"suspended for the drain", func(w *world) {}, ""},
+		{name: "suspended for the drain", setup: func(w *world) {}, woke: true},
 		// lookout's resolved signal wakes it again before a poll sees it
 		// Suspended: the condition still proves the drain.
-		{"woken again between polls", func(w *world) { w.drainWake = 5 * time.Second }, ""},
+		{name: "woken again between polls", setup: func(w *world) { w.drainWake = 5 * time.Second }, woke: true},
 		// An AutoSuspended from an earlier idle suspend isn't this drain's.
-		{"stale idle condition first", func(w *world) { w.staleReason = "IdleSuspended" }, ""},
+		{name: "stale idle condition first", setup: func(w *world) { w.staleReason = "IdleSuspended" }, woke: true},
 		// An earlier drain's condition must not pass for this one.
-		{"stale drain condition only", func(w *world) { w.staleReason, w.drainAfter = "WorkerDraining", -1 }, "did not suspend for the drain within 5m0s"},
-		{"reverted, not drained", func(w *world) { w.drainReason = "RevertedAfterWorkerLoss" }, "suspended with reason RevertedAfterWorkerLoss, want WorkerDraining"},
-		{"never suspends", func(w *world) { w.drainAfter = -1 }, "did not suspend for the drain within 5m0s of its worker's deletion (phase Running)"},
-		// A worker shared with another task is drained anyway, as a node
-		// drain does, and the other task must come through it too.
-		{"shared worker, neighbour drained", func(w *world) { w.sharedWorker, w.neighbour = true, "drained" }, ""},
-		{"shared worker, neighbour resumed before a poll", func(w *world) { w.sharedWorker, w.neighbour = true, "resumed" }, ""},
-		{"shared worker, neighbour reverted", func(w *world) { w.sharedWorker, w.neighbour = true, "reverted" }, "task sb-triage-1, on the same worker: suspended with reason RevertedAfterWorkerLoss, want WorkerDraining"},
-		{"shared worker, neighbour untouched", func(w *world) { w.sharedWorker = true }, "task sb-triage-1, on the same worker: no sign of a drain suspend (phase Running)"},
-		{"never on a worker", func(w *world) { w.neverPlaced = true }, "isn't on a worker to drain"},
-		{"delete refused", func(w *world) { w.deleteRefused = true }, "deleting the worker pod at 10.48.0.7: pods \"ax-pool-abc\" is forbidden"},
+		{name: "stale drain condition only", setup: func(w *world) { w.staleReason, w.drainAfter = "WorkerDraining", -1 }, fail: "did not suspend for the drain within 5m0s"},
+		{name: "reverted, not drained", setup: func(w *world) { w.drainReason = "RevertedAfterWorkerLoss" }, fail: "suspended with reason RevertedAfterWorkerLoss, want WorkerDraining"},
+		{name: "never suspends", setup: func(w *world) { w.drainAfter = -1 }, fail: "did not suspend for the drain within 5m0s of its worker's deletion (phase Running)"},
+		{name: "own task fails", setup: func(w *world) { w.ownFailed, w.drainAfter = true, 40*time.Second; w.drainReason = "" }, fail: "Failed after its worker's deletion"},
+		{name: "never on a worker", setup: func(w *world) { w.neverPlaced = true }, fail: "isn't on a worker to drain"},
+		{name: "delete refused", setup: func(w *world) { w.deleteRefused = true }, fail: `deleting the worker pod at 10.48.0.7: pods "ax-pool-abc" is forbidden`},
+		// A worker shared with other tasks is drained anyway, as a node
+		// drain does, and each must come through it with its state safe.
+		{name: "neighbour drained", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "drained" }, outcome: "WorkerDraining", woke: true},
+		{name: "neighbour idle-suspended at the same moment", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "idle" }, outcome: "suspended with reason IdleSuspended (not the drain's)", woke: true},
+		{name: "neighbour resumed elsewhere before a poll", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "resumed" }, outcome: neighbourResumed, woke: true},
+		{name: "neighbour deleted during the drain", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "gone" }, outcome: "deleted during the drain", woke: true},
+		{name: "neighbour resumed on the drained worker", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "stuck" },
+			outcome: "resumed but still on the drained worker", fail: "task sb-triage-1, on the same worker: resumed but still on the drained worker", woke: true},
+		{name: "neighbour reverted", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "reverted" },
+			outcome: "suspended with reason RevertedAfterWorkerLoss, want WorkerDraining", fail: "task sb-triage-1, on the same worker: suspended with reason RevertedAfterWorkerLoss, want WorkerDraining", woke: true},
+		{name: "neighbour failed", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "failed" },
+			outcome: "Failed", fail: "task sb-triage-1, on the same worker: Failed", woke: true},
+		{name: "neighbour untouched", setup: func(w *world) { w.sharedWorker = true },
+			outcome: "no sign of a drain suspend (phase Running)", fail: "task sb-triage-1, on the same worker: no sign of a drain suspend (phase Running)", woke: true},
+		{name: "two neighbours, one failed", setup: func(w *world) { w.sharedWorker, w.neighbour, w.secondDrained = true, "failed", true },
+			outcome: "Failed", fail: "task sb-triage-1, on the same worker: Failed", woke: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w, s, o := newWorld(t)
@@ -882,6 +932,8 @@ func TestRunDrain(t *testing.T) {
 			w.suspendAfter = -1 // no idle suspend: only the drain suspends it
 			w.drainAfter, w.drainReason = 40*time.Second, "WorkerDraining"
 			tc.setup(w)
+			var logs []string
+			o.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
 			r := run(t, w, s, o)
 			drained := tc.name != "never on a worker" && tc.name != "delete refused"
 			if drained != (len(w.drainedPods) == 1) {
@@ -892,20 +944,39 @@ func TestRunDrain(t *testing.T) {
 					t.Errorf("ops %v: the worker must be drained after the workload is gone", w.ops)
 				}
 			}
-			if w.sharedWorker && (r.Drain == nil || len(r.Drain.Neighbours) != 1 || r.Drain.Neighbours[0].Task != "sb-triage-1") {
-				t.Errorf("neighbours %+v", r.Drain)
+			if w.sharedWorker {
+				want := 1
+				if w.secondDrained {
+					want = 2
+				}
+				if r.Drain == nil || len(r.Drain.Neighbours) != want || r.Drain.Neighbours[0].Task != "sb-triage-1" || r.Drain.Neighbours[0].Outcome != tc.outcome {
+					t.Errorf("neighbours %+v, want sb-triage-1 %q", r.Drain, tc.outcome)
+				}
+				if w.secondDrained && r.Drain != nil && len(r.Drain.Neighbours) == 2 && r.Drain.Neighbours[1].Outcome != "WorkerDraining" {
+					t.Errorf("second neighbour %+v", r.Drain.Neighbours[1])
+				}
+			}
+			if r.Woke != tc.woke {
+				t.Errorf("woke %v, want %v (failures %v)", r.Woke, tc.woke, r.Failures)
+			}
+			// Settled tasks end the wait: only the stuck and untouched
+			// neighbours, and a task that never suspends, take the window.
+			settles := tc.fail == "" || strings.Contains(tc.name, "fail") || strings.Contains(tc.name, "reverted")
+			if drained && settles && w.now.Sub(w.drainedAt) >= 5*time.Minute {
+				t.Errorf("the drain wait took %s", w.now.Sub(w.drainedAt))
 			}
 			if tc.fail == "" {
-				if !r.Pass || !r.Suspended || !r.Woke || r.Drain == nil || r.Drain.Reason != "WorkerDraining" || r.Drain.After != "40s" || r.Drain.WorkerPod != "ax-pool-abc" {
+				if !r.Pass || !r.Suspended || r.Drain == nil || r.Drain.Reason != "WorkerDraining" || r.Drain.After != "40s" || r.Drain.WorkerPod != "ax-pool-abc" {
 					t.Errorf("result %+v, drain %+v, failures %v", r, r.Drain, r.Failures)
 				}
 				return
 			}
-			// A neighbour's failure fails the run, but the task itself still
-			// wakes; a failure of its own stops before the wake.
-			ownFailed := !strings.Contains(tc.name, "neighbour")
-			if r.Pass || (ownFailed && r.Woke) || !slices.ContainsFunc(r.Failures, func(f string) bool { return strings.Contains(f, tc.fail) }) {
-				t.Errorf("pass %v, woke %v, failures %v, want %q", r.Pass, r.Woke, r.Failures, tc.fail)
+			if r.Pass || !slices.ContainsFunc(r.Failures, func(f string) bool { return strings.Contains(f, tc.fail) }) {
+				t.Errorf("pass %v, failures %v, want %q", r.Pass, r.Failures, tc.fail)
+			}
+			// Drain failures are logged as they happen, too.
+			if !slices.ContainsFunc(logs, func(l string) bool { return strings.Contains(l, tc.fail) }) {
+				t.Errorf("logs %v lack %q", logs, tc.fail)
 			}
 		})
 	}

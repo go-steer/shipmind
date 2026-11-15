@@ -22,8 +22,9 @@ release is a tested set of component versions (see "Cutting a release" in
   session in memory. It fails until ax-server suspends a draining worker's
   actors (mastersingh24/ax#1). A worker shared with other tasks is drained
   anyway, as a real node drain is, and every task that was on it (in the
-  runner's atespace) must suspend for the drain too; the result lists how
-  each fared. The right to list and delete pods in `ax-workers` is opt-in:
+  runner's atespace) must come through with its state safe (suspended,
+  resumed on another worker, or deleted; not reverted, Failed or left on
+  the drained worker); the result lists how each fared. The right to list and delete pods in `ax-workers` is opt-in:
   an overlay adds `deploy/e2e/substrate/drain`.
 - An answer judge (#90): each scenario states its ground truth
   (`expect.diagnosis`), and `shipmind scenario run -judge MODEL` has a

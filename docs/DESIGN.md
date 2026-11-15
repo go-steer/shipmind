@@ -327,9 +327,10 @@ handling looks like, and every run is checked against it (epic #93):
   after the deletion), not on the phase at a poll, since lookout's resolved
   signal can wake the task again in between. Deleting a worker pod drains
   every actor on it, as a node drain does, so every other task that was on
-  the worker (in the runner's atespace) must also suspend for the drain; a
-  neighbour that a request woke before a poll saw it suspended counts, one
-  reverted or failed doesn't. The right to list and delete pods in
+  the worker (in the runner's atespace) must come through with its state
+  safe: suspended (for the drain, or idle at the same moment), resumed on
+  another worker before a poll saw it suspended, or deleted. Reverted,
+  Failed, or resumed but still on the drained worker fails the run. The right to list and delete pods in
   `ax-workers` is opt-in per environment (`deploy/e2e/substrate/drain`,
   which also holds its nightly at 04:17 UTC), taken only once that
   environment's ax-server suspends on drain. Dev and stage run the nightly;
