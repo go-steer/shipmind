@@ -205,6 +205,12 @@ func TestNightlyScenariosExist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The worker-drain nightly rides with its opt-in RBAC (#105).
+	d, err := os.ReadFile("../../deploy/e2e/substrate/drain/cronjob.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = append(b, d...)
 	refs := regexp.MustCompile(`(?m)^\s+- /scenarios/([a-z0-9-]+)$`).FindAllStringSubmatch(string(b), -1)
 	if len(refs) < 2 {
 		t.Fatalf("found %d scenario references in the CronJobs", len(refs))
@@ -338,5 +344,36 @@ func TestToolCatalog(t *testing.T) {
 	}
 	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), `"delete_k8s_resources" isn't a tool`) {
 		t.Errorf("a misspelled never_call loaded: %v", err)
+	}
+}
+
+// The opt-in drain nightly runs the same e2e-runner build as the base
+// CronJobs, so a pin bump can't leave it behind, and it runs the drain
+// scenario.
+func TestDrainNightlyMatchesBase(t *testing.T) {
+	image := regexp.MustCompile(`(?m)^\s+image: (ghcr\.io/go-steer/shipmind/e2e-runner:\S+)$`)
+	base, err := os.ReadFile("../../deploy/e2e/substrate/e2e.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain, err := os.ReadFile("../../deploy/e2e/substrate/drain/cronjob.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, d := image.FindAllStringSubmatch(string(base), -1), image.FindAllStringSubmatch(string(drain), -1)
+	if len(b) == 0 || len(d) != 1 {
+		t.Fatalf("found %d base and %d drain e2e-runner images", len(b), len(d))
+	}
+	for _, m := range b {
+		if m[1] != d[0][1] {
+			t.Errorf("drain nightly runs %s, the base runs %s", d[0][1], m[1])
+		}
+	}
+	if !strings.Contains(string(drain), "- /scenarios/worker-drain\n") || !strings.Contains(string(drain), "shipmind.dev/nightly: scenario") {
+		t.Error("the drain nightly must run /scenarios/worker-drain and carry the nightly label")
+	}
+	s, err := Load("../../e2e/scenarios/worker-drain")
+	if err != nil || s.Drain == nil {
+		t.Errorf("worker-drain: %v, drain %+v", err, s)
 	}
 }

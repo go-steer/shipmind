@@ -19,7 +19,9 @@
 # is the cluster's lab namespace, which lookout watches.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# The worker-drain scenario's permissions (#105), for an overlay to opt into
-# alongside deploy/e2e/substrate.
+# The worker-drain scenario (#105): its permissions and its nightly, for an
+# overlay to opt into alongside deploy/e2e/substrate once its ax-server
+# suspends on drain.
 resources:
   - rbac.yaml
+  - cronjob.yaml
