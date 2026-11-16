@@ -56,10 +56,10 @@ spec:
           credentialUri: ate-secret://k8s.io/default/ate-credentials/google-token/token
   http:
     port: 8484
-  # Suspended after 10 minutes without requests; the router wakes it on
-  # the next follow-up.
+  # Suspended after agent.idleSuspendAfter without requests (10m unless the
+  # environment sets it); the router wakes it on the next follow-up.
   idle:
-    suspendAfter: 10m
+    suspendAfter: {{ .IdleSuspend }}
   # Substrate books these against the worker's limits (the WorkerPool in
   # deploy/profiles/substrate/workers sizes workers for three agents);
   # it requires both.

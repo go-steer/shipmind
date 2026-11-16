@@ -130,6 +130,7 @@ func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image string) ([]b
 		"Project":     e.Agent.Project,
 		"Workspace":   e.Agent.Workspace,
 		"AttachToken": t.Attach,
+		"IdleSuspend": e.Agent.IdleSuspend(),
 	})
 }
 
@@ -145,6 +146,7 @@ func task(root string, e *env.Env, t Tokens, bundle string) ([]byte, error) {
 		"Workspace":   e.Agent.Workspace,
 		"InjectToken": t.Inject,
 		"AttachToken": t.Attach,
+		"IdleSuspend": e.Agent.IdleSuspend(),
 	})
 }
 

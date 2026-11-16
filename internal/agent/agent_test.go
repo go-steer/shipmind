@@ -649,3 +649,36 @@ func TestTaskCoreAgent(t *testing.T) {
 		t.Error("Task with a bad token succeeded")
 	}
 }
+
+// Both task templates take the environment's idle timeout, 10m by default.
+func TestTaskIdleSuspend(t *testing.T) {
+	core := func(e *env.Env) *env.Env {
+		e.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
+		return e
+	}
+	for _, tc := range []struct {
+		name string
+		e    *env.Env
+		want string
+	}{
+		{"mast, default", testEnv(), "suspendAfter: 10m\n"},
+		{"core-agent, default", core(testEnv()), "suspendAfter: 10m\n"},
+		{"mast, 3m", func() *env.Env { e := testEnv(); e.Agent.IdleSuspendAfter = "3m"; return e }(), "suspendAfter: 3m\n"},
+		{"core-agent, 3m", func() *env.Env { e := core(testEnv()); e.Agent.IdleSuspendAfter = "3m"; return e }(), "suspendAfter: 3m\n"},
+	} {
+		// The chat task (switchboard) and the incident task (lookout).
+		for kind, render := range map[string]func(string, *env.Env, Tokens) ([]byte, error){"chat": ChatTask, "incident": Task} {
+			e := *tc.e
+			if kind == "incident" && e.Agent.ChatImage != "" {
+				e.Agent.IncidentImage, e.Agent.ChatImage = e.Agent.ChatImage, ""
+			}
+			b, err := render(root, &e, tok)
+			if err != nil {
+				t.Fatalf("%s, %s: %v", tc.name, kind, err)
+			}
+			if !strings.Contains(string(b), tc.want) {
+				t.Errorf("%s, %s: rendered task lacks %q", tc.name, kind, tc.want)
+			}
+		}
+	}
+}
