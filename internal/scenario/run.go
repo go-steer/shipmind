@@ -706,10 +706,11 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	return r, nil
 }
 
-// revertedAfterWorkerLoss is ax's AutoSuspended reason for an actor it
-// reverted to its last snapshot after its worker went away: the task
-// survives, its session doesn't.
-const revertedAfterWorkerLoss = "RevertedAfterWorkerLoss"
+// isRevert reports whether an AutoSuspended reason is one of ax's reverts
+// to an earlier snapshot (RevertedAfterWorkerLoss, RevertedAfterFailedSuspend,
+// and any later Reverted*): the task survives, the work since its last
+// snapshot doesn't.
+func isRevert(reason string) bool { return strings.HasPrefix(reason, "Reverted") }
 
 // drainWorker deletes the worker pod hosting the task's actor, as a node
 // drain does, and waits for the task, and every other task that was on that
@@ -902,7 +903,7 @@ func (v *drainSeen) outcome(reason string) (string, bool) {
 		return "deleted during the drain", true
 	case v.cond.Reason == reason:
 		return reason, true
-	case v.cond.Reason == revertedAfterWorkerLoss:
+	case isRevert(v.cond.Reason):
 		return "suspended with reason " + v.cond.Reason + ", want " + reason, false
 	case v.cond.Reason != "":
 		return "suspended with reason " + v.cond.Reason + " (not the drain's)", true

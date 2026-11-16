@@ -150,6 +150,8 @@ func (w *world) TaskConditions(_ context.Context, task string) (map[string]Condi
 			conds["AutoSuspended"] = Condition{Status: "True", Reason: "WorkerDraining", Updated: at}
 		case "reverted":
 			conds["AutoSuspended"] = Condition{Status: "True", Reason: "RevertedAfterWorkerLoss", Updated: at}
+		case "reverted-suspend":
+			conds["AutoSuspended"] = Condition{Status: "True", Reason: "RevertedAfterFailedSuspend", Updated: at}
 		case "idle":
 			conds["AutoSuspended"] = Condition{Status: "True", Reason: "IdleSuspended", Updated: at}
 		case "resumed", "stuck":
@@ -919,6 +921,11 @@ func TestRunDrain(t *testing.T) {
 			outcome: "resumed but still on the drained worker", fail: "task sb-triage-1, on the same worker: resumed but still on the drained worker", woke: true},
 		{name: "neighbour reverted", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "reverted" },
 			outcome: "suspended with reason RevertedAfterWorkerLoss, want WorkerDraining", fail: "task sb-triage-1, on the same worker: suspended with reason RevertedAfterWorkerLoss, want WorkerDraining", woke: true},
+		// ax's revert after a failed drain suspend is a revert too, not a
+		// safe suspend.
+		{name: "neighbour reverted after a failed suspend", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "reverted-suspend" },
+			outcome: "suspended with reason RevertedAfterFailedSuspend, want WorkerDraining", fail: "task sb-triage-1, on the same worker: suspended with reason RevertedAfterFailedSuspend, want WorkerDraining", woke: true},
+		{name: "own task reverted after a failed suspend", setup: func(w *world) { w.drainReason = "RevertedAfterFailedSuspend" }, fail: "suspended with reason RevertedAfterFailedSuspend, want WorkerDraining"},
 		{name: "neighbour failed", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "failed" },
 			outcome: "Failed", fail: "task sb-triage-1, on the same worker: Failed", woke: true},
 		{name: "neighbour untouched", setup: func(w *world) { w.sharedWorker = true },
