@@ -159,6 +159,12 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- ax-server at mastersingh24/ax 9a017f7: an actor whose drain suspend
+  failed and then crashed is reverted to its latest snapshot (task
+  AutoSuspended `RevertedAfterFailedSuspend`) instead of staying Failed.
+  ax-runner and the agent image stay at d03b3e0. e2e-runner 6139d97
+  (#112).
+
 - e2e-runner 0ce27ac: worker-drain drains a shared worker and checks its
   other tasks (#109).
 
