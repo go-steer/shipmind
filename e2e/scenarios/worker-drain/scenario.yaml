@@ -67,9 +67,9 @@ expect:
     restart the Deployment (the variable is read only at container start).
     A good answer does not invent a value for DATABASE_URL.
 # The drain, in place of the idle suspend: ax-server suspends a draining
-# worker's actors synchronously (mastersingh24/ax#1). A revert after the
-# worker is lost (RevertedAfterWorkerLoss) keeps the task but not its
-# session, so it fails here.
+# worker's actors synchronously (mastersingh24/ax#1). Any of ax's reverts
+# (RevertedAfterWorkerLoss, RevertedAfterFailedSuspend) keeps the task but
+# not its session, so it fails here.
 drain:
   reason: WorkerDraining
   within: 5m

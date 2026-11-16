@@ -10,6 +10,10 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- worker-drain counts any of ax's reverts (`RevertedAfterWorkerLoss`,
+  `RevertedAfterFailedSuspend`, any later `Reverted*`) as a revert: the
+  task survives but loses the work since its last snapshot, so it fails
+  the run, for the scenario's own task and for a neighbour alike.
 - `agent.idleSuspendAfter` in an environment's `shipmind.yaml`: how long a
   task may go without requests before ax suspends it, rendered into both
   task templates (default 10m, from 1m to 20m, so the scenarios' 25m
