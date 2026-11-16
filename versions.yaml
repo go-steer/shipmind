@@ -66,11 +66,11 @@ components:
 
   - name: ax
     source: github.com/mastersingh24/ax
-    version: d03b3e0dc6eada60ffd0fdfb976828938cd0b6dc
+    version: 9a017f7f8f720f8476d5bf69853e421278efdd8b
     profiles: [substrate]
     images:
       - name: ax-server
-        ref: ghcr.io/go-steer/shipmind/ax-server:d03b3e0dc6eada60ffd0fdfb976828938cd0b6dc@sha256:d1823f54d4700718cfd9be934b29e9e9efe4e1776230095ff7b9ed2ab4c8975e
+        ref: ghcr.io/go-steer/shipmind/ax-server:9a017f7f8f720f8476d5bf69853e421278efdd8b@sha256:d511f0995608da6d0e105afe84e85e0db1c0b4bb116599da0d8af191dc5ec8d1
       - name: postgres
         ref: docker.io/library/postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     manifests:
@@ -207,11 +207,11 @@ components:
 
   - name: e2e-runner
     source: github.com/go-steer/shipmind
-    version: 0ce27ac8fab83fd0f38cd55779b4f029e506947e
+    version: 6139d97067c82b3dc9b02fb686f76f3588d1c4fb
     profiles: [substrate]
     images:
       - name: e2e-runner
-        ref: ghcr.io/go-steer/shipmind/e2e-runner:0ce27ac8fab83fd0f38cd55779b4f029e506947e@sha256:673c5ee14b4b56e45de996930a93ea88f952c5b3a81a3d77688b95ae11b5e9d2
+        ref: ghcr.io/go-steer/shipmind/e2e-runner:6139d97067c82b3dc9b02fb686f76f3588d1c4fb@sha256:95109eebf507b1e97651e136c660c42bdb6c63185a118751452a7b2132968bf2
     note: >-
       The end-to-end runner (images/e2e-runner: shipmind, the ax CLI,
       kubectl, the scenarios) at the commit in version, which the nightly
@@ -222,7 +222,8 @@ components:
       oom-killed scenario (#79), can archive each run (#86), checks
       each run's trajectory (#94), has a judge model grade each answer
       (#99), and carries the worker-drain scenario (#106), which drains a
-      shared worker and checks its other tasks (#109).
+      shared worker and checks its other tasks (#109), counting any of ax's
+      reverts as a failure (#112).
 
   - name: switchboard
     source: github.com/go-steer/switchboard
