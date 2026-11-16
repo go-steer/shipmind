@@ -772,7 +772,7 @@ func drainWorker(ctx context.Context, s *Scenario, k Kube, tasks Tasks, r *Resul
 	}
 
 	// Each task is settled once ax has written AutoSuspended=True since the
-	// deletion (for the drain, or any other reason, recorded), once it has
+	// deletion for the drain or as a revert, once it has
 	// Failed or gone from ax, or, for another task, once a request has
 	// resumed it on a different worker. Not the phase at the moment of a
 	// poll: lookout's resolved signal, the runner's reads or a person's
@@ -811,8 +811,15 @@ func drainWorker(ctx context.Context, s *Scenario, k Kube, tasks Tasks, r *Resul
 			}
 			if c := conds["AutoSuspended"]; !c.Updated.Before(drainedAt) {
 				switch {
-				case c.Status == "True":
+				case c.Status == "True" && (c.Reason == s.Drain.Reason || isRevert(c.Reason)):
 					v.cond, v.done = c, true
+					continue
+				case c.Status == "True":
+					// Suspended for another reason (idle, at the same
+					// moment): its asynchronous snapshot can still fail and
+					// end in a revert or Failed, so keep watching it until
+					// the window ends.
+					v.cond = c
 					continue
 				case c.Status == "False" && c.Reason == "ResumedByRequest":
 					v.resumed = true

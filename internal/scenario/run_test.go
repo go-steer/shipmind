@@ -154,6 +154,11 @@ func (w *world) TaskConditions(_ context.Context, task string) (map[string]Condi
 			conds["AutoSuspended"] = Condition{Status: "True", Reason: "RevertedAfterFailedSuspend", Updated: at}
 		case "idle":
 			conds["AutoSuspended"] = Condition{Status: "True", Reason: "IdleSuspended", Updated: at}
+		case "idle-then-reverted":
+			conds["AutoSuspended"] = Condition{Status: "True", Reason: "IdleSuspended", Updated: at}
+			if !w.now.Before(at.Add(2 * time.Minute)) {
+				conds["AutoSuspended"] = Condition{Status: "True", Reason: "RevertedAfterFailedSuspend", Updated: at.Add(2 * time.Minute)}
+			}
 		case "resumed", "stuck":
 			conds["AutoSuspended"] = Condition{Status: "False", Reason: "ResumedByRequest", Updated: at.Add(time.Second)}
 		}
@@ -915,6 +920,10 @@ func TestRunDrain(t *testing.T) {
 		// drain does, and each must come through it with its state safe.
 		{name: "neighbour drained", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "drained" }, outcome: "WorkerDraining", woke: true},
 		{name: "neighbour idle-suspended at the same moment", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "idle" }, outcome: "suspended with reason IdleSuspended (not the drain's)", woke: true},
+		// An idle suspend at the same moment is watched to the end: its
+		// snapshot can still fail and end in a revert.
+		{name: "neighbour idle-suspended, then reverted", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "idle-then-reverted" },
+			outcome: "suspended with reason RevertedAfterFailedSuspend, want WorkerDraining", fail: "task sb-triage-1, on the same worker: suspended with reason RevertedAfterFailedSuspend, want WorkerDraining", woke: true},
 		{name: "neighbour resumed elsewhere before a poll", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "resumed" }, outcome: neighbourResumed, woke: true},
 		{name: "neighbour deleted during the drain", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "gone" }, outcome: "deleted during the drain", woke: true},
 		{name: "neighbour resumed on the drained worker", setup: func(w *world) { w.sharedWorker, w.neighbour = true, "stuck" },
@@ -968,7 +977,7 @@ func TestRunDrain(t *testing.T) {
 			}
 			// Settled tasks end the wait: only the stuck and untouched
 			// neighbours, and a task that never suspends, take the window.
-			settles := tc.fail == "" || strings.Contains(tc.name, "fail") || strings.Contains(tc.name, "reverted")
+			settles := (tc.fail == "" && !strings.Contains(tc.name, "idle-suspended")) || strings.Contains(tc.name, "fail") || (strings.Contains(tc.name, "reverted") && !strings.Contains(tc.name, "idle"))
 			if drained && settles && w.now.Sub(w.drainedAt) >= 5*time.Minute {
 				t.Errorf("the drain wait took %s", w.now.Sub(w.drainedAt))
 			}
