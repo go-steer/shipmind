@@ -81,7 +81,7 @@ func TestParseErrors(t *testing.T) {
 		{"incident image", strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent:latest\n  clusters:\n", 1), "agent.incidentImage"},
 		{"idle not a duration", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: soon\n  clusters:\n", 1), "agent.idleSuspendAfter"},
 		{"idle too short", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: 30s\n  clusters:\n", 1), "agent.idleSuspendAfter"},
-		{"idle too long", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: 48h\n  clusters:\n", 1), "agent.idleSuspendAfter"},
+		{"idle too long", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: 30m\n  clusters:\n", 1), "agent.idleSuspendAfter"},
 		{"chat image", strings.Replace(good, "  clusters:\n", "  chatImage: registry.example.com/agent:latest\n  clusters:\n", 1), "agent.chatImage"},
 		{"no clusters", strings.Replace(good, "  clusters:\n    - name: demo\n      path: projects/example-project/locations/us-central1/clusters/demo\n", "  clusters: []\n", 1), "at least one cluster"},
 		{"cluster path", strings.Replace(good, "clusters/demo\n", "clusters/other\n", 1), "agent.clusters[0].path"},

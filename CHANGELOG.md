@@ -12,9 +12,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 - `agent.idleSuspendAfter` in an environment's `shipmind.yaml`: how long a
   task may go without requests before ax suspends it, rendered into both
-  task templates (default 10m, from 1m to 24h). Shorter frees worker slots
-  sooner at the cost of more suspend/resume cycles; staging uses 3m, after
-  it ran out of slots (12 per 4 workers) during scenario runs.
+  task templates (default 10m, from 1m to 20m, so the scenarios' 25m
+  suspend limit stays reachable). Shorter frees worker slots sooner at the
+  cost of more suspend/resume cycles; staging uses 3m, after it ran out of
+  slots (12 per 4 workers) during scenario runs. It reaches tasks created
+  after the change; existing ones keep their timeout.
 - The worker-drain scenario runs nightly at 04:17 UTC (#105) in every
   environment that opts into `deploy/e2e/substrate/drain`, which now carries
   its CronJob beside its RBAC (dev and stage; prod keeps it suspended for

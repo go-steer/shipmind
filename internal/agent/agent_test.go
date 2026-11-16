@@ -666,12 +666,19 @@ func TestTaskIdleSuspend(t *testing.T) {
 		{"mast, 3m", func() *env.Env { e := testEnv(); e.Agent.IdleSuspendAfter = "3m"; return e }(), "suspendAfter: 3m\n"},
 		{"core-agent, 3m", func() *env.Env { e := core(testEnv()); e.Agent.IdleSuspendAfter = "3m"; return e }(), "suspendAfter: 3m\n"},
 	} {
-		b, err := ChatTask(root, tc.e, tok)
-		if err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
-		}
-		if !strings.Contains(string(b), tc.want) {
-			t.Errorf("%s: rendered task lacks %q", tc.name, tc.want)
+		// The chat task (switchboard) and the incident task (lookout).
+		for kind, render := range map[string]func(string, *env.Env, Tokens) ([]byte, error){"chat": ChatTask, "incident": Task} {
+			e := *tc.e
+			if kind == "incident" && e.Agent.ChatImage != "" {
+				e.Agent.IncidentImage, e.Agent.ChatImage = e.Agent.ChatImage, ""
+			}
+			b, err := render(root, &e, tok)
+			if err != nil {
+				t.Fatalf("%s, %s: %v", tc.name, kind, err)
+			}
+			if !strings.Contains(string(b), tc.want) {
+				t.Errorf("%s, %s: rendered task lacks %q", tc.name, kind, tc.want)
+			}
 		}
 	}
 }

@@ -90,10 +90,15 @@ type Agent struct {
 	// core-agent from this image instead of mast from Image.
 	IncidentImage string `yaml:"incidentImage,omitempty"`
 	// IdleSuspendAfter is how long a task may go without requests before
-	// ax suspends it (its spec.idle.suspendAfter), as a Go duration; empty
-	// is DefaultIdleSuspendAfter. Shorter frees worker slots sooner, at the
-	// cost of more suspend and resume cycles (a resume from memory is
-	// sub-second).
+	// ax suspends it (its spec.idle.suspendAfter), as a Go duration from 1m
+	// to 20m; empty is DefaultIdleSuspendAfter. Shorter frees worker slots
+	// sooner, at the cost of more suspend and resume cycles (a warm resume
+	// takes about two seconds). ax counts only requests, so a turn must not
+	// outlast it with nothing connected: the incident profile caps a turn at
+	// 150s (max_wallclock_seconds), and switchboard holds its event stream
+	// open through a chat turn, which counts. The 20m ceiling keeps the
+	// scenarios' 25m limits.suspend reachable. It reaches new tasks only:
+	// a task keeps the template it was created from.
 	IdleSuspendAfter string `yaml:"idleSuspendAfter,omitempty"`
 	// Clusters is the table the agent uses for incidents that name only
 	// a bare cluster.
@@ -252,8 +257,8 @@ func (e *Env) check() error {
 		fail("agent.incidentImage %q: want an image pinned by digest", a.IncidentImage)
 	}
 	if a.IdleSuspendAfter != "" {
-		if d, err := time.ParseDuration(a.IdleSuspendAfter); err != nil || d < time.Minute || d > 24*time.Hour {
-			fail("agent.idleSuspendAfter %q: want a duration from 1m to 24h", a.IdleSuspendAfter)
+		if d, err := time.ParseDuration(a.IdleSuspendAfter); err != nil || d < time.Minute || d > 20*time.Minute {
+			fail("agent.idleSuspendAfter %q: want a duration from 1m to 20m", a.IdleSuspendAfter)
 		}
 	}
 	if len(a.Clusters) == 0 {
