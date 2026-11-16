@@ -34,6 +34,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -88,6 +89,12 @@ type Agent struct {
 	// IncidentImage is the same for lookout's incidents: set, they run
 	// core-agent from this image instead of mast from Image.
 	IncidentImage string `yaml:"incidentImage,omitempty"`
+	// IdleSuspendAfter is how long a task may go without requests before
+	// ax suspends it (its spec.idle.suspendAfter), as a Go duration; empty
+	// is DefaultIdleSuspendAfter. Shorter frees worker slots sooner, at the
+	// cost of more suspend and resume cycles (a resume from memory is
+	// sub-second).
+	IdleSuspendAfter string `yaml:"idleSuspendAfter,omitempty"`
 	// Clusters is the table the agent uses for incidents that name only
 	// a bare cluster.
 	Clusters []Cluster `yaml:"clusters"`
@@ -143,6 +150,19 @@ type ManagedSecret struct {
 // Namespace and Name split Secret.
 func (m ManagedSecret) Namespace() string { ns, _, _ := strings.Cut(m.Secret, "/"); return ns }
 func (m ManagedSecret) Name() string      { _, n, _ := strings.Cut(m.Secret, "/"); return n }
+
+// DefaultIdleSuspendAfter is a task's idle timeout when agent.idleSuspendAfter
+// is unset.
+const DefaultIdleSuspendAfter = "10m"
+
+// IdleSuspend is the task idle timeout to render: agent.idleSuspendAfter, or
+// the default.
+func (a Agent) IdleSuspend() string {
+	if a.IdleSuspendAfter == "" {
+		return DefaultIdleSuspendAfter
+	}
+	return a.IdleSuspendAfter
+}
 
 // Cluster maps a bare cluster name to its full GKE resource name.
 type Cluster struct {
@@ -230,6 +250,11 @@ func (e *Env) check() error {
 	}
 	if a.IncidentImage != "" && !digestRef.MatchString(a.IncidentImage) {
 		fail("agent.incidentImage %q: want an image pinned by digest", a.IncidentImage)
+	}
+	if a.IdleSuspendAfter != "" {
+		if d, err := time.ParseDuration(a.IdleSuspendAfter); err != nil || d < time.Minute || d > 24*time.Hour {
+			fail("agent.idleSuspendAfter %q: want a duration from 1m to 24h", a.IdleSuspendAfter)
+		}
 	}
 	if len(a.Clusters) == 0 {
 		fail("agent.clusters: want at least one cluster")

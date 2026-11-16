@@ -79,6 +79,9 @@ func TestParseErrors(t *testing.T) {
 		{"workspace", strings.Replace(good, "workspace: demo-ws", "workspace: demo_ws", 1), "agent.workspace"},
 		{"image", strings.Replace(good, "@"+digest, ":latest", 1), "pinned by digest"},
 		{"incident image", strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent:latest\n  clusters:\n", 1), "agent.incidentImage"},
+		{"idle not a duration", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: soon\n  clusters:\n", 1), "agent.idleSuspendAfter"},
+		{"idle too short", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: 30s\n  clusters:\n", 1), "agent.idleSuspendAfter"},
+		{"idle too long", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: 48h\n  clusters:\n", 1), "agent.idleSuspendAfter"},
 		{"chat image", strings.Replace(good, "  clusters:\n", "  chatImage: registry.example.com/agent:latest\n  clusters:\n", 1), "agent.chatImage"},
 		{"no clusters", strings.Replace(good, "  clusters:\n    - name: demo\n      path: projects/example-project/locations/us-central1/clusters/demo\n", "  clusters: []\n", 1), "at least one cluster"},
 		{"cluster path", strings.Replace(good, "clusters/demo\n", "clusters/other\n", 1), "agent.clusters[0].path"},
@@ -178,5 +181,14 @@ func TestLoad(t *testing.T) {
 	}
 	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), FileName) {
 		t.Errorf("Load(bad) = %v, want it to name the file", err)
+	}
+}
+
+func TestIdleSuspend(t *testing.T) {
+	if got := (Agent{}).IdleSuspend(); got != DefaultIdleSuspendAfter {
+		t.Errorf("unset: %q", got)
+	}
+	if got := (Agent{IdleSuspendAfter: "3m"}).IdleSuspend(); got != "3m" {
+		t.Errorf("3m: %q", got)
 	}
 }

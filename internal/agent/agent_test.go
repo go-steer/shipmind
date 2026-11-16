@@ -649,3 +649,29 @@ func TestTaskCoreAgent(t *testing.T) {
 		t.Error("Task with a bad token succeeded")
 	}
 }
+
+// Both task templates take the environment's idle timeout, 10m by default.
+func TestTaskIdleSuspend(t *testing.T) {
+	core := func(e *env.Env) *env.Env {
+		e.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
+		return e
+	}
+	for _, tc := range []struct {
+		name string
+		e    *env.Env
+		want string
+	}{
+		{"mast, default", testEnv(), "suspendAfter: 10m\n"},
+		{"core-agent, default", core(testEnv()), "suspendAfter: 10m\n"},
+		{"mast, 3m", func() *env.Env { e := testEnv(); e.Agent.IdleSuspendAfter = "3m"; return e }(), "suspendAfter: 3m\n"},
+		{"core-agent, 3m", func() *env.Env { e := core(testEnv()); e.Agent.IdleSuspendAfter = "3m"; return e }(), "suspendAfter: 3m\n"},
+	} {
+		b, err := ChatTask(root, tc.e, tok)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !strings.Contains(string(b), tc.want) {
+			t.Errorf("%s: rendered task lacks %q", tc.name, tc.want)
+		}
+	}
+}
