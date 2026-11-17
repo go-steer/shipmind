@@ -30,12 +30,15 @@ import (
 
 // Where switchboard's agent Secret lives, and what reads it: the
 // Deployment in deploy/switchboard/slack mounts config.json and
-// triage.yaml (plus optional propose.yaml under /etc/switchboard/propose
-// when agent.vcs is set), and takes token as the agent's bearer.
+// triage.yaml, takes token as the agent's bearer, and (when
+// slack.alertChannel is set) takes ingress-token as its outbound HTTP
+// ingress bearer, matching ate-credentials/switchboard-ingress.
 const (
-	SwitchboardNamespace = "switchboard"
-	Switchboard          = "switchboard"
-	SwitchboardSecret    = "switchboard-agent" // keys: config.json, triage.yaml, token[, propose.yaml]
+	SwitchboardNamespace     = "switchboard"
+	Switchboard              = "switchboard"
+	SwitchboardSecret        = "switchboard-agent"   // keys: config.json, triage.yaml, token[, ingress-token]
+	CredentialsNamespace     = "ate-credentials"     // Substrate's kubernetes-secrets credential provider namespace
+	SwitchboardIngressSecret = "switchboard-ingress" // key: token
 )
 
 // secretWrite is a Secret up writes because the cluster's copy is missing
@@ -115,12 +118,38 @@ func fromSecretManager(ctx context.Context, p *Plan, m env.ManagedSecret) (map[s
 	return data, nil
 }
 
+// ingressToken checks whether slack.alertChannel requires an outbound
+// ingress token and reads ate-credentials/switchboard-ingress when
+// present. If alertChannel is set without a switchboard Deployment in
+// the render, it fails before any write.
+func ingressToken(ctx context.Context, p *Plan, c cluster.Cluster) (token string, wanted, found bool, err error) {
+	if p.Env.Slack == nil || p.Env.Slack.AlertChannel == "" {
+		return "", false, false, nil
+	}
+	if _, ok := p.Objects.Find("Deployment", SwitchboardNamespace, Switchboard); !ok {
+		return "", false, false, fmt.Errorf("slack.alertChannel is set, but the render has no Deployment %s/%s (include deploy/switchboard/slack)", SwitchboardNamespace, Switchboard)
+	}
+	data, ok, err := c.Secret(ctx, CredentialsNamespace, SwitchboardIngressSecret)
+	if err != nil {
+		return "", true, false, fmt.Errorf("secret %s/%s: %w", CredentialsNamespace, SwitchboardIngressSecret, err)
+	}
+	if !ok || len(data["token"]) == 0 {
+		return "", true, false, nil
+	}
+	tok := string(data["token"])
+	if err := (agent.Tokens{Attach: tok}).CheckAttach(); err != nil {
+		return "", true, false, fmt.Errorf("secret %s/%s: ingress token: want 32 to 128 lowercase hex characters", CredentialsNamespace, SwitchboardIngressSecret)
+	}
+	return tok, true, true, nil
+}
+
 // switchboardSecret returns switchboard's agent Secret if the render runs
 // switchboard and the cluster's copy is missing or differs: its
 // configuration and the agent's task template for conversations (the
-// chat bundle), rendered with the agent's tokens like lookout's, and the
-// attach token as its bearer.
-func switchboardSecret(ctx context.Context, p *Plan, c cluster.Cluster, t agent.Tokens) (*secretWrite, error) {
+// chat bundle), rendered with the agent's tokens like lookout's, the
+// attach token as its bearer, and (when ingressTok is non-empty) the
+// outbound HTTP ingress bearer token.
+func switchboardSecret(ctx context.Context, p *Plan, c cluster.Cluster, t agent.Tokens, ingressTok string) (*secretWrite, error) {
 	if _, ok := p.Objects.Find("Deployment", SwitchboardNamespace, Switchboard); !ok {
 		return nil, nil
 	}
@@ -133,12 +162,8 @@ func switchboardSecret(ctx context.Context, p *Plan, c cluster.Cluster, t agent.
 		return nil, err
 	}
 	want := map[string][]byte{"config.json": cfg, "triage.yaml": task, "token": []byte(t.Attach)}
-	if e := p.Env; e.Agent.VCS != nil {
-		propose, err := agent.ProposeTask(p.Root, e, t)
-		if err != nil {
-			return nil, err
-		}
-		want["propose.yaml"] = propose
+	if ingressTok != "" {
+		want["ingress-token"] = []byte(ingressTok)
 	}
 	live, found, err := c.Secret(ctx, SwitchboardNamespace, SwitchboardSecret)
 	if err != nil {

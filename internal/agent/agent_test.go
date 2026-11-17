@@ -208,12 +208,18 @@ func TestTemplatesSurviveYAML11(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
+	e.Agent.IncidentImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("2", 64)
 	chat, err := ChatTask(root, e, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.Agent.VCS = &env.VCS{Secret: "no", Repositories: []env.Repository{{Repository: "on/no", BaseBranch: "on"}}}
-	propose, err := ProposeTask(root, e, tok)
+	e.Agent.VCS = &env.VCS{Secret: "no", IncidentAutoPR: true, Repositories: []env.Repository{{Repository: "on/no", BaseBranch: "on"}}}
+	e.Slack = &env.Slack{App: "shipmind", Command: "/shipmind", AlertChannel: "C0123456789"}
+	chatVCS, err := ChatTask(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incFull, err := Task(root, e, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +227,7 @@ func TestTemplatesSurviveYAML11(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, b := range map[string][]byte{"task": task, "workspace": ws, "core-agent chat task": chat, "propose task": propose, "workspace with vcs": wsVCS} {
+	for name, b := range map[string][]byte{"task": task, "workspace": ws, "core-agent chat task": chat, "chat task with vcs": chatVCS, "incident task with vcs+alert": incFull, "workspace with vcs+alert": wsVCS} {
 		var doc map[string]any
 		if err := yaml11.Unmarshal(b, &doc); err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -598,22 +604,23 @@ func TestCoreAgentImage(t *testing.T) {
 	if err := json.Unmarshal(b, &chatMain); err != nil || !slices.Equal(chatMain, []string{"list_clusters", "get_cluster"}) {
 		t.Errorf("chat main agent's tools %q, %v", chatMain, err)
 	}
-	for _, step := range []string{`jq -s '.[0] * .[1]'`, "/in/ax/core-agent-$b.json", "--attach-token=SMOKE_TOKEN", "core-agent-gke-propose.json", "builtin:propose-change"} {
+	for _, step := range []string{`jq -s '.[0] * .[1]'`, "/in/ax/core-agent-$b.json", "--attach-token=SMOKE_TOKEN", "core-agent-$b.base.json", "builtin:propose-change"} {
 		if !strings.Contains(string(dockerfile), step) {
 			t.Errorf("images/agent lacks %q (the overlay merge or the boot check)", step)
 		}
 	}
 }
 
-func TestProposeTaskAndWorkspace(t *testing.T) {
+func TestChatAndIncidentVCSAndAlertFlows(t *testing.T) {
 	e := testEnv()
-	if b, err := ProposeTask(root, e, tok); err != nil || b != nil {
-		t.Fatalf("ProposeTask without vcs = %s, %v", b, err)
+	if b, err := ChatConfig(root, e); err != nil || b != nil {
+		t.Fatalf("ChatConfig without vcs = %s, %v", b, err)
 	}
-	if b, err := ProposeConfig(root, e); err != nil || b != nil {
-		t.Fatalf("ProposeConfig without vcs = %s, %v", b, err)
+	if b, err := IncidentConfig(root, e); err != nil || b != nil {
+		t.Fatalf("IncidentConfig without vcs/alert = %s, %v", b, err)
 	}
 	e.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("4", 64)
+	e.Agent.IncidentImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("5", 64)
 	e.Agent.VCS = &env.VCS{
 		Secret: "gh-token",
 		Repositories: []env.Repository{
@@ -621,14 +628,15 @@ func TestProposeTaskAndWorkspace(t *testing.T) {
 			{Repository: "acme/apps", BaseBranch: "release"},
 		},
 	}
-	taskBytes, err := ProposeTask(root, e, tok)
+
+	chatBytes, err := ChatTask(root, e, tok)
 	if err != nil {
-		t.Fatalf("ProposeTask: %v", err)
+		t.Fatalf("ChatTask: %v", err)
 	}
-	s := string(taskBytes)
+	s := string(chatBytes)
 	for _, want := range []string{
-		"-c\n    - /workspace/repo/propose-config.json\n",
-		"--agents-dir=/opt/core-agent/recipes/" + ProposeBundle + "/.agents",
+		"-c\n    - /workspace/repo/chat-config.json\n",
+		"--agents-dir=/opt/core-agent/recipes/" + ChatBundle + "/.agents",
 		"--disable-tools=bash,read_many_files,view_file_outline,delete_file,stat,list_dir,glob",
 		"CORE_AGENT_TRUSTED_DIRS",
 		"ate-secret://k8s.io/default/ate-credentials/gh-token/bearer",
@@ -636,23 +644,23 @@ func TestProposeTaskAndWorkspace(t *testing.T) {
 		"debug: false",
 	} {
 		if !strings.Contains(s, want) {
-			t.Errorf("ProposeTask lacks %q:\n%s", want, s)
+			t.Errorf("ChatTask with vcs lacks %q:\n%s", want, s)
 		}
 	}
 	dockerfile, err := os.ReadFile(filepath.Join(root, "images/agent/Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var proposeFlags []string
+	var vcsFlags []string
 	for _, line := range strings.Split(string(dockerfile), "\n") {
-		if v, ok := strings.CutPrefix(line, "ARG PROPOSE_TASK_FLAGS="); ok {
-			proposeFlags = strings.Fields(strings.Trim(v, `"`))
+		if v, ok := strings.CutPrefix(line, "ARG VCS_TASK_FLAGS="); ok {
+			vcsFlags = strings.Fields(strings.Trim(v, `"`))
 		}
 	}
 	var parsedTask struct {
 		Spec struct{ Command []string } `yaml:"spec"`
 	}
-	if err := yaml.Unmarshal(taskBytes, &parsedTask); err != nil {
+	if err := yaml.Unmarshal(chatBytes, &parsedTask); err != nil {
 		t.Fatal(err)
 	}
 	var shaping []string
@@ -663,32 +671,123 @@ func TestProposeTaskAndWorkspace(t *testing.T) {
 		}
 		shaping = append(shaping, f)
 	}
-	if !slices.Equal(proposeFlags, shaping) {
-		t.Errorf("images/agent's PROPOSE_TASK_FLAGS\n got %q\nwant the template's %q", proposeFlags, shaping)
+	if !slices.Equal(vcsFlags, shaping) {
+		t.Errorf("images/agent's VCS_TASK_FLAGS\n got %q\nwant the template's %q", vcsFlags, shaping)
 	}
-	multiCfg, err := ProposeConfig(root, e)
+
+	multiCfg, err := ChatConfig(root, e)
 	if err != nil || !strings.Contains(string(multiCfg), `"role": "managed"`) || strings.Contains(string(multiCfg), `"role": "gitops"`) {
-		t.Errorf("multi-repo ProposeConfig should use role=managed: %s, %v", multiCfg, err)
+		t.Errorf("multi-repo ChatConfig should use role=managed: %s, %v", multiCfg, err)
 	}
+	if !strings.Contains(string(multiCfg), `"name": "propose-change"`) ||
+		!strings.Contains(string(multiCfg), `"spawn_agent:propose-change"`) ||
+		!strings.Contains(string(multiCfg), `"mcp": []`) ||
+		!strings.Contains(string(multiCfg), `"vcs_commit:*"`) ||
+		strings.Contains(string(multiCfg), `"vcs_publish:*"`) ||
+		strings.Contains(string(multiCfg), `"vcs_propose:*"`) {
+		t.Errorf("ChatConfig subagent or ask-mode permissions unexpected:\n%s", multiCfg)
+	}
+
 	singleEnv := *e
 	singleEnv.Agent.VCS = &env.VCS{Secret: "gh-token", Repositories: []env.Repository{{Repository: "acme/gitops"}}}
-	singleCfg, err := ProposeConfig(root, &singleEnv)
+	singleCfg, err := ChatConfig(root, &singleEnv)
 	if err != nil || !strings.Contains(string(singleCfg), `"role": "gitops"`) {
-		t.Errorf("single-repo ProposeConfig should use role=gitops: %s, %v", singleCfg, err)
+		t.Errorf("single-repo ChatConfig should use role=gitops: %s, %v", singleCfg, err)
 	}
-	if _, err := ProposeTask(root, e, Tokens{Inject: tok.Inject, Attach: "x"}); err == nil {
-		t.Error("ProposeTask with bad token succeeded")
+	if _, err := ChatConfig(t.TempDir(), e); err == nil {
+		t.Error("ChatConfig with missing base JSON succeeded")
 	}
-	if _, err := ProposeConfig(t.TempDir(), e); err == nil {
-		t.Error("ProposeConfig with missing base JSON succeeded")
+
+	// Alert-only incident (Flow 3 outbound half: incidentAutoPR false, alertChannel set).
+	e.Slack = &env.Slack{App: "shipmind", Command: "/shipmind", AlertChannel: "C0123456789"}
+	alertTask, err := Task(root, e, tok)
+	if err != nil {
+		t.Fatalf("Task(alert-only): %v", err)
+	}
+	alertTaskStr := string(alertTask)
+	for _, want := range []string{
+		"-c\n    - /workspace/repo/incident-config.json\n",
+		"--agents-dir=/opt/core-agent/recipes/" + IncidentBundle + "/.agents",
+		"--disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep",
+		"CORE_AGENT_SWITCHBOARD_TOKEN",
+		`http://switchboard.switchboard.svc.cluster.local`,
+		"ate-secret://k8s.io/default/ate-credentials/switchboard-ingress/token",
+		"debug: true",
+	} {
+		if !strings.Contains(alertTaskStr, want) {
+			t.Errorf("alert-only Task lacks %q:\n%s", want, alertTaskStr)
+		}
+	}
+	if strings.Contains(alertTaskStr, "api.github.com") {
+		t.Errorf("alert-only Task with incidentAutoPR=false should not have GitHub egress:\n%s", alertTaskStr)
+	}
+	alertOnlyCfg, err := IncidentConfig(root, e)
+	if err != nil {
+		t.Fatalf("IncidentConfig(alert-only): %v", err)
+	}
+	if !strings.Contains(string(alertOnlyCfg), `"max_steps": 8`) ||
+		!strings.Contains(string(alertOnlyCfg), `"max_wallclock_seconds": 150`) ||
+		strings.Contains(string(alertOnlyCfg), `"propose-change"`) {
+		t.Errorf("alert-only IncidentConfig should keep 150s cap and omit propose-change:\n%s", alertOnlyCfg)
+	}
+
+	// Full autonomous incident PR + Slack posting (Flows 1 & 2: incidentAutoPR true + alertChannel set).
+	e.Agent.VCS.IncidentAutoPR = true
+	incTask, err := Task(root, e, tok)
+	if err != nil {
+		t.Fatalf("Task(autoPR+alert): %v", err)
+	}
+	for _, want := range []string{
+		"-c\n    - /workspace/repo/incident-config.json\n",
+		"--disable-tools=bash,read_many_files,view_file_outline,delete_file,stat,list_dir,glob",
+		"ate-secret://k8s.io/default/ate-credentials/gh-token/bearer",
+		`http://switchboard.switchboard.svc.cluster.local`,
+		"debug: false",
+	} {
+		if !strings.Contains(string(incTask), want) {
+			t.Errorf("autoPR+alert Task lacks %q:\n%s", want, incTask)
+		}
+	}
+	incCfg, err := IncidentConfig(root, e)
+	if err != nil {
+		t.Fatalf("IncidentConfig: %v", err)
+	}
+	for _, want := range []string{
+		`"max_steps": 12`,
+		`"max_wallclock_seconds": 240`,
+		`"name": "propose-change"`,
+		`"spawn_agent:propose-change"`,
+		`"mcp:gke_get_k8s_resource*"`,
+		`"vcs_publish:*"`,
+		`"vcs_propose:*"`,
+		`"alert:slack"`,
+		`"template": "switchboard"`,
+		`"conversation": "C0123456789"`,
+	} {
+		if !strings.Contains(string(incCfg), want) {
+			t.Errorf("IncidentConfig lacks %q:\n%s", want, incCfg)
+		}
+	}
+	if _, err := IncidentConfig(t.TempDir(), e); err == nil {
+		t.Error("IncidentConfig with missing base JSON succeeded")
 	}
 
 	swBytes, err := SwitchboardConfig(root, e)
 	if err != nil {
 		t.Fatalf("SwitchboardConfig: %v", err)
 	}
-	if !strings.Contains(string(swBytes), `"name": "propose"`) || !strings.Contains(string(swBytes), `/etc/switchboard/propose/propose.yaml`) {
-		t.Errorf("SwitchboardConfig with vcs lacks propose agent:\n%s", swBytes)
+	if strings.Contains(string(swBytes), `"name": "propose"`) {
+		t.Errorf("SwitchboardConfig still defines a separate propose agent:\n%s", swBytes)
+	}
+	for _, want := range []string{
+		`"name": "triage"`,
+		`"ingress_addr": ":8080"`,
+		`"ingress_token_env": "SWITCHBOARD_INGRESS_TOKEN"`,
+		`"ingress_allow": ["C0123456789"]`,
+	} {
+		if !strings.Contains(string(swBytes), want) {
+			t.Errorf("SwitchboardConfig lacks %q:\n%s", want, swBytes)
+		}
 	}
 
 	wsBytes, err := Workspace(root, e)
@@ -703,7 +802,12 @@ func TestProposeTaskAndWorkspace(t *testing.T) {
 	if err := yaml.Unmarshal(wsBytes, &ws); err != nil {
 		t.Fatalf("Workspace YAML: %v", err)
 	}
-	if len(ws.Spec.Files) != 2 || ws.Spec.Files[1].Path != "propose-config.json" || !strings.Contains(ws.Spec.Files[1].Content, `"acme/gitops"`) {
+	if len(ws.Spec.Files) != 3 ||
+		ws.Spec.Files[0].Path != "AGENTS.md" ||
+		ws.Spec.Files[1].Path != "chat-config.json" ||
+		ws.Spec.Files[2].Path != "incident-config.json" ||
+		!strings.Contains(ws.Spec.Files[0].Content, "# GitOps pull requests") ||
+		!strings.Contains(ws.Spec.Files[0].Content, "# Slack incident notifications") {
 		t.Errorf("Workspace files = %+v", ws.Spec.Files)
 	}
 }

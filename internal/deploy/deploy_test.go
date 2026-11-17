@@ -1341,7 +1341,8 @@ func TestSwitchboardSecret(t *testing.T) {
 	if !strings.Contains(string(want), "core-agent") || !strings.Contains(written, "triage.yaml: "+base64.StdEncoding.EncodeToString(want)) {
 		t.Errorf("chatImage: up didn't write the core-agent template:\n%s", written)
 	}
-	// agent.vcs adds propose.yaml and registers the propose agent in config.json.
+	// agent.vcs upgrades triage.yaml in place (chat-config.json + GitHub
+	// egress) without a separate propose.yaml Secret entry.
 	p.Env.Agent.VCS = &env.VCS{
 		Secret:       "gh-token",
 		Repositories: []env.Repository{{Repository: "acme/gitops"}},
@@ -1356,31 +1357,119 @@ func TestSwitchboardSecret(t *testing.T) {
 			written = m
 		}
 	}
-	wantPropose, _ := agent.ProposeTask(root, p.Env, tok)
-	if len(wantPropose) == 0 || !strings.Contains(written, "propose.yaml: "+base64.StdEncoding.EncodeToString(wantPropose)) {
-		t.Errorf("vcs: up didn't write propose.yaml:\n%s", written)
+	wantVCS, _ := agent.ChatTask(root, p.Env, tok)
+	if !strings.Contains(string(wantVCS), "chat-config.json") ||
+		!strings.Contains(written, "triage.yaml: "+base64.StdEncoding.EncodeToString(wantVCS)) ||
+		strings.Contains(written, "propose.yaml:") {
+		t.Errorf("vcs: up didn't update triage.yaml in place:\n%s", written)
 	}
 	cfgVCS, _ := agent.SwitchboardConfig(root, p.Env)
 	c.workspace, _ = agent.Workspace(root, p.Env)
 	c.secrets["switchboard/switchboard-agent"] = map[string][]byte{
-		"config.json": cfgVCS, "triage.yaml": want, "propose.yaml": wantPropose, "token": []byte(tok.Attach),
+		"config.json": cfgVCS, "triage.yaml": wantVCS, "token": []byte(tok.Attach),
 	}
 	if r, err := Status(ctx, p, c); err != nil || len(r.Changes) != 0 {
 		t.Errorf("vcs in sync: %+v, %v", r, err)
 	}
 	p.Env.Agent.VCS = nil
-	if r, err := Status(ctx, p, c); err != nil || !strings.Contains(fmt.Sprint(r.Changes), "differs (keys config.json, propose.yaml) against the render") || !strings.Contains(fmt.Sprint(r.Changes), "files differ from the render") {
+	if r, err := Status(ctx, p, c); err != nil || !strings.Contains(fmt.Sprint(r.Changes), "differs (keys triage.yaml) against the render") || !strings.Contains(fmt.Sprint(r.Changes), "files differ from the render") {
 		t.Errorf("vcs removed: %+v, %v", r, err)
 	}
+
+	// Legacy propose.yaml key left over from #116 is detected as drift.
+	c.secrets["switchboard/switchboard-agent"] = map[string][]byte{
+		"config.json": cfgVCS, "triage.yaml": want, "token": []byte(tok.Attach), "propose.yaml": []byte("stale: true\n"),
+	}
+	if r, err := Status(ctx, p, c); err != nil || !strings.Contains(fmt.Sprint(r.Changes), "propose.yaml") {
+		t.Errorf("legacy propose.yaml drift: %+v, %v", r, err)
+	}
+
+	// slack.alertChannel generates ate-credentials/switchboard-ingress once and
+	// mirrors it into switchboard/switchboard-agent (ingress-token).
+	p.Env.Agent.IncidentImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("5", 64)
+	p.Env.Slack = &env.Slack{App: "shipmind", Command: "/shipmind", AlertChannel: "C0123456789"}
+	c.secrets["switchboard/switchboard-agent"] = map[string][]byte{
+		"config.json": cfgVCS, "triage.yaml": want, "token": []byte(tok.Attach),
+	}
+	if r, err := Status(ctx, p, c); err != nil ||
+		!strings.Contains(fmt.Sprint(r.Changes), "secret ate-credentials/switchboard-ingress") ||
+		!strings.Contains(fmt.Sprint(r.Changes), "differs (keys config.json, ingress-token) against the render") {
+		t.Errorf("alertChannel before up: %+v, %v", r, err)
+	}
+	c.applied, c.dryRuns = nil, 0
+	if err := Up(ctx, p, c, UpOptions{DryRun: true}); err != nil {
+		t.Fatalf("Up(DryRun) with first-time alertChannel: %v", err)
+	}
+	if c.dryRuns < 4 || len(c.applied) != 0 {
+		t.Fatalf("Up(DryRun) dryRuns=%d, applied=%d (want >=4 dryRuns and 0 applied)", c.dryRuns, len(c.applied))
+	}
+	c.applied = nil
+	if err := Up(ctx, p, c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var ingressSecretYAML, swSecretYAML string
+	for _, m := range c.applied {
+		if strings.Contains(m, "name: switchboard-ingress") {
+			ingressSecretYAML = m
+		}
+		if strings.Contains(m, "name: switchboard-agent") {
+			swSecretYAML = m
+		}
+	}
+	if ingressSecretYAML == "" || swSecretYAML == "" {
+		t.Fatalf("up didn't write both switchboard-ingress and switchboard-agent:\n%v", c.applied)
+	}
+	ingTok := strings.Repeat("e", 64)
+	c.secrets[CredentialsNamespace+"/"+SwitchboardIngressSecret] = map[string][]byte{"token": []byte(ingTok)}
+	cfgAlert, _ := agent.SwitchboardConfig(root, p.Env)
+	incAlert, _ := agent.Task(root, p.Env, tok)
+	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = incAlert
+	c.secrets[SwitchboardNamespace+"/"+SwitchboardSecret] = map[string][]byte{
+		"config.json": cfgAlert, "triage.yaml": want, "token": []byte(tok.Attach), "ingress-token": []byte(ingTok),
+	}
+	c.workspace, _ = agent.Workspace(root, p.Env)
+	if r, err := Status(ctx, p, c); err != nil || len(r.Changes) != 0 {
+		t.Errorf("alertChannel in sync: %+v, %v", r, err)
+	}
+	// Removing alertChannel detects ingress-token as drift and prunes it from
+	// switchboard/switchboard-agent on Up.
+	p.Env.Slack.AlertChannel = ""
+	if r, err := Status(ctx, p, c); err != nil || !strings.Contains(fmt.Sprint(r.Changes), "ingress-token") {
+		t.Errorf("alertChannel removed drift: %+v, %v", r, err)
+	}
+	c.applied = nil
+	if err := Up(ctx, p, c, UpOptions{}); err != nil {
+		t.Fatalf("Up after removing alertChannel: %v", err)
+	}
+	for _, m := range c.applied {
+		if strings.Contains(m, "name: switchboard-agent") && strings.Contains(m, "ingress-token:") {
+			t.Errorf("Up after removing alertChannel kept ingress-token:\n%s", m)
+		}
+	}
+	p.Env.Slack.AlertChannel = "C0123456789"
+	// Malformed ingress token in ate-credentials is refused.
+	c.secrets[CredentialsNamespace+"/"+SwitchboardIngressSecret] = map[string][]byte{"token": []byte("NOT-HEX")}
+	if _, err := Status(ctx, p, c); err == nil || !strings.Contains(err.Error(), SwitchboardIngressSecret) {
+		t.Errorf("malformed ingress token: err = %v", err)
+	}
+	// alertChannel without switchboard Deployment in the render is refused.
+	noSW := plan(t)
+	noSW.Env.Agent.IncidentImage = p.Env.Agent.IncidentImage
+	noSW.Env.Slack = p.Env.Slack
+	if _, err := Status(ctx, noSW, inSync(t)); err == nil || !strings.Contains(err.Error(), "no Deployment switchboard/switchboard") {
+		t.Errorf("alertChannel without switchboard Deployment: err = %v", err)
+	}
+
 	// Without switchboard in the render, nothing.
 	if r, err := Status(ctx, plan(t), inSync(t)); err != nil || len(r.Changes) != 0 {
 		t.Errorf("no switchboard: %+v, %v", r, err)
 	}
 }
 
-// The Deployment in deploy/switchboard/slack and what up renders agree:
-// the agent Secret's name and keys, where the configuration points for the
-// template, and the environment variables the configuration names.
+// The Deployment, Service and NetworkPolicy in deploy/switchboard/slack and
+// what up renders agree: the agent Secret's name and keys, where the
+// configuration points for the template, the environment variables the
+// configuration names, and the outbound HTTP ingress port and policy.
 func TestSwitchboardWiring(t *testing.T) {
 	objs, err := render.Build(root + "/deploy/switchboard/slack")
 	if err != nil {
@@ -1394,14 +1483,18 @@ func TestSwitchboardWiring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := agent.SwitchboardConfig(root, testEnv())
+	e := testEnv()
+	e.Agent.IncidentImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("5", 64)
+	e.Slack = &env.Slack{App: "shipmind", Command: "/shipmind", AlertChannel: "C0123456789"}
+	cfg, err := agent.SwitchboardConfig(root, e)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var c struct {
-		AppEnv string `json:"slack_app_token_env"`
-		BotEnv string `json:"slack_bot_token_env"`
-		Agents []struct {
+		AppEnv     string `json:"slack_app_token_env"`
+		BotEnv     string `json:"slack_bot_token_env"`
+		IngressEnv string `json:"ingress_token_env"`
+		Agents     []struct {
 			TokenEnv string `json:"token_env"`
 			AX       struct {
 				TaskTemplateFile string `json:"task_template_file"`
@@ -1414,20 +1507,38 @@ func TestSwitchboardWiring(t *testing.T) {
 	for _, want := range []string{
 		"secretName: " + SwitchboardSecret,
 		"key: config.json", "path: config.json", "key: triage.yaml", "path: triage.yaml",
-		"key: propose.yaml", "path: propose.yaml", "optional: true",
-		"mountPath: /etc/switchboard\n", "mountPath: /etc/switchboard/propose\n",
+		"key: ingress-token", "optional: true",
+		"containerPort: 8080", "name: ingress",
+		"mountPath: /etc/switchboard\n",
 		"--config=/etc/switchboard/config.json",
-		"name: " + c.AppEnv, "name: " + c.BotEnv, "name: " + c.Agents[0].TokenEnv,
+		"name: " + c.AppEnv, "name: " + c.BotEnv, "name: " + c.IngressEnv, "name: " + c.Agents[0].TokenEnv,
 	} {
 		if !strings.Contains(y, want) {
 			t.Errorf("switchboard Deployment lacks %q", want)
 		}
+	}
+	if strings.Contains(y, "propose.yaml") || strings.Contains(y, "/etc/switchboard/propose") {
+		t.Errorf("switchboard Deployment still mounts propose.yaml:\n%s", y)
 	}
 	if c.Agents[0].AX.TaskTemplateFile != "/etc/switchboard/triage.yaml" {
 		t.Errorf("template file %q", c.Agents[0].AX.TaskTemplateFile)
 	}
 	if strings.Contains(y, "switchboard-daemon-token") || strings.Contains(y, "switchboard-config") {
 		t.Error("the base's daemon token or ConfigMap survived")
+	}
+	svc, ok := objs.Find("Service", SwitchboardNamespace, Switchboard)
+	if !ok {
+		t.Fatal("no switchboard Service")
+	}
+	if sy, err := svc.String(); err != nil || !strings.Contains(sy, "port: 8080") || !strings.Contains(sy, "targetPort: ingress") {
+		t.Errorf("switchboard Service:\n%s (%v)", sy, err)
+	}
+	np, ok := objs.Find("NetworkPolicy", SwitchboardNamespace, Switchboard)
+	if !ok {
+		t.Fatal("no switchboard NetworkPolicy")
+	}
+	if npy, err := np.String(); err != nil || !strings.Contains(npy, "kubernetes.io/metadata.name: ate-system") || !strings.Contains(npy, "app: atenet-egress") || !strings.Contains(npy, "port: ingress") {
+		t.Errorf("switchboard NetworkPolicy:\n%s (%v)", npy, err)
 	}
 }
 

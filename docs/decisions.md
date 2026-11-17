@@ -4,6 +4,71 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-17: One general-purpose chat agent plus autonomous incident PRs and Slack alerts
+
+Supersedes 2026-11-17 ("A separate switchboard 'propose' agent opens GitOps
+pull requests").
+
+1. **Single general-purpose Slack agent.** Switchboard keeps one agent
+   (`triage`, `default_agent: "triage"`). When `agent.vcs` is set alongside
+   `agent.chatImage`, `shipmind up` writes `chat-config.json` into the ax
+   Workspace and points `/etc/switchboard/triage.yaml` at it (with
+   `--agents-dir=/opt/core-agent/recipes/gke-chat/.agents`), equipping
+   `triage` with a synchronous `propose-change` specialist (`@include
+   builtin:propose-change`, `mcp: []`, `read_file`/`edit_file`/`write_file`/
+   `grep` and pure-Go `vcs_*` tools) alongside `_fallback`. Delegation to
+   `propose-change` (`spawn_agent:propose-change`) and local clone/edit/
+   `vcs_commit` steps in `/workspace/repos/*` are allowlisted, while
+   `vcs_publish` and `vcs_propose` stay in `ask` mode so switchboard prompts in
+   Slack before pushing a branch or opening a pull request. (Core-agent's shared
+   `builtinTools` slice registers the enabled file and `vcs_*` schemas on the
+   root agent as well; `AGENTS.md` directs the root coordinator to delegate all
+   repository and file work through `propose-change`.) The separate `propose`
+   switchboard agent, `propose.yaml` volume mount and baked `gke-propose` recipe
+   are removed; `images/agent` checks both `core-agent-gke-chat.base.json` and
+   `core-agent-gke-triage-f.base.json` against the imported recipes at Docker
+   build time.
+2. **Autonomous incident PRs (`agent.vcs.incidentAutoPR: true`) and Slack
+   notifications (`slack.alertChannel`).** When either is set (with
+   `agent.incidentImage`), `shipmind up` writes `incident-config.json` into the
+   Workspace. `incidentAutoPR` raises the incident budget to `max_steps: 12` and
+   `max_wallclock_seconds: 240` (requiring `agent.idleSuspendAfter >= 5m` so `ax`
+   does not suspend an unwatched `lookout` turn mid-PR), allowlists
+   `spawn_agent:propose-change` plus headless `vcs_publish`/`vcs_propose`, and
+   equips `propose-change` with `vcs_proposal_list` open-PR deduplication,
+   fast-exit on unmanaged workloads, and a guard refusing unknown secrets or
+   connection URLs. Alert-only incidents (`incidentAutoPR: false`,
+   `slack.alertChannel` set) keep the `150s` wall-clock cap (`max_steps: 8`) so
+   environments with `idleSuspendAfter: 3m` can run them. `slack.alertChannel`
+   enables switchboard's outbound HTTP ingress (`ingress_addr: ":8080"`,
+   `ingress_allow: [<channel>]`), exposes `Service/switchboard` (`:8080`) with a
+   `NetworkPolicy` rule admitting only `ate-system` `atenet-egress`, generates
+   `ate-credentials/switchboard-ingress` (`token`) once and mirrors it to
+   `switchboard/switchboard-agent` (`ingress-token`), and configures
+   core-agent's `alert` tool (`template: "switchboard"`) over a plain-HTTP
+   `http://switchboard.switchboard.svc.cluster.local` egress rule (`ax`
+   `db1c1de`, keeping `ax.proto` wire-compatible with `k8s-lookout` `v0.43.1`).
+
+**Why:** operators talk to `@shipmind-<env>` in one thread — whether asking a
+cluster question, requesting a GitOps PR, or replying on an incident post —
+without switching agents via slash commands. Executing GitOps work inside
+`propose-change` (`mcp: []`) keeps raw manifest reads and diffs out of the main
+conversation and incident context; exempting synthetic `shipmind.dev/scenario`
+probe workloads in `AGENTS.md` keeps nightly e2e scenarios within their 10-call
+trajectory ceiling and out of Slack alert channels, while `propose-change`'s
+`vcs_proposal_list` dedup, fast-exit, and unknown-secret guards bound real
+incidents. Using `"http://<host>"` on `EgressRule.hosts` routes
+task-to-switchboard webhook calls through Substrate's egress credential injector
+without breaking `k8s-lookout`'s strict `protojson.Unmarshal` on `task.yaml`.
+
+**Rejected:** keeping a second `propose` switchboard agent (forces users to
+know `/shipmind-<env> agent propose` and breaks replying directly in an
+incident alert thread); adding a new `bool http` field to `ax.proto`
+(`k8s-lookout` `v0.43.1` rejects unknown fields in `task.yaml` at startup);
+posting to Slack via raw Incoming Webhook URLs instead of switchboard's
+`/v1/messages` ingress (bypasses switchboard's thread routing and puts a
+webhook secret in URL config).
+
 ## 2026-11-17: A separate switchboard "propose" agent opens GitOps pull requests
 
 When an environment sets `agent.vcs` (`secret` in `ate-credentials` plus

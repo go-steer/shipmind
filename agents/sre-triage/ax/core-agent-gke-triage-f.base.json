@@ -1,0 +1,155 @@
+{
+  "agent": {
+    "description": "Autonomous triage of GKE cluster incidents surfaced by k8s-event-watcher.",
+    "display_name": "gke-triage",
+    "final_report": true,
+    "max_steps": 8,
+    "max_wallclock_seconds": 150
+  },
+  "attach": {
+    "allowed_hosts": [
+      "atenet-router.ate-system.svc.cluster.local",
+      "atenet-router.ate-system.svc",
+      "atenet-router.ate-system"
+    ],
+    "multi_session": {
+      "auth": {}
+    }
+  },
+  "model": {
+    "builtin_tools": {
+      "code_execution": false,
+      "url_context": false,
+      "web_search": false
+    },
+    "name": "gemini-3.7-flash"
+  },
+  "permissions": {
+    "allow": [
+      "spawn_agent:_fallback",
+      "mcp:gke_triage-classifier*",
+      "mcp:gke_get_k8s_resource*",
+      "mcp:gke_describe_k8s_resource*",
+      "mcp:gke_list_k8s_events*",
+      "mcp:gke_get_k8s_logs*",
+      "mcp:gke_get_k8s_rollout_status*",
+      "mcp:gke_list_k8s_api_resources*",
+      "mcp:gke_get_k8s_cluster_info*",
+      "mcp:gke_get_k8s_version*",
+      "mcp:gke_check_k8s_auth*",
+      "mcp:gke_list_clusters*",
+      "mcp:gke_get_cluster*",
+      "mcp:gke_list_node_pools*",
+      "mcp:gke_get_node_pool*",
+      "mcp:gke_list_operations*",
+      "mcp:gke_get_operation*"
+    ],
+    "approval_timeout": "30s",
+    "mode": "ask"
+  },
+  "safety": {},
+  "tools": {
+    "call_peer": {},
+    "policies": [
+      {
+        "mutating": false,
+        "name": "triage-classifier"
+      },
+      {
+        "mutating": false,
+        "name": "get_k8s_resource"
+      },
+      {
+        "mutating": false,
+        "name": "describe_k8s_resource"
+      },
+      {
+        "mutating": false,
+        "name": "list_k8s_events"
+      },
+      {
+        "mutating": false,
+        "name": "get_k8s_logs"
+      },
+      {
+        "mutating": false,
+        "name": "get_k8s_rollout_status"
+      },
+      {
+        "mutating": false,
+        "name": "list_k8s_api_resources"
+      },
+      {
+        "mutating": false,
+        "name": "get_k8s_cluster_info"
+      },
+      {
+        "mutating": false,
+        "name": "get_k8s_version"
+      },
+      {
+        "mutating": false,
+        "name": "check_k8s_auth"
+      },
+      {
+        "mutating": false,
+        "name": "list_clusters"
+      },
+      {
+        "mutating": false,
+        "name": "get_cluster"
+      },
+      {
+        "mutating": false,
+        "name": "list_node_pools"
+      },
+      {
+        "mutating": false,
+        "name": "get_node_pool"
+      },
+      {
+        "mutating": false,
+        "name": "list_operations"
+      },
+      {
+        "mutating": false,
+        "name": "get_operation"
+      },
+      {
+        "mutating": true,
+        "name": "patch_k8s_resource"
+      },
+      {
+        "mutating": true,
+        "name": "apply_k8s_manifest"
+      },
+      {
+        "mutating": true,
+        "name": "delete_k8s_resource"
+      },
+      {
+        "mutating": true,
+        "name": "create_cluster"
+      },
+      {
+        "mutating": true,
+        "name": "update_cluster"
+      },
+      {
+        "mutating": true,
+        "name": "create_node_pool"
+      },
+      {
+        "mutating": true,
+        "name": "update_node_pool"
+      },
+      {
+        "mutating": true,
+        "name": "cancel_operation"
+      }
+    ],
+    "spawn_agent": {},
+    "wait_and_verify": {}
+  },
+  "version": 1
+}

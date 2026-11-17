@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# switchboard's Slack gateway in front of the SRE triage agent, as an ax
-# agent: each Slack thread gets an agent task of its own, started from the
-# agent's task template, suspended when idle and woken by the next
+# switchboard's Slack gateway in front of the SRE & GitOps agent, as an
+# ax agent: each Slack thread gets an agent task of its own, started from
+# the agent's task template, suspended when idle and woken by the next
 # message, reached through Substrate's router over mTLS (switchboard
 # docs/ax-backend.md). An environment opts in by referencing this at the
 # same shipmind commit as its profile, once its Slack app exists
@@ -24,9 +24,12 @@
 #   - Secret switchboard/switchboard-slack (app-token, bot-token): copied
 #     from Secret Manager by `shipmind up` (shipmind.yaml `secrets`).
 #   - Secret switchboard/switchboard-agent (config.json, triage.yaml,
-#     token, plus optional propose.yaml when agent.vcs is set): rendered
-#     by `shipmind up` from shipmind.yaml, like lookout's task template,
-#     since the templates carry the agent's token.
+#     token, plus optional ingress-token when slack.alertChannel is set):
+#     rendered by `shipmind up` from shipmind.yaml, like lookout's task
+#     template, since the template carries the agent's token.
+#   - Secret ate-credentials/switchboard-ingress (token): generated once
+#     by `shipmind up` when slack.alertChannel is set, injected by
+#     Substrate's egress gateway on incident tasks' /v1/messages calls.
 #   - The router allowlist entry for this pod's identity,
 #     spiffe://cluster.local/ns/switchboard/sa/switchboard.
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -34,6 +37,7 @@ kind: Kustomization
 namespace: switchboard
 resources:
   - namespace.yaml
+  - service.yaml
   - ../../vendor/switchboard/deploy/base/11-serviceaccount
   - ../../vendor/switchboard/deploy/base/16-networkpolicy
   - ../../vendor/switchboard/deploy/base/51-deployment
@@ -46,4 +50,8 @@ patches:
   - path: deployment.yaml
     target:
       kind: Deployment
+      name: switchboard
+  - path: networkpolicy.yaml
+    target:
+      kind: NetworkPolicy
       name: switchboard

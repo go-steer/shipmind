@@ -10,14 +10,28 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
-- `agent.vcs` in an environment's `shipmind.yaml` (`secret` in
-  `ate-credentials` plus `repositories`): registers a second switchboard
-  Slack agent (`propose`, `/shipmind-<env> agent propose <prompt>`) on
-  `images/agent` (`gke-propose`) with core-agent's pure-Go `vcs_*` tools,
-  `builtin:propose-change`, `read_file`/`edit_file`/`write_file`/`grep`,
-  and Substrate egress credential injection (`Bearer` on `api.github.com`,
-  `Basic` on `github.com`), keeping `triage` read-only and the GitHub token
-  outside the sandbox.
+- Unified general-purpose Slack agent and autonomous lookout incident
+  remediation flows: `agent.vcs` (`secret` in `ate-credentials` plus
+  `repositories`, with Substrate egress credential injection: `Bearer` on
+  `api.github.com` and `Basic` on `github.com` so the GitHub token never enters
+  the sandbox) equips the single `triage` Slack agent with a `propose-change`
+  GitOps specialist (`chat-config.json` in the ax Workspace, pure-Go `vcs_*`
+  tools, `read_file`/`edit_file`/`write_file`/`grep`, and Slack approval prompts
+  on `vcs_publish` and `vcs_propose`, superseding #116's separate `propose`
+  agent); `agent.vcs.incidentAutoPR` equips autonomous `lookout-ax` incidents
+  with `propose-change` (`incident-config.json`, open-PR deduplication via
+  `vcs_proposal_list`, fast-exit on unmanaged workloads, `shipmind.dev/scenario`
+  probe exemption, and unknown-secret guards); and `slack.alertChannel` enables
+  switchboard's `:8080` outbound HTTP ingress (`Service` + `NetworkPolicy`
+  scoped to `ate-system` `atenet-egress`, `ate-credentials/switchboard-ingress`
+  generated once by `shipmind up`) so incident tasks post diagnoses and pull
+  request links to Slack via core-agent's `alert` tool (`template:
+  "switchboard"`).
+- Bumped `ax` and `ax-runner` to `db1c1def07ec0c76262c9102a558e43ffe19da5b`
+  (`substrate-v1-drain-db1c1de`): plain-HTTP egress rules (`http://<host>` on
+  `EgressRule.hosts`) for in-cluster HTTP gateways like switchboard's outbound
+  ingress, while keeping `ax.proto` wire-compatible with `k8s-lookout`
+  `v0.43.1`.
 - worker-drain counts any of ax's reverts (`RevertedAfterWorkerLoss`,
   `RevertedAfterFailedSuspend`, any later `Reverted*`) as a revert: the
   task survives but loses the work since its last snapshot, so it fails
