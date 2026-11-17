@@ -44,7 +44,7 @@ patches:
         value: ${AX_SERVER_IMAGE}
       - op: replace
         path: /spec/template/spec/containers/0/image
-        value: ghcr.io/go-steer/shipmind/ax-server:9a017f7f8f720f8476d5bf69853e421278efdd8b@sha256:d511f0995608da6d0e105afe84e85e0db1c0b4bb116599da0d8af191dc5ec8d1
+        value: ghcr.io/go-steer/shipmind/ax-server:db1c1def07ec0c76262c9102a558e43ffe19da5b@sha256:1a8af6e9d96172632e1751c51c8a21dfaae5d0456b39f9a679d1f613f7b4b971
       # The image for tasks without spec.image, also left to `make
       # deploy`. Every task here sets its image, so ax-server's built-in
       # default stands.

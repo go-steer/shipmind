@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 # The substrate profile's agent image on core-agent (#48): core-agent
 # run as an ax task in serve mode, the harness that replaces mast.
 #
@@ -145,16 +144,14 @@ RUN set -e; \
       else \
         rm -f "$mcp"; \
       fi; \
-    done; \
-    cp -R /out/gke-chat /out/gke-propose; \
-    jq -S . /out/gke-propose/.agents/config.json > /tmp/got-propose.json; \
-    jq -S . /in/ax/core-agent-gke-propose.json > /tmp/want-propose.json; \
-    if ! cmp -s /tmp/got-propose.json /tmp/want-propose.json; then \
-      echo "recipe gke-propose: core-agent-gke-propose.json drifted from imported gke-chat:"; \
-      diff -u /tmp/want-propose.json /tmp/got-propose.json || true; \
-      exit 1; \
-    fi; \
-    printf '\n@include builtin:propose-change\n' >> /out/gke-propose/AGENTS.md
+      jq -S . "/out/$b/.agents/config.json" > "/tmp/got-$b.json"; \
+      jq -S . "/in/ax/core-agent-$b.base.json" > "/tmp/want-$b.json"; \
+      if ! cmp -s "/tmp/got-$b.json" "/tmp/want-$b.json"; then \
+        echo "recipe $b: core-agent-$b.base.json drifted from imported $b:"; \
+        diff -u "/tmp/want-$b.json" "/tmp/got-$b.json" || true; \
+        exit 1; \
+      fi; \
+    done
 # The Host Substrate's router sends (switchboard's and lookout's
 # default router URL; the nightly's too).
 ARG ROUTER_HOST=atenet-router.ate-system.svc.cluster.local
@@ -163,33 +160,31 @@ ARG ROUTER_HOST=atenet-router.ate-system.svc.cluster.local
 # step): the provider decides which tools come on by default, and a
 # disabled tool another one needs is a startup error.
 ARG TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator --disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep --agentic-tools=false --no-background-agents --no-pricing-refresh"
-ARG PROPOSE_TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator --disable-tools=bash,read_many_files,view_file_outline,delete_file,stat,list_dir,glob --agentic-tools=false --no-background-agents --no-pricing-refresh"
+ARG VCS_TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator --disable-tools=bash,read_many_files,view_file_outline,delete_file,stat,list_dir,glob --agentic-tools=false --no-background-agents --no-pricing-refresh"
 RUN set -e; mkdir -p /tmp/content; \
-    for b in gke-triage-f gke-chat gke-propose; do \
-      flags="$TASK_FLAGS"; \
-      cfg="/out/$b/.agents/config.json"; \
-      extra=""; \
-      if [ "$b" = "gke-propose" ]; then \
-        flags="$PROPOSE_TASK_FLAGS"; \
-        jq '. + {"vcs":{"workspace_dir":"/tmp/repos","forges":[{"name":"github","provider":"github","token_env":"CORE_AGENT_GITHUB_TOKEN"}],"repositories":[{"forge":"github","repository":"example/repo","role":"gitops","base_branch":"main"}]}}' "$cfg" > /tmp/propose.json; \
-        cfg="/tmp/propose.json"; \
-        extra="--agents-dir=/out/$b/.agents"; \
-      fi; \
-      SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected CORE_AGENT_GITHUB_TOKEN=injected CORE_AGENT_TRUSTED_DIRS="/tmp,/out/$b/.agents" GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \
+    boot() { \
+      label="$1"; cfg="$2"; extra="$3"; flags="$4"; \
+      SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected CORE_AGENT_GITHUB_TOKEN=injected CORE_AGENT_SWITCHBOARD_TOKEN=injected CORE_AGENT_TRUSTED_DIRS="/tmp,/out/${5}/.agents" GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \
         core-agent -c "$cfg" $extra $flags --no-repl \
           --attach-listen=127.0.0.1:8484 --attach-token=SMOKE_TOKEN \
-          --session-db --session-db-path="/tmp/smoke-$b.db" --agents-content-dir=/tmp/content \
-          >"/tmp/smoke-$b.log" 2>&1 & pid=$!; \
+          --session-db --session-db-path="/tmp/smoke-$label.db" --agents-content-dir=/tmp/content \
+          >"/tmp/smoke-$label.log" 2>&1 & pid=$!; \
       code=000; for i in $(seq 1 60); do \
         code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H "Host: $ROUTER_HOST" -H "Authorization: Bearer smoke" http://127.0.0.1:8484/sessions || true); \
         [ "$code" != 000 ] && break; \
         kill -0 "$pid" 2>/dev/null || break; sleep 0.5; \
       done; \
       kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
-      if [ "$code" = 000 ]; then echo "recipe $b: core-agent did not start:"; cat "/tmp/smoke-$b.log"; exit 1; fi; \
-      if [ "$code" != 200 ]; then echo "recipe $b: GET /sessions as the router ($ROUTER_HOST) answered $code, not 200"; exit 1; fi; \
-      if grep -q "workspace trust:.*is untrusted" "/tmp/smoke-$b.log"; then echo "recipe $b: workspace trust clamped config:"; cat "/tmp/smoke-$b.log"; exit 1; fi; \
-      echo "recipe $b: core-agent starts and answers the router"; \
+      if [ "$code" = 000 ]; then echo "recipe $label: core-agent did not start:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if [ "$code" != 200 ]; then echo "recipe $label: GET /sessions as the router ($ROUTER_HOST) answered $code, not 200"; exit 1; fi; \
+      if grep -q "workspace trust:.*is untrusted" "/tmp/smoke-$label.log"; then echo "recipe $label: workspace trust clamped config:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if grep -q "is not deliverable" "/tmp/smoke-$label.log"; then echo "recipe $label: alert target was dropped:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      echo "recipe $label: core-agent starts and answers the router"; \
+    }; \
+    for b in gke-triage-f gke-chat; do \
+      boot "$b" "/out/$b/.agents/config.json" "" "$TASK_FLAGS" "$b"; \
+      jq '.permissions.allow += ["spawn_agent:propose-change","edit_file:/tmp/repos/*","write_file:/tmp/repos/*","vcs_commit:*","alert:slack"] | . + {"vcs":{"workspace_dir":"/tmp/repos","forges":[{"name":"github","provider":"github","token_env":"CORE_AGENT_GITHUB_TOKEN"}],"repositories":[{"forge":"github","repository":"example/repo","role":"gitops","base_branch":"main"}]},"subagents":[{"name":"propose-change","description":"Opens GitOps PRs","instructions":"@include builtin:propose-change\n","mode":"chat","capability":"change_executor","tools":["read_file","edit_file","write_file","grep","vcs_capabilities","vcs_clone","vcs_status","vcs_diff","vcs_log","vcs_commit","vcs_publish","vcs_propose","vcs_proposal_view","vcs_proposal_list"],"mcp":[],"budgets":{"max_turns":15,"max_wallclock_seconds":180}}],"alerts":{"rate_limit_per_target":"5/min","targets":[{"name":"slack","kind":"webhook","template":"switchboard","conversation":"C0123456789","url":"http://switchboard.switchboard.svc.cluster.local:8080/v1/messages","auth":{"bearer_env":"CORE_AGENT_SWITCHBOARD_TOKEN"}}]}}' "/out/$b/.agents/config.json" > "/tmp/aug-$b.json"; \
+      boot "$b-augmented" "/tmp/aug-$b.json" "--agents-dir=/out/$b/.agents" "$VCS_TASK_FLAGS" "$b"; \
     done
 
 # Distroless nonroot (UID/GID 65532): carries CA certificates, tzdata and

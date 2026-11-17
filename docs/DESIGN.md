@@ -216,13 +216,21 @@ and doesn't pause for approval after every finding; a change to the
 cluster still parks at the write gate.
 An environment opts in by referencing it, as with the nightly scenario.
 When the environment also sets `agent.vcs` (with `agent.chatImage`), `up`
-registers a second switchboard agent (`propose`) running `gke-propose`
-with core-agent's `vcs_*` tools and Substrate egress credential injection
-from `ate-credentials/<secret>`, keeping `triage` read-only.
-switchboard takes no variables in its configuration, so `up` renders the
-configuration (the environment's atespace) and the task templates into one
-Secret, `switchboard/switchboard-agent`, as it does lookout's, and
-switchboard is a startup reader of it.
+layers `chat-config.json` onto `triage` so the single general-purpose
+Slack agent delegates GitOps repository edits and pull requests to
+`propose-change` (using core-agent's pure-Go `vcs_*` tools and Substrate
+egress credential injection from `ate-credentials/<secret>`, with Slack
+approval prompts on `vcs_publish` and `vcs_propose`); setting
+`agent.vcs.incidentAutoPR: true` (with `agent.incidentImage`) equips
+lookout's autonomous incident tasks with `propose-change` as well. When
+`slack.alertChannel` is set, `up` turns on switchboard's `:8080` outbound
+HTTP ingress (generating `ate-credentials/switchboard-ingress` once and
+mirroring it into `switchboard/switchboard-agent`) so incident tasks post
+their diagnosis and pull request links to Slack through Substrate's egress
+gateway. switchboard takes no variables in its configuration, so `up`
+renders the configuration and the chat task template into one Secret,
+`switchboard/switchboard-agent`, as it does lookout's, and switchboard is
+a startup reader of it.
 
 **Secrets from Secret Manager.** Values no one should handle, such as a
 Slack app's tokens, stay in Secret Manager. An environment's
@@ -258,10 +266,10 @@ never rotated by a deploy: every existing task has them baked in. ax's
 Postgres password is the same kind of value: a Secret
 (`ax-system/ax-postgres`) that `up` generates once, when the render runs
 Postgres, and never rotates, because Postgres keeps the password it
-first booted with; `status` reports it if it is missing. The
-Workspace (`AGENTS.md`: the cluster table and the repeat rule, plus
-`propose-config.json` when `agent.vcs` is set) is an ax
-object, applied with the ax CLI. Both are rendered from templates in
+first booted with; `status` reports it if it is missing. The Workspace (`AGENTS.md`: the cluster table, repeat rule and optional
+GitOps / Slack alert instructions, plus `chat-config.json` and/or
+`incident-config.json` when `agent.vcs` or `slack.alertChannel` is set) is
+an ax object, applied with the ax CLI. Both are rendered from templates in
 `agents/sre-triage/ax/`.
 
 **status, up, down.** `shipmind status <env-dir>` renders everything and

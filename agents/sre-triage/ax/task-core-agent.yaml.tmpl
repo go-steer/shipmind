@@ -22,9 +22,19 @@
 #                 into Secret lookout-ax/lookout-ax-agent, which lookout's
 #                 ax sink stamps a task from per incident
 #
+# When an environment configures GitOps repositories (agent.vcs) or Slack
+# incident alerts (slack.alertChannel), the Workspace carries an augmented
+# config JSON (.ConfigPath) that layers vcs, the propose-change specialist
+# and/or the switchboard alert target onto the baked bundle's base config,
+# while --agents-dir keeps the baked recipe's AGENTS.md, MCP config and
+# specialists in place and CORE_AGENT_TRUSTED_DIRS trusts both roots in
+# memory.
+#
 # The attach token is why it is a Secret (ax has no secret references
-# for env). It is the only credential: lookout and switchboard both
-# present it. For gke-chat, auth.token_identity in
+# for env). It is the only credential in the template: lookout and
+# switchboard both present it, while Google, GitHub and switchboard
+# outbound-ingress tokens stay outside the actor and are injected at
+# Substrate's egress gateway. For gke-chat, auth.token_identity in
 # agents/sre-triage/ax/core-agent-gke-chat.json names its holder
 # "switchboard", which owns every thread's session. Asserting the Slack
 # user instead (switchboard's assert_caller, plus proxy_identities there)
@@ -51,10 +61,18 @@ spec:
   image: {{ printf "%q" .Image }}
   command:
     - core-agent
+{{- if .ConfigPath }}
+    # Workspace-rendered config layering environment VCS / alert settings
+    # over the baked {{ .Bundle }} recipe.
+    - -c
+    - {{ .ConfigPath }}
+    - --agents-dir=/opt/core-agent/recipes/{{ .Bundle }}/.agents
+{{- else }}
     # The bundle, converted from agents/sre-triage/{{ .Bundle }} when the
     # image was built (images/agent).
     - -c
     - /opt/core-agent/recipes/{{ .Bundle }}/.agents/config.json
+{{- end }}
     - --provider=vertex
     - --model=gemini-3.8-flash
     - --no-repl
@@ -69,12 +87,19 @@ spec:
     # A long-lived service: the model doesn't declare task boundaries;
     # /done and core-agent's heuristic still can.
     - --checkpoint=operator
+{{- if .EnableFileTools }}
+    # No bash: propose-change edits cloned GitOps working trees with
+    # read_file, edit_file, write_file and grep alongside pure-Go vcs_*
+    # tools, while the distroless image carries no shell or git binary.
+    - --disable-tools=bash,read_many_files,view_file_outline,delete_file,stat,list_dir,glob
+{{- else }}
     # No bash or file tools: the agent reads clusters through GKE's MCP
     # server (the image has no kubectl), mast's bundles had neither, and
     # every tool's schema rides along in every model call. On a
     # multi-session daemon only an admin may approve bash (core-agent
     # #1355), so a Slack approval would be refused anyway.
     - --disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep
+{{- end }}
     # core-agent's small-model agentic tools read files and URLs, so with
     # the file tools gone it refuses to start unless they're off too;
     # the MCP digests behind retrieve_raw are separate and stay.
@@ -88,13 +113,26 @@ spec:
     # is outside the egress below, and the fetch blocks the listener for
     # up to 30s); the built-in table prices Gemini.
     - --no-pricing-refresh
-    # The Workspace's AGENTS.md: known clusters and the repeat rule.
+    # The Workspace's AGENTS.md: known clusters, repeat rules, and any
+    # GitOps / Slack alert instructions.
     - --agents-content-dir=/workspace/repo
   env:
-    # Google calls carry a placeholder; the egress gateway injects the
-    # token refresher's access token.
+    # Outbound calls carry placeholders; Substrate's egress gateway injects
+    # the real tokens from ate-credentials.
     - name: CORE_AGENT_GOOGLE_AUTH
       value: injected
+{{- if .VCSSecret }}
+    - name: CORE_AGENT_GITHUB_TOKEN
+      value: injected
+{{- end }}
+{{- if .SwitchboardIngress }}
+    - name: CORE_AGENT_SWITCHBOARD_TOKEN
+      value: injected
+{{- end }}
+{{- if .ConfigPath }}
+    - name: CORE_AGENT_TRUSTED_DIRS
+      value: "/workspace/repo,/opt/core-agent/recipes/{{ .Bundle }}/.agents"
+{{- end }}
     - name: GOOGLE_CLOUD_PROJECT
       value: {{ printf "%q" .Project }}
     # core-agent has no default location (mast defaulted to global).
@@ -108,6 +146,26 @@ spec:
         - header: Authorization
           prefix: "Bearer "
           credentialUri: ate-secret://k8s.io/default/ate-credentials/google-token/token
+{{- if .VCSSecret }}
+    - hosts: [api.github.com]
+      credentials:
+        - header: Authorization
+          prefix: "Bearer "
+          credentialUri: ate-secret://k8s.io/default/ate-credentials/{{ .VCSSecret }}/bearer
+    - hosts: [github.com]
+      credentials:
+        - header: Authorization
+          prefix: "Basic "
+          credentialUri: ate-secret://k8s.io/default/ate-credentials/{{ .VCSSecret }}/basic
+{{- end }}
+{{- if .SwitchboardIngress }}
+    - hosts: ["http://switchboard.switchboard.svc.cluster.local"]
+      ports: [8080]
+      credentials:
+        - header: Authorization
+          prefix: "Bearer "
+          credentialUri: ate-secret://k8s.io/default/ate-credentials/switchboard-ingress/token
+{{- end }}
   http:
     port: 8484
   # Suspended after agent.idleSuspendAfter without requests (10m unless the
@@ -124,4 +182,4 @@ spec:
   workspace:
     name: {{ printf "%q" .Workspace }}
     path: /workspace/repo
-  debug: true
+  debug: {{ if .VCSSecret }}false{{ else }}true{{ end }}

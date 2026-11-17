@@ -257,8 +257,16 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 	for _, w := range managed {
 		add(w.what(), w.Why)
 	}
+	ingTok, ingWanted, ingFound, err := ingressToken(ctx, p, c)
+	if err != nil {
+		return nil, err
+	}
+	if ingWanted && !ingFound {
+		add("secret "+CredentialsNamespace+"/"+SwitchboardIngressSecret, "missing (up generates switchboard's outbound ingress token)")
+		ingTok = "\x00"
+	}
 	if found {
-		sw, err := switchboardSecret(ctx, p, c, t)
+		sw, err := switchboardSecret(ctx, p, c, t, ingTok)
 		if err != nil {
 			return nil, err
 		}
@@ -744,7 +752,22 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 	if err != nil {
 		return err
 	}
-	sw, err := switchboardSecret(ctx, p, c, t)
+	ingTok, ingWanted, ingFound, err := ingressToken(ctx, p, c)
+	if err != nil {
+		return err
+	}
+	if ingWanted && !ingFound {
+		if ingTok, err = randomSecret(); err != nil {
+			return err
+		}
+		secretWrites = append(secretWrites, secretWrite{
+			Namespace: CredentialsNamespace,
+			Name:      SwitchboardIngressSecret,
+			Data:      map[string][]byte{"token": []byte(ingTok)},
+			Why:       "missing (generated switchboard's outbound ingress token)",
+		})
+	}
+	sw, err := switchboardSecret(ctx, p, c, t, ingTok)
 	if err != nil {
 		return err
 	}

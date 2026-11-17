@@ -106,6 +106,8 @@ func TestParseErrors(t *testing.T) {
 		{"slack command", withSlack(strings.Replace(slackOK, "command: /shipmind-stage", "command: shipmind", 1)), "slack.command"},
 		{"slack command case", withSlack(strings.Replace(slackOK, "command: /shipmind-stage", "command: /Shipmind", 1)), "slack.command"},
 		{"slack description", withSlack(slackOK + "  description: " + strings.Repeat("x", 141) + "\n"), "slack.description"},
+		{"slack alertChannel format", withSlack(slackOK + "  alertChannel: '#alerts'\n"), "slack.alertChannel"},
+		{"slack alertChannel without incidentImage", withSlack(slackOK + "  alertChannel: C0123456789\n"), "needs agent.incidentImage"},
 		{"secret name", withSecrets("  - secret: switchboard\n    keys: {a: b}\n"), "secrets[0].secret"},
 		{"secret no keys", withSecrets("  - secret: switchboard/slack\n    keys: {}\n"), "want at least one key"},
 		{"secret key", withSecrets("  - secret: switchboard/slack\n    keys: {'a b': c}\n"), "key \"a b\""},
@@ -114,6 +116,7 @@ func TestParseErrors(t *testing.T) {
 		{"secret restart", withSecrets("  - secret: switchboard/slack\n    keys: {a: b}\n    restart: [Switchboard]\n"), "restart \"Switchboard\""},
 		{"secret twice", withSecrets("  - secret: switchboard/slack\n    keys: {a: b}\n  - secret: switchboard/slack\n    keys: {a: b}\n"), "listed twice"},
 		{"vcs without chatImage", strings.Replace(good, "expect:", "  vcs:\n    secret: gh-token\n    repositories:\n      - repository: org/repo\nexpect:", 1), "needs agent.chatImage"},
+		{"vcs incidentAutoPR without incidentImage", withVCS("    secret: gh-token\n    incidentAutoPR: true\n    repositories:\n      - repository: org/repo\n"), "needs agent.incidentImage"},
 		{"vcs bad secret", withVCS("    secret: Bad_Secret\n    repositories:\n      - repository: org/repo\n"), "agent.vcs.secret"},
 		{"vcs no repos", withVCS("    secret: gh-token\n    repositories: []\n"), "at least one repository"},
 		{"vcs bad repo", withVCS("    secret: gh-token\n    repositories:\n      - repository: org\n"), "agent.vcs.repositories[0].repository"},
@@ -153,9 +156,11 @@ const slackOK = "slack:\n  app: shipmind-stage\n  command: /shipmind-stage\n"
 func withSlack(sl string) string { return strings.Replace(good, "expect:", sl+"expect:", 1) }
 
 func TestParseSlack(t *testing.T) {
-	e, err := Parse(strings.NewReader(withSlack(slackOK + "  description: Chat with the staging agents\n")))
+	doc := strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent-core@"+digest+"\n  clusters:\n", 1)
+	doc = strings.Replace(doc, "expect:", slackOK+"  description: Chat with the staging agents\n  alertChannel: C0123456789\nexpect:", 1)
+	e, err := Parse(strings.NewReader(doc))
 	if err != nil || e.Slack == nil || e.Slack.App != "shipmind-stage" || e.Slack.Command != "/shipmind-stage" ||
-		e.Slack.Description != "Chat with the staging agents" {
+		e.Slack.Description != "Chat with the staging agents" || e.Slack.AlertChannel != "C0123456789" {
 		t.Fatalf("Parse = %+v, %v", e, err)
 	}
 }
@@ -222,5 +227,19 @@ func TestParseVCS(t *testing.T) {
 	}
 	if got := e.Agent.VCS.Repositories[1].Base(); got != "release" {
 		t.Errorf("explicit Base() = %q, want release", got)
+	}
+	incidentOnly := strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent-core@"+digest+"\n  clusters:\n", 1)
+	incidentOnly = strings.Replace(incidentOnly, "expect:", "  vcs:\n    secret: gh-token\n    incidentAutoPR: true\n    repositories:\n      - repository: org/gitops\nexpect:", 1)
+	e2, err := Parse(strings.NewReader(incidentOnly))
+	if err != nil || e2.Agent.VCS == nil || !e2.Agent.VCS.IncidentAutoPR {
+		t.Fatalf("incidentAutoPR without chatImage: %+v, %v", e2, err)
+	}
+	shortIdle := strings.Replace(incidentOnly, "  clusters:\n", "  idleSuspendAfter: 3m\n  clusters:\n", 1)
+	if _, err := Parse(strings.NewReader(shortIdle)); err == nil || !strings.Contains(err.Error(), "want at least 5m when agent.vcs.incidentAutoPR is true") {
+		t.Errorf("incidentAutoPR with idleSuspendAfter=3m: err = %v", err)
+	}
+	okIdle := strings.Replace(incidentOnly, "  clusters:\n", "  idleSuspendAfter: 5m\n  clusters:\n", 1)
+	if _, err := Parse(strings.NewReader(okIdle)); err != nil {
+		t.Errorf("incidentAutoPR with idleSuspendAfter=5m: err = %v", err)
 	}
 }

@@ -91,34 +91,43 @@ type Agent struct {
 	IncidentImage string `yaml:"incidentImage,omitempty"`
 	// IdleSuspendAfter is how long a task may go without requests before
 	// ax suspends it (its spec.idle.suspendAfter), as a Go duration from 1m
-	// to 20m; empty is DefaultIdleSuspendAfter. Shorter frees worker slots
-	// sooner, at the cost of more suspend and resume cycles (a warm resume
-	// takes about two seconds). ax counts only requests, so a turn must not
-	// outlast it with nothing connected: the incident profile caps a turn at
-	// 150s (max_wallclock_seconds), and switchboard holds its event stream
-	// open through a chat turn, which counts. The 20m ceiling keeps the
-	// scenarios' 25m limits.suspend reachable. It reaches new tasks only:
-	// a task keeps the template it was created from.
+	// to 20m; empty is DefaultIdleSuspendAfter (10m). Shorter frees worker
+	// slots sooner, at the cost of more suspend and resume cycles (a warm
+	// resume takes about two seconds). ax counts only requests, so a turn
+	// must not outlast it with nothing connected: the incident profile caps a
+	// turn at 150s (max_wallclock_seconds), raised to 240s when
+	// agent.vcs.incidentAutoPR is true (which requires idleSuspendAfter >= 5m),
+	// and switchboard holds its event stream open through a chat turn, which
+	// counts. The 20m ceiling keeps the scenarios' 25m limits.suspend
+	// reachable. It reaches new tasks only: a task keeps the template it was
+	// created from.
 	IdleSuspendAfter string `yaml:"idleSuspendAfter,omitempty"`
 	// Clusters is the table the agent uses for incidents that name only
 	// a bare cluster.
 	Clusters []Cluster `yaml:"clusters"`
-	// VCS, when set (with agent.chatImage), registers a second switchboard
-	// agent ("propose") that clones GitOps repositories and opens pull
-	// requests via core-agent's vcs_* tools, with its GitHub credential
-	// injected at Substrate's egress gateway from ate-credentials/<Secret>.
+	// VCS, when set, enables core-agent's vcs_* tools and the
+	// propose-change GitOps specialist on the chat agent (with
+	// agent.chatImage) and, when incidentAutoPR is true, on autonomous
+	// lookout incidents (with agent.incidentImage), with the GitHub
+	// credential injected at Substrate's egress gateway from
+	// ate-credentials/<Secret>.
 	VCS *VCS `yaml:"vcs,omitempty"`
 }
 
-// VCS configures the switchboard "propose" agent's GitHub repositories
-// and egress-injected credential Secret.
+// VCS configures the agent's GitHub repositories, egress-injected
+// credential Secret, and whether lookout incidents open pull requests
+// autonomously.
 type VCS struct {
 	// Secret is the Secret name in ate-credentials carrying keys "bearer"
 	// (injected on api.github.com) and "basic" (injected on github.com).
 	Secret string `yaml:"secret"`
+	// IncidentAutoPR, when true (with agent.incidentImage), equips
+	// autonomous lookout incident tasks with propose-change so concrete
+	// GitOps manifest fixes open pull requests automatically.
+	IncidentAutoPR bool `yaml:"incidentAutoPR,omitempty"`
 	// Repositories lists the GitHub repositories ("<owner>/<repo>") the
-	// propose agent may clone, commit, push a branch to and open a pull
-	// request on.
+	// propose-change specialist may clone, commit, push a branch to and
+	// open a pull request on.
 	Repositories []Repository `yaml:"repositories"`
 }
 
@@ -166,6 +175,11 @@ type Slack struct {
 	// Description, when set, replaces switchboard's description of the
 	// app.
 	Description string `yaml:"description,omitempty"`
+	// AlertChannel, when set (with agent.incidentImage), is the Slack
+	// channel ID ("C..." or "G...") where autonomous lookout incidents
+	// post their diagnosis (and pull request URL, when opened) through
+	// switchboard's outbound HTTP ingress.
+	AlertChannel string `yaml:"alertChannel,omitempty"`
 }
 
 // ManagedSecret is a Kubernetes Secret copied from Secret Manager.
@@ -223,6 +237,7 @@ var (
 	smName      = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,255}$`)
 	slackApp    = regexp.MustCompile(`^[^\x00-\x1f]{1,35}$`)
 	slashCmd    = regexp.MustCompile(`^/[a-z0-9][a-z0-9_-]{0,30}$`)
+	slackChanRE = regexp.MustCompile(`^[CG][A-Z0-9]{6,20}$`)
 	agentID     = regexp.MustCompile(`^((secret|workspace|deployment) [a-z0-9-]+/[a-z0-9.-]+|(substrate|rollout) [A-Za-z]+/[a-z0-9-]+/[a-z0-9.-]+)$`)
 	repoSegRE   = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_.-]*$`)
 	branchRE    = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
@@ -317,9 +332,13 @@ func (e *Env) check() error {
 	if a.IncidentImage != "" && !digestRef.MatchString(a.IncidentImage) {
 		fail("agent.incidentImage %q: want an image pinned by digest", a.IncidentImage)
 	}
+	idleSuspend := 10 * time.Minute
 	if a.IdleSuspendAfter != "" {
-		if d, err := time.ParseDuration(a.IdleSuspendAfter); err != nil || d < time.Minute || d > 20*time.Minute {
+		d, err := time.ParseDuration(a.IdleSuspendAfter)
+		if err != nil || d < time.Minute || d > 20*time.Minute {
 			fail("agent.idleSuspendAfter %q: want a duration from 1m to 20m", a.IdleSuspendAfter)
+		} else {
+			idleSuspend = d
 		}
 	}
 	if len(a.Clusters) == 0 {
@@ -339,8 +358,14 @@ func (e *Env) check() error {
 		}
 	}
 	if vcs := a.VCS; vcs != nil {
-		if a.ChatImage == "" {
+		if !vcs.IncidentAutoPR && a.ChatImage == "" {
 			fail("agent.vcs: needs agent.chatImage (the core-agent image)")
+		}
+		if vcs.IncidentAutoPR && a.IncidentImage == "" {
+			fail("agent.vcs.incidentAutoPR: needs agent.incidentImage (the core-agent image)")
+		}
+		if vcs.IncidentAutoPR && idleSuspend < 5*time.Minute {
+			fail("agent.idleSuspendAfter %q: want at least 5m when agent.vcs.incidentAutoPR is true (incident turns run up to 240s)", a.IdleSuspendAfter)
 		}
 		if !dnsLabel.MatchString(vcs.Secret) {
 			fail("agent.vcs.secret %q: want a Secret name in ate-credentials", vcs.Secret)
@@ -407,6 +432,14 @@ func (e *Env) check() error {
 		}
 		if len([]rune(sl.Description)) > 140 || strings.ContainsAny(sl.Description, "\n\r") {
 			fail("slack.description: want one line of at most 140 characters")
+		}
+		if sl.AlertChannel != "" {
+			if !slackChanRE.MatchString(sl.AlertChannel) {
+				fail("slack.alertChannel %q: want a Slack channel ID (C... or G...)", sl.AlertChannel)
+			}
+			if a.IncidentImage == "" {
+				fail("slack.alertChannel: needs agent.incidentImage (the core-agent image)")
+			}
 		}
 	}
 	managed := map[string]bool{}

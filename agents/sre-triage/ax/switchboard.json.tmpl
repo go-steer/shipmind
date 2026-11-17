@@ -3,8 +3,8 @@
   "agents": [
     {
       "name": "triage",
-      "display_name": "SRE triage",
-      "description": "Investigates the clusters it knows: workloads, events, incidents",
+      "display_name": "SRE & GitOps",
+      "description": "Answers questions, investigates GKE clusters, and proposes GitOps pull requests",
       "kind": "ax",
       "token_env": "SWITCHBOARD_AGENT_TOKEN_TRIAGE",
       "ax": {
@@ -13,24 +13,14 @@
         "task_template_file": "/etc/switchboard/triage.yaml",
         "scope": "thread"
       }
-    }{{ if .Propose }},
-    {
-      "name": "propose",
-      "display_name": "Propose change",
-      "description": "Investigates clusters and opens pull requests on configured GitOps repositories",
-      "kind": "ax",
-      "token_env": "SWITCHBOARD_AGENT_TOKEN_TRIAGE",
-      "ax": {
-        "server": "ax-server.ax-system.svc.cluster.local:8080",
-        "atespace": {{ printf "%q" .Atespace }},
-        "task_template_file": "/etc/switchboard/propose/propose.yaml",
-        "scope": "thread"
-      }
-    }{{ end }}
+    }
   ],
   "default_agent": "triage",
   "caller_id": "email",
-  "metrics_addr": ":9090",
+  "metrics_addr": ":9090",{{ if .AlertChannel }}
+  "ingress_addr": ":8080",
+  "ingress_token_env": "SWITCHBOARD_INGRESS_TOKEN",
+  "ingress_allow": [{{ printf "%q" .AlertChannel }}],{{ end }}
   "defaults": {
     "progress_mode": "status",
     "approvals": true,

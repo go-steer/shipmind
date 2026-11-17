@@ -66,30 +66,34 @@ components:
 
   - name: ax
     source: github.com/mastersingh24/ax
-    version: 9a017f7f8f720f8476d5bf69853e421278efdd8b
+    version: db1c1def07ec0c76262c9102a558e43ffe19da5b
     profiles: [substrate]
     images:
       - name: ax-server
-        ref: ghcr.io/go-steer/shipmind/ax-server:9a017f7f8f720f8476d5bf69853e421278efdd8b@sha256:d511f0995608da6d0e105afe84e85e0db1c0b4bb116599da0d8af191dc5ec8d1
+        ref: ghcr.io/go-steer/shipmind/ax-server:db1c1def07ec0c76262c9102a558e43ffe19da5b@sha256:1a8af6e9d96172632e1751c51c8a21dfaae5d0456b39f9a679d1f613f7b4b971
       - name: postgres
         ref: docker.io/library/postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     manifests:
       - deploy/ax-server.yaml
       - deploy/postgres.yaml
     note: >-
-      ax-server, tag substrate-v1-7c50347 (branch substrate-v1-r4). Fork of
+      ax-server, tag substrate-v1-drain-db1c1de (main). Fork of
       google/ax: upstream main 241bc4d with go.ate.dev/substrate v1.0.0,
       plus the fork's own task fields (egress, HTTP pass-through, idle
       suspend, on completion; proto numbers 100 and up, ax.proto unchanged
-      since 12dbe16), a stable Ready updateTime (google/ax#539), and the
+      since 12dbe16), a stable Ready updateTime (google/ax#539), the
       runner's pass-through sending Host 127.0.0.1:<port> with the
-      router's name in X-Forwarded-Host. State in Postgres; its password
-      is a Secret `shipmind up` generates. google/ax does not take PRs, so
-      the fork is the source.
+      router's name in X-Forwarded-Host, worker-drain suspend on node drain
+      (mastersingh24/ax#1), and plain-HTTP egress rules for hosts prefixed
+      with http:// (so an ax task can reach in-cluster HTTP gateways like
+      switchboard's outbound ingress through Substrate's egress proxy with
+      header injection while keeping ax.proto wire-compatible with lookout).
+      State in Postgres; its password is a Secret `shipmind up` generates.
+      google/ax does not take PRs, so the fork is the source.
 
   - name: ax-runner
     source: github.com/mastersingh24/ax
-    version: d03b3e0dc6eada60ffd0fdfb976828938cd0b6dc
+    version: db1c1def07ec0c76262c9102a558e43ffe19da5b
     profiles: [substrate]
     note: >-
       The task runner baked into both agent images, at ax's commit. The v1
@@ -163,8 +167,8 @@ components:
     note: >-
       The agent image on core-agent (#48), built by this repository
       (images/agent) at the commit in version: the core-agent and
-      ax-runner pins above plus agents/sre-triage's bundles (gke-triage-f,
-      gke-chat and gke-propose), converted at build time on
+      ax-runner pins above plus agents/sre-triage's bundles (gke-triage-f
+      and gke-chat), converted at build time on
       distroless/static-debian12:nonroot. An environment's agent.chatImage
       runs switchboard's threads on it, and agent.incidentImage lookout's
       incidents. CI publishes a new build from every main commit that touches
