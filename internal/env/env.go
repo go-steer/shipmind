@@ -103,6 +103,37 @@ type Agent struct {
 	// Clusters is the table the agent uses for incidents that name only
 	// a bare cluster.
 	Clusters []Cluster `yaml:"clusters"`
+	// VCS, when set (with agent.chatImage), registers a second switchboard
+	// agent ("propose") that clones GitOps repositories and opens pull
+	// requests via core-agent's vcs_* tools, with its GitHub credential
+	// injected at Substrate's egress gateway from ate-credentials/<Secret>.
+	VCS *VCS `yaml:"vcs,omitempty"`
+}
+
+// VCS configures the switchboard "propose" agent's GitHub repositories
+// and egress-injected credential Secret.
+type VCS struct {
+	// Secret is the Secret name in ate-credentials carrying keys "bearer"
+	// (injected on api.github.com) and "basic" (injected on github.com).
+	Secret string `yaml:"secret"`
+	// Repositories lists the GitHub repositories ("<owner>/<repo>") the
+	// propose agent may clone, commit, push a branch to and open a pull
+	// request on.
+	Repositories []Repository `yaml:"repositories"`
+}
+
+// Repository is one GitHub repository in Agent.VCS.
+type Repository struct {
+	Repository string `yaml:"repository"`
+	BaseBranch string `yaml:"baseBranch,omitempty"`
+}
+
+// Base is the repository's base branch, defaulting to "main".
+func (r Repository) Base() string {
+	if r.BaseBranch == "" {
+		return "main"
+	}
+	return r.BaseBranch
 }
 
 // Substrate describes the installed Substrate build. Substrate's
@@ -193,7 +224,37 @@ var (
 	slackApp    = regexp.MustCompile(`^[^\x00-\x1f]{1,35}$`)
 	slashCmd    = regexp.MustCompile(`^/[a-z0-9][a-z0-9_-]{0,30}$`)
 	agentID     = regexp.MustCompile(`^((secret|workspace|deployment) [a-z0-9-]+/[a-z0-9.-]+|(substrate|rollout) [A-Za-z]+/[a-z0-9-]+/[a-z0-9.-]+)$`)
+	repoSegRE   = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_.-]*$`)
+	branchRE    = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 )
+
+func validGitHubRepo(s string) bool {
+	owner, repo, ok := strings.Cut(s, "/")
+	if !ok || strings.Contains(repo, "/") || !repoSegRE.MatchString(owner) || !repoSegRE.MatchString(repo) {
+		return false
+	}
+	if owner == "." || owner == ".." || repo == "." || repo == ".." {
+		return false
+	}
+	if strings.HasSuffix(strings.ToLower(repo), ".git") {
+		return false
+	}
+	switch strings.ToLower(owner) {
+	case "github.com", "www.github.com", "ssh.github.com", "api.github.com":
+		return false
+	}
+	return true
+}
+
+func validBranch(s string) bool {
+	return branchRE.MatchString(s) &&
+		!strings.HasPrefix(s, "/") &&
+		!strings.HasPrefix(s, "-") &&
+		!strings.HasSuffix(s, "/") &&
+		!strings.HasSuffix(s, ".lock") &&
+		!strings.Contains(s, "//") &&
+		!strings.Contains(s, "..")
+}
 
 // Load reads dir/shipmind.yaml and checks it.
 func Load(dir string) (*Env, error) {
@@ -275,6 +336,31 @@ func (e *Env) check() error {
 		seen[c.Name] = true
 		if !clusterPath.MatchString(c.Path) || !strings.HasSuffix(c.Path, "/clusters/"+c.Name) {
 			fail("agent.clusters[%d].path %q: want projects/<project>/locations/<location>/clusters/%s", i, c.Path, c.Name)
+		}
+	}
+	if vcs := a.VCS; vcs != nil {
+		if a.ChatImage == "" {
+			fail("agent.vcs: needs agent.chatImage (the core-agent image)")
+		}
+		if !dnsLabel.MatchString(vcs.Secret) {
+			fail("agent.vcs.secret %q: want a Secret name in ate-credentials", vcs.Secret)
+		}
+		if len(vcs.Repositories) == 0 {
+			fail("agent.vcs.repositories: want at least one repository")
+		}
+		seenRepos := map[string]bool{}
+		for i, r := range vcs.Repositories {
+			if !validGitHubRepo(r.Repository) {
+				fail("agent.vcs.repositories[%d].repository %q: want <owner>/<repo> (no host prefix, traversal or .git suffix)", i, r.Repository)
+			}
+			key := strings.ToLower(r.Repository)
+			if seenRepos[key] {
+				fail("agent.vcs.repositories: %q listed twice", r.Repository)
+			}
+			seenRepos[key] = true
+			if r.BaseBranch != "" && !validBranch(r.BaseBranch) {
+				fail("agent.vcs.repositories[%d].baseBranch %q: want a valid git branch name", i, r.BaseBranch)
+			}
 		}
 	}
 	if sub := e.Substrate; sub != nil {

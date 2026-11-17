@@ -215,8 +215,12 @@ per incident. It also answers questions rather than closing an incident,
 and doesn't pause for approval after every finding; a change to the
 cluster still parks at the write gate.
 An environment opts in by referencing it, as with the nightly scenario.
+When the environment also sets `agent.vcs` (with `agent.chatImage`), `up`
+registers a second switchboard agent (`propose`) running `gke-propose`
+with core-agent's `vcs_*` tools and Substrate egress credential injection
+from `ate-credentials/<secret>`, keeping `triage` read-only.
 switchboard takes no variables in its configuration, so `up` renders the
-configuration (the environment's atespace) and the task template into one
+configuration (the environment's atespace) and the task templates into one
 Secret, `switchboard/switchboard-agent`, as it does lookout's, and
 switchboard is a startup reader of it.
 
@@ -255,7 +259,8 @@ Postgres password is the same kind of value: a Secret
 (`ax-system/ax-postgres`) that `up` generates once, when the render runs
 Postgres, and never rotates, because Postgres keeps the password it
 first booted with; `status` reports it if it is missing. The
-Workspace (AGENTS.md: the cluster table and the repeat rule) is an ax
+Workspace (`AGENTS.md`: the cluster table and the repeat rule, plus
+`propose-config.json` when `agent.vcs` is set) is an ax
 object, applied with the ax CLI. Both are rendered from templates in
 `agents/sre-triage/ax/`.
 

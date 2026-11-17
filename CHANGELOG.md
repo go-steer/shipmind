@@ -10,6 +10,14 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- `agent.vcs` in an environment's `shipmind.yaml` (`secret` in
+  `ate-credentials` plus `repositories`): registers a second switchboard
+  Slack agent (`propose`, `/shipmind-<env> agent propose <prompt>`) on
+  `images/agent` (`gke-propose`) with core-agent's pure-Go `vcs_*` tools,
+  `builtin:propose-change`, `read_file`/`edit_file`/`write_file`/`grep`,
+  and Substrate egress credential injection (`Bearer` on `api.github.com`,
+  `Basic` on `github.com`), keeping `triage` read-only and the GitHub token
+  outside the sandbox.
 - worker-drain counts any of ax's reverts (`RevertedAfterWorkerLoss`,
   `RevertedAfterFailedSuspend`, any later `Reverted*`) as a revert: the
   task survives but loses the work since its last snapshot, so it fails
@@ -158,6 +166,11 @@ release is a tested set of component versions (see "Cutting a release" in
   settle while a subagent is still running.
 
 ### Changed
+
+- core-agent v3.2.0-rc.3 (`a0dbed2f`) in `images/agent`: defers
+  `VCSEventSink` mid-turn audit writes past in-flight turns so
+  database-backed sessions don't fail on ADK's stale-session check
+  (go-steer/core-agent#1571).
 
 - `images/agent` runtime base moves from `debian:bookworm-slim` (root, with
   `git` and `curl`) to `gcr.io/distroless/static-debian12:nonroot`

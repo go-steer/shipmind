@@ -30,11 +30,12 @@ import (
 
 // Where switchboard's agent Secret lives, and what reads it: the
 // Deployment in deploy/switchboard/slack mounts config.json and
-// triage.yaml, and takes token as the agent's bearer.
+// triage.yaml (plus optional propose.yaml under /etc/switchboard/propose
+// when agent.vcs is set), and takes token as the agent's bearer.
 const (
 	SwitchboardNamespace = "switchboard"
 	Switchboard          = "switchboard"
-	SwitchboardSecret    = "switchboard-agent" // keys: config.json, triage.yaml, token
+	SwitchboardSecret    = "switchboard-agent" // keys: config.json, triage.yaml, token[, propose.yaml]
 )
 
 // secretWrite is a Secret up writes because the cluster's copy is missing
@@ -132,6 +133,13 @@ func switchboardSecret(ctx context.Context, p *Plan, c cluster.Cluster, t agent.
 		return nil, err
 	}
 	want := map[string][]byte{"config.json": cfg, "triage.yaml": task, "token": []byte(t.Attach)}
+	if e := p.Env; e.Agent.VCS != nil {
+		propose, err := agent.ProposeTask(p.Root, e, t)
+		if err != nil {
+			return nil, err
+		}
+		want["propose.yaml"] = propose
+	}
 	live, found, err := c.Secret(ctx, SwitchboardNamespace, SwitchboardSecret)
 	if err != nil {
 		return nil, fmt.Errorf("secret %s/%s: %w", SwitchboardNamespace, SwitchboardSecret, err)

@@ -145,7 +145,16 @@ RUN set -e; \
       else \
         rm -f "$mcp"; \
       fi; \
-    done
+    done; \
+    cp -R /out/gke-chat /out/gke-propose; \
+    jq -S . /out/gke-propose/.agents/config.json > /tmp/got-propose.json; \
+    jq -S . /in/ax/core-agent-gke-propose.json > /tmp/want-propose.json; \
+    if ! cmp -s /tmp/got-propose.json /tmp/want-propose.json; then \
+      echo "recipe gke-propose: core-agent-gke-propose.json drifted from imported gke-chat:"; \
+      diff -u /tmp/want-propose.json /tmp/got-propose.json || true; \
+      exit 1; \
+    fi; \
+    printf '\n@include builtin:propose-change\n' >> /out/gke-propose/AGENTS.md
 # The Host Substrate's router sends (switchboard's and lookout's
 # default router URL; the nightly's too).
 ARG ROUTER_HOST=atenet-router.ate-system.svc.cluster.local
@@ -154,10 +163,20 @@ ARG ROUTER_HOST=atenet-router.ate-system.svc.cluster.local
 # step): the provider decides which tools come on by default, and a
 # disabled tool another one needs is a startup error.
 ARG TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator --disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep --agentic-tools=false --no-background-agents --no-pricing-refresh"
+ARG PROPOSE_TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator --disable-tools=bash,read_many_files,view_file_outline,delete_file,stat,list_dir,glob --agentic-tools=false --no-background-agents --no-pricing-refresh"
 RUN set -e; mkdir -p /tmp/content; \
-    for b in gke-triage-f gke-chat; do \
-      SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \
-        core-agent -c "/out/$b/.agents/config.json" $TASK_FLAGS --no-repl \
+    for b in gke-triage-f gke-chat gke-propose; do \
+      flags="$TASK_FLAGS"; \
+      cfg="/out/$b/.agents/config.json"; \
+      extra=""; \
+      if [ "$b" = "gke-propose" ]; then \
+        flags="$PROPOSE_TASK_FLAGS"; \
+        jq '. + {"vcs":{"workspace_dir":"/tmp/repos","forges":[{"name":"github","provider":"github","token_env":"CORE_AGENT_GITHUB_TOKEN"}],"repositories":[{"forge":"github","repository":"example/repo","role":"gitops","base_branch":"main"}]}}' "$cfg" > /tmp/propose.json; \
+        cfg="/tmp/propose.json"; \
+        extra="--agents-dir=/out/$b/.agents"; \
+      fi; \
+      SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected CORE_AGENT_GITHUB_TOKEN=injected CORE_AGENT_TRUSTED_DIRS="/tmp,/out/$b/.agents" GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \
+        core-agent -c "$cfg" $extra $flags --no-repl \
           --attach-listen=127.0.0.1:8484 --attach-token=SMOKE_TOKEN \
           --session-db --session-db-path="/tmp/smoke-$b.db" --agents-content-dir=/tmp/content \
           >"/tmp/smoke-$b.log" 2>&1 & pid=$!; \
@@ -169,6 +188,7 @@ RUN set -e; mkdir -p /tmp/content; \
       kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
       if [ "$code" = 000 ]; then echo "recipe $b: core-agent did not start:"; cat "/tmp/smoke-$b.log"; exit 1; fi; \
       if [ "$code" != 200 ]; then echo "recipe $b: GET /sessions as the router ($ROUTER_HOST) answered $code, not 200"; exit 1; fi; \
+      if grep -q "workspace trust:.*is untrusted" "/tmp/smoke-$b.log"; then echo "recipe $b: workspace trust clamped config:"; cat "/tmp/smoke-$b.log"; exit 1; fi; \
       echo "recipe $b: core-agent starts and answers the router"; \
     done
 

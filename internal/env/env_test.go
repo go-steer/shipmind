@@ -113,6 +113,17 @@ func TestParseErrors(t *testing.T) {
 		{"secret project", withSecrets("  - secret: switchboard/slack\n    project: X\n    keys: {a: b}\n"), "secrets[0].project"},
 		{"secret restart", withSecrets("  - secret: switchboard/slack\n    keys: {a: b}\n    restart: [Switchboard]\n"), "restart \"Switchboard\""},
 		{"secret twice", withSecrets("  - secret: switchboard/slack\n    keys: {a: b}\n  - secret: switchboard/slack\n    keys: {a: b}\n"), "listed twice"},
+		{"vcs without chatImage", strings.Replace(good, "expect:", "  vcs:\n    secret: gh-token\n    repositories:\n      - repository: org/repo\nexpect:", 1), "needs agent.chatImage"},
+		{"vcs bad secret", withVCS("    secret: Bad_Secret\n    repositories:\n      - repository: org/repo\n"), "agent.vcs.secret"},
+		{"vcs no repos", withVCS("    secret: gh-token\n    repositories: []\n"), "at least one repository"},
+		{"vcs bad repo", withVCS("    secret: gh-token\n    repositories:\n      - repository: org\n"), "agent.vcs.repositories[0].repository"},
+		{"vcs dot traversal repo", withVCS("    secret: gh-token\n    repositories:\n      - repository: ../repo\n"), "agent.vcs.repositories[0].repository"},
+		{"vcs dash repo", withVCS("    secret: gh-token\n    repositories:\n      - repository: -org/repo\n"), "agent.vcs.repositories[0].repository"},
+		{"vcs dotgit repo", withVCS("    secret: gh-token\n    repositories:\n      - repository: org/repo.git\n"), "agent.vcs.repositories[0].repository"},
+		{"vcs host prefix repo", withVCS("    secret: gh-token\n    repositories:\n      - repository: github.com/repo\n"), "agent.vcs.repositories[0].repository"},
+		{"vcs duplicate repo", withVCS("    secret: gh-token\n    repositories:\n      - repository: org/repo\n      - repository: ORG/Repo\n"), "listed twice"},
+		{"vcs bad branch", withVCS("    secret: gh-token\n    repositories:\n      - repository: org/repo\n        baseBranch: 'main branch'\n"), "agent.vcs.repositories[0].baseBranch"},
+		{"vcs lock branch", withVCS("    secret: gh-token\n    repositories:\n      - repository: org/repo\n        baseBranch: main.lock\n"), "agent.vcs.repositories[0].baseBranch"},
 		{"duplicate expect", good + "  - object: apps.v1.Deployment.ns.name\n    reason: again\n", `"apps.v1.Deployment.ns.name" listed twice`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -190,5 +201,26 @@ func TestIdleSuspend(t *testing.T) {
 	}
 	if got := (Agent{IdleSuspendAfter: "3m"}).IdleSuspend(); got != "3m" {
 		t.Errorf("3m: %q", got)
+	}
+}
+
+func withVCS(vcsBody string) string {
+	doc := strings.Replace(good, "  clusters:\n", "  chatImage: registry.example.com/agent-core@"+digest+"\n  clusters:\n", 1)
+	return strings.Replace(doc, "expect:", "  vcs:\n"+vcsBody+"expect:", 1)
+}
+
+func TestParseVCS(t *testing.T) {
+	e, err := Parse(strings.NewReader(withVCS("    secret: gh-token\n    repositories:\n      - repository: org/gitops\n      - repository: org/apps\n        baseBranch: release\n")))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if e.Agent.VCS == nil || e.Agent.VCS.Secret != "gh-token" || len(e.Agent.VCS.Repositories) != 2 {
+		t.Fatalf("vcs = %+v", e.Agent.VCS)
+	}
+	if got := e.Agent.VCS.Repositories[0].Base(); got != "main" {
+		t.Errorf("default Base() = %q, want main", got)
+	}
+	if got := e.Agent.VCS.Repositories[1].Base(); got != "release" {
+		t.Errorf("explicit Base() = %q, want release", got)
 	}
 }

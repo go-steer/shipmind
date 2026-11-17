@@ -95,6 +95,7 @@ func NewTokens() (Tokens, error) {
 const (
 	IncidentBundle = "gke-triage-f"
 	ChatBundle     = "gke-chat"
+	ProposeBundle  = "gke-propose"
 )
 
 // Task renders the ax task template lookout stamps an incident task
@@ -150,13 +151,90 @@ func task(root string, e *env.Env, t Tokens, bundle string) ([]byte, error) {
 	})
 }
 
+// ProposeTask renders the task template switchboard starts a "propose"
+// thread's task from when e.Agent.VCS is configured.
+func ProposeTask(root string, e *env.Env, t Tokens) ([]byte, error) {
+	if e.Agent.VCS == nil {
+		return nil, nil
+	}
+	if err := t.Check(); err != nil {
+		return nil, err
+	}
+	return render(root, "task-core-agent-propose.yaml.tmpl", map[string]string{
+		"Bundle":      ProposeBundle,
+		"Atespace":    e.Agent.Atespace,
+		"Image":       e.Agent.ChatImage,
+		"Project":     e.Agent.Project,
+		"Workspace":   e.Agent.Workspace,
+		"AttachToken": t.Attach,
+		"IdleSuspend": e.Agent.IdleSuspend(),
+		"VCSSecret":   e.Agent.VCS.Secret,
+	})
+}
+
+// ProposeConfig renders the core-agent config JSON written to the
+// Workspace's propose-config.json when e.Agent.VCS is configured:
+// core-agent-gke-propose.json (checked at Docker build time against
+// imported gke-chat) plus the environment's vcs block.
+func ProposeConfig(root string, e *env.Env) ([]byte, error) {
+	if e.Agent.VCS == nil {
+		return nil, nil
+	}
+	base, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-gke-propose.json"))
+	if err != nil {
+		return nil, err
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(base, &doc); err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Join(root, Dir, "core-agent-gke-propose.json"), err)
+	}
+	type repo struct {
+		Forge      string `json:"forge"`
+		Repository string `json:"repository"`
+		Role       string `json:"role"`
+		BaseBranch string `json:"base_branch"`
+	}
+	role := "gitops"
+	if len(e.Agent.VCS.Repositories) > 1 {
+		role = "managed"
+	}
+	repos := make([]repo, 0, len(e.Agent.VCS.Repositories))
+	for _, r := range e.Agent.VCS.Repositories {
+		repos = append(repos, repo{
+			Forge:      "github",
+			Repository: r.Repository,
+			Role:       role,
+			BaseBranch: r.Base(),
+		})
+	}
+	doc["vcs"] = map[string]any{
+		"workspace_dir": "/workspace/repos",
+		"forges": []map[string]any{{ //nolint:gosec // token_env names the environment variable, not a credential
+			"name":      "github",
+			"provider":  "github",
+			"token_env": "CORE_AGENT_GITHUB_TOKEN",
+			"commit_identity": map[string]string{
+				"name":  "shipmind[bot]",
+				"email": "shipmind[bot]@users.noreply.github.com",
+			},
+		}},
+		"repositories": repos,
+	}
+	return json.MarshalIndent(doc, "", "  ")
+}
+
 // SwitchboardConfig renders switchboard's configuration for e: its Slack
 // gateway fronting the agent as an ax agent, a task per thread, started
-// from the task template at /etc/switchboard/triage.yaml. switchboard
-// takes no variables in its configuration, so the environment's values
-// are rendered in, as for the task template.
+// from the task template at /etc/switchboard/triage.yaml (plus the
+// "propose" agent at /etc/switchboard/propose/propose.yaml when
+// e.Agent.VCS is set). switchboard takes no variables in its
+// configuration, so the environment's values are rendered in, as for the
+// task template.
 func SwitchboardConfig(root string, e *env.Env) ([]byte, error) {
-	b, err := render(root, "switchboard.json.tmpl", map[string]string{"Atespace": e.Agent.Atespace})
+	b, err := render(root, "switchboard.json.tmpl", map[string]any{
+		"Atespace": e.Agent.Atespace,
+		"Propose":  e.Agent.VCS != nil,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -177,10 +255,15 @@ func Workspace(root string, e *env.Env) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	proposeCfg, err := ProposeConfig(root, e)
+	if err != nil {
+		return nil, err
+	}
 	return render(root, "workspace.yaml.tmpl", map[string]string{
-		"Atespace":  e.Agent.Atespace,
-		"Workspace": e.Agent.Workspace,
-		"AgentsMD":  string(md),
+		"Atespace":      e.Agent.Atespace,
+		"Workspace":     e.Agent.Workspace,
+		"AgentsMD":      string(md),
+		"ProposeConfig": string(proposeCfg),
 	})
 }
 
