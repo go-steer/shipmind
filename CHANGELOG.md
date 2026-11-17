@@ -181,6 +181,10 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- `agent` image pinned at `866bb3e` (`sha256:91482f9c`): unified `gke-chat` and
+  `gke-triage-f` bundles (#118, retiring `gke-propose`) on core-agent
+  v3.2.0-rc.3 with `ax-runner` at `db1c1de`.
+
 - `agent` image pinned at `4936974` (`sha256:e971b0ed`): core-agent
   v3.2.0-rc.3, the `gke-propose` recipe (#116), and
   `distroless/static-debian12:nonroot` (`65532:65532`, #115) with `ax-runner`
