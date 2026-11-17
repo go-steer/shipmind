@@ -155,20 +155,20 @@ components:
 
   - name: agent
     source: github.com/go-steer/shipmind
-    version: c3f78e227c519e2a29e94f77fa284164d9c2cab5
+    version: 4936974bbf381d32aa3a0b7e2bb75cd7b4f56e4a
     profiles: [substrate]
     images:
       - name: agent
-        ref: ghcr.io/go-steer/shipmind/agent:c3f78e227c519e2a29e94f77fa284164d9c2cab5-runner-d03b3e0dc6ea@sha256:c623bfabca6aa50ea9efa0f2180f6770bb3a738ac5ef27a32d09bd38b2316c47
+        ref: ghcr.io/go-steer/shipmind/agent:4936974bbf381d32aa3a0b7e2bb75cd7b4f56e4a@sha256:e971b0ed070c80bd733a817e81980e006a624a2db28c6597c3da9ff72661d425
     note: >-
       The agent image on core-agent (#48), built by this repository
       (images/agent) at the commit in version: the core-agent and
-      ax-runner pins above plus agents/sre-triage's bundles, converted at
-      build time; this build carries the ax-runner at d03b3e0 (tag
-      <commit>-runner-d03b3e0dc6ea). An environment's agent.chatImage runs switchboard's
-      threads on it, and agent.incidentImage lookout's incidents. CI publishes
-      a new build from every main commit that touches those inputs; move
-      this pin to one deliberately.
+      ax-runner pins above plus agents/sre-triage's bundles (gke-triage-f,
+      gke-chat and gke-propose), converted at build time on
+      distroless/static-debian12:nonroot. An environment's agent.chatImage
+      runs switchboard's threads on it, and agent.incidentImage lookout's
+      incidents. CI publishes a new build from every main commit that touches
+      those inputs; move this pin to one deliberately.
 
   - name: k8s-lookout
     source: github.com/go-steer/k8s-lookout

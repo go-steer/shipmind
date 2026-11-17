@@ -167,6 +167,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- `agent` image pinned at `4936974` (`sha256:e971b0ed`): core-agent
+  v3.2.0-rc.3, the `gke-propose` recipe (#116), and
+  `distroless/static-debian12:nonroot` (`65532:65532`, #115) with `ax-runner`
+  at `d03b3e0`.
+
 - core-agent v3.2.0-rc.3 (`a0dbed2f`) in `images/agent`: defers
   `VCSEventSink` mid-turn audit writes past in-flight turns so
   database-backed sessions don't fail on ADK's stale-session check
