@@ -4,6 +4,29 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-17: images/agent runs on distroless nonroot
+
+`images/agent` moves its runtime stage from `debian:bookworm-slim` (root,
+with `git` and `curl` installed) to
+`gcr.io/distroless/static-debian12:nonroot` (`USER 65532:65532`), matching
+core-agent's own release image and `images/e2e-runner`.
+
+**Why:** the Debian base carried `git` for repository clones and `curl` for
+poking at core-agent over `ax ssh`. `ax-task-runner` execs `core-agent`
+directly without `/bin/sh`, shipmind's Workspaces use `spec.files` rather
+than `spec.git`, core-agent's `vcs_*` tools use pure-Go `go-git` in process,
+and lookout, switchboard and the scenario runner all reach the agent over its
+HTTP session API through Substrate's router rather than `ax ssh`. Dropping
+the Debian userland removes `/bin/sh`, `apt`, `git`, `curl` and root inside
+the actor.
+
+**Rejected:** keeping `debian:bookworm-slim` for interactive `ax ssh`
+debugging (session state, tool calls and prompts are already observable over
+the attach HTTP API, and any code-execution bug inside the actor would inherit
+root plus a shell and `curl`); a separate debug image variant (two images to
+build and pin for one binary, rejected in 2026-11-05 "Two agent profiles,
+autonomous and interactive, one image").
+
 ## 2026-11-07: The scenario judge is Claude Sonnet 5.5, on a fixed rubric
 
 Nightly scenario answers are graded by `claude-sonnet-5-5` on Vertex AI at
