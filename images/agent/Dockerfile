@@ -172,12 +172,11 @@ RUN set -e; mkdir -p /tmp/content; \
       echo "recipe $b: core-agent starts and answers the router"; \
     done
 
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
-# git: the agent clones repositories into workspaces. curl: for poking at
-# core-agent from `ax ssh`.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git curl \
- && rm -rf /var/lib/apt/lists/*
+# Distroless nonroot (UID/GID 65532): carries CA certificates, tzdata and
+# /etc/passwd, with no shell, package manager, git or curl. ax-task-runner
+# execs core-agent directly, and core-agent's vcs_* tools use go-git in
+# process rather than shelling out to git.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 LABEL org.opencontainers.image.source="https://github.com/go-steer/shipmind" \
       org.opencontainers.image.licenses="Apache-2.0" \
@@ -187,4 +186,5 @@ COPY --from=ax-runner /out/ax-task-runner /usr/local/bin/ax-task-runner
 COPY --from=core-agent /out/core-agent /usr/local/bin/core-agent
 COPY --from=recipes /out /opt/core-agent/recipes
 
+USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/ax-task-runner"]

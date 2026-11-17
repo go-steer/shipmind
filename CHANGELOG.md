@@ -159,6 +159,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- `images/agent` runtime base moves from `debian:bookworm-slim` (root, with
+  `git` and `curl`) to `gcr.io/distroless/static-debian12:nonroot`
+  (`65532:65532`), removing the shell, package manager and root user inside
+  the actor now that `core-agent` carries pure-Go `vcs_*` tools.
+
 - core-agent v3.2.0-rc.2 (`fe3b18e7`) and Go 1.26.11 (for GO-2026-6859) in
   `images/agent`: brings the pure-Go `vcs_*` tool suite over core-vcs
   v1.1.0 and `builtin:propose-change` (go-steer/core-agent#1490,
