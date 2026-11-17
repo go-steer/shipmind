@@ -24,8 +24,9 @@
 #   - Secret switchboard/switchboard-slack (app-token, bot-token): copied
 #     from Secret Manager by `shipmind up` (shipmind.yaml `secrets`).
 #   - Secret switchboard/switchboard-agent (config.json, triage.yaml,
-#     token): rendered by `shipmind up` from shipmind.yaml, like lookout's
-#     task template, since the template carries the agent's token.
+#     token, plus optional propose.yaml when agent.vcs is set): rendered
+#     by `shipmind up` from shipmind.yaml, like lookout's task template,
+#     since the templates carry the agent's token.
 #   - The router allowlist entry for this pod's identity,
 #     spiffe://cluster.local/ns/switchboard/sa/switchboard.
 apiVersion: kustomize.config.k8s.io/v1beta1

@@ -212,7 +212,16 @@ func TestTemplatesSurviveYAML11(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, b := range map[string][]byte{"task": task, "workspace": ws, "core-agent chat task": chat} {
+	e.Agent.VCS = &env.VCS{Secret: "no", Repositories: []env.Repository{{Repository: "on/no", BaseBranch: "on"}}}
+	propose, err := ProposeTask(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsVCS, err := Workspace(root, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range map[string][]byte{"task": task, "workspace": ws, "core-agent chat task": chat, "propose task": propose, "workspace with vcs": wsVCS} {
 		var doc map[string]any
 		if err := yaml11.Unmarshal(b, &doc); err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -589,10 +598,113 @@ func TestCoreAgentImage(t *testing.T) {
 	if err := json.Unmarshal(b, &chatMain); err != nil || !slices.Equal(chatMain, []string{"list_clusters", "get_cluster"}) {
 		t.Errorf("chat main agent's tools %q, %v", chatMain, err)
 	}
-	for _, step := range []string{`jq -s '.[0] * .[1]'`, "/in/ax/core-agent-$b.json", "--attach-token=SMOKE_TOKEN"} {
+	for _, step := range []string{`jq -s '.[0] * .[1]'`, "/in/ax/core-agent-$b.json", "--attach-token=SMOKE_TOKEN", "core-agent-gke-propose.json", "builtin:propose-change"} {
 		if !strings.Contains(string(dockerfile), step) {
 			t.Errorf("images/agent lacks %q (the overlay merge or the boot check)", step)
 		}
+	}
+}
+
+func TestProposeTaskAndWorkspace(t *testing.T) {
+	e := testEnv()
+	if b, err := ProposeTask(root, e, tok); err != nil || b != nil {
+		t.Fatalf("ProposeTask without vcs = %s, %v", b, err)
+	}
+	if b, err := ProposeConfig(root, e); err != nil || b != nil {
+		t.Fatalf("ProposeConfig without vcs = %s, %v", b, err)
+	}
+	e.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("4", 64)
+	e.Agent.VCS = &env.VCS{
+		Secret: "gh-token",
+		Repositories: []env.Repository{
+			{Repository: "acme/gitops"},
+			{Repository: "acme/apps", BaseBranch: "release"},
+		},
+	}
+	taskBytes, err := ProposeTask(root, e, tok)
+	if err != nil {
+		t.Fatalf("ProposeTask: %v", err)
+	}
+	s := string(taskBytes)
+	for _, want := range []string{
+		"-c\n    - /workspace/repo/propose-config.json\n",
+		"--agents-dir=/opt/core-agent/recipes/" + ProposeBundle + "/.agents",
+		"--disable-tools=bash,read_many_files,view_file_outline,delete_file,stat,list_dir,glob",
+		"CORE_AGENT_TRUSTED_DIRS",
+		"ate-secret://k8s.io/default/ate-credentials/gh-token/bearer",
+		"ate-secret://k8s.io/default/ate-credentials/gh-token/basic",
+		"debug: false",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("ProposeTask lacks %q:\n%s", want, s)
+		}
+	}
+	dockerfile, err := os.ReadFile(filepath.Join(root, "images/agent/Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proposeFlags []string
+	for _, line := range strings.Split(string(dockerfile), "\n") {
+		if v, ok := strings.CutPrefix(line, "ARG PROPOSE_TASK_FLAGS="); ok {
+			proposeFlags = strings.Fields(strings.Trim(v, `"`))
+		}
+	}
+	var parsedTask struct {
+		Spec struct{ Command []string } `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(taskBytes, &parsedTask); err != nil {
+		t.Fatal(err)
+	}
+	var shaping []string
+	for _, f := range parsedTask.Spec.Command[3:] {
+		switch {
+		case f == "--no-repl", strings.HasPrefix(f, "--agents-dir="), strings.HasPrefix(f, "--attach-"), strings.HasPrefix(f, "--session-db"), strings.HasPrefix(f, "--agents-content-dir"):
+			continue
+		}
+		shaping = append(shaping, f)
+	}
+	if !slices.Equal(proposeFlags, shaping) {
+		t.Errorf("images/agent's PROPOSE_TASK_FLAGS\n got %q\nwant the template's %q", proposeFlags, shaping)
+	}
+	multiCfg, err := ProposeConfig(root, e)
+	if err != nil || !strings.Contains(string(multiCfg), `"role": "managed"`) || strings.Contains(string(multiCfg), `"role": "gitops"`) {
+		t.Errorf("multi-repo ProposeConfig should use role=managed: %s, %v", multiCfg, err)
+	}
+	singleEnv := *e
+	singleEnv.Agent.VCS = &env.VCS{Secret: "gh-token", Repositories: []env.Repository{{Repository: "acme/gitops"}}}
+	singleCfg, err := ProposeConfig(root, &singleEnv)
+	if err != nil || !strings.Contains(string(singleCfg), `"role": "gitops"`) {
+		t.Errorf("single-repo ProposeConfig should use role=gitops: %s, %v", singleCfg, err)
+	}
+	if _, err := ProposeTask(root, e, Tokens{Inject: tok.Inject, Attach: "x"}); err == nil {
+		t.Error("ProposeTask with bad token succeeded")
+	}
+	if _, err := ProposeConfig(t.TempDir(), e); err == nil {
+		t.Error("ProposeConfig with missing base JSON succeeded")
+	}
+
+	swBytes, err := SwitchboardConfig(root, e)
+	if err != nil {
+		t.Fatalf("SwitchboardConfig: %v", err)
+	}
+	if !strings.Contains(string(swBytes), `"name": "propose"`) || !strings.Contains(string(swBytes), `/etc/switchboard/propose/propose.yaml`) {
+		t.Errorf("SwitchboardConfig with vcs lacks propose agent:\n%s", swBytes)
+	}
+
+	wsBytes, err := Workspace(root, e)
+	if err != nil {
+		t.Fatalf("Workspace: %v", err)
+	}
+	var ws struct {
+		Spec struct {
+			Files []struct{ Path, Content string }
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(wsBytes, &ws); err != nil {
+		t.Fatalf("Workspace YAML: %v", err)
+	}
+	if len(ws.Spec.Files) != 2 || ws.Spec.Files[1].Path != "propose-config.json" || !strings.Contains(ws.Spec.Files[1].Content, `"acme/gitops"`) {
+		t.Errorf("Workspace files = %+v", ws.Spec.Files)
 	}
 }
 

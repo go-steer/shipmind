@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The ax Workspace mounted into every incident task at /workspace/repo;
-# mast reads its AGENTS.md ahead of every prompt (--instructions).
+# The ax Workspace mounted into every incident and chat task at
+# /workspace/repo; mast reads its AGENTS.md ahead of every prompt
+# (--instructions), and core-agent loads it via --agents-content-dir.
+# When agent.vcs is set, propose-config.json carries the propose task's
+# core-agent config (gke-chat's base config plus the environment's vcs
+# repositories).
 apiVersion: ax.io/v1alpha1
 kind: Workspace
 metadata:
@@ -23,3 +27,7 @@ spec:
   files:
     - path: AGENTS.md
       content: {{ printf "%q" .AgentsMD }}
+{{- if .ProposeConfig }}
+    - path: propose-config.json
+      content: {{ printf "%q" .ProposeConfig }}
+{{- end }}

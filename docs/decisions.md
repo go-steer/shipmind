@@ -4,6 +4,40 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-17: A separate switchboard "propose" agent opens GitOps pull requests
+
+When an environment sets `agent.vcs` (`secret` in `ate-credentials` plus
+`repositories`) alongside `agent.chatImage`, `shipmind up` registers a second
+switchboard agent (`propose`, `/etc/switchboard/propose/propose.yaml`) beside
+`triage`, writes `propose-config.json` into the environment's ax Workspace, and
+mounts the optional `propose.yaml` Secret item into switchboard. `images/agent`
+builds `/opt/core-agent/recipes/gke-propose` from `gke-chat` with
+`@include builtin:propose-change` and checks at build time that
+`core-agent-gke-propose.json` matches the imported `gke-chat` config.
+
+`propose` runs on the same distroless nonroot `images/agent` (`debug: false`)
+with `read_file`, `edit_file`, `write_file` and `grep` enabled alongside
+core-agent's pure-Go `vcs_*` tools; `edit_file`, `write_file`, `vcs_commit`,
+`vcs_publish` and `vcs_propose` stay in `ask` mode so switchboard relays each
+mutation as an approval prompt in the Slack thread (`standing_approvers:
+["nobody"]` disables persistent grant writes against the read-only image
+recipe directory, while `CORE_AGENT_TRUSTED_DIRS` trusts the Workspace and
+baked recipe in memory). The GitHub token stays
+outside the actor in `ate-credentials/<secret>`: Substrate's egress gateway
+injects `Bearer ` on `api.github.com` and `Basic `
+(`base64("x-access-token:<token>")`) on `github.com`.
+
+**Why:** keeps `triage` (`default_agent`) read-only with file tools disabled
+(matching 2026-11-05 "The incident agent triages; specialists get briefs"),
+keeps repository names and Secret names in the private overlay rather than
+`images/agent`, and needs no `git` binary, shell or sandboxed token.
+
+**Rejected:** enabling file and `vcs_*` tools on `triage` itself (every chat
+thread would carry file-mutation and forge schemas and egress to GitHub);
+baking repository coordinates into `images/agent` (violates the public-repo
+rule); passing the GitHub token in task `env` instead of Substrate egress
+injection.
+
 ## 2026-11-17: images/agent runs on distroless nonroot
 
 `images/agent` moves its runtime stage from `debian:bookworm-slim` (root,

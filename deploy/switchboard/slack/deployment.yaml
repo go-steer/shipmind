@@ -76,6 +76,16 @@
 - op: add
   path: /spec/template/spec/volumes/-
   value:
+    name: propose
+    secret:
+      secretName: switchboard-agent
+      optional: true
+      items:
+        - key: propose.yaml
+          path: propose.yaml
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
     name: state
     persistentVolumeClaim:
       claimName: switchboard-state
@@ -104,6 +114,12 @@
               matchLabels:
                 podcert.ate.dev/canarying: live
             path: trust-bundle.pem
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value:
+    name: propose
+    mountPath: /etc/switchboard/propose
+    readOnly: true
 - op: add
   path: /spec/template/spec/containers/0/volumeMounts/-
   value:

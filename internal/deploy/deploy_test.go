@@ -1341,6 +1341,37 @@ func TestSwitchboardSecret(t *testing.T) {
 	if !strings.Contains(string(want), "core-agent") || !strings.Contains(written, "triage.yaml: "+base64.StdEncoding.EncodeToString(want)) {
 		t.Errorf("chatImage: up didn't write the core-agent template:\n%s", written)
 	}
+	// agent.vcs adds propose.yaml and registers the propose agent in config.json.
+	p.Env.Agent.VCS = &env.VCS{
+		Secret:       "gh-token",
+		Repositories: []env.Repository{{Repository: "acme/gitops"}},
+	}
+	c.applied = nil
+	if err := Up(ctx, p, c, UpOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	written = ""
+	for _, m := range c.applied {
+		if strings.Contains(m, "name: switchboard-agent") {
+			written = m
+		}
+	}
+	wantPropose, _ := agent.ProposeTask(root, p.Env, tok)
+	if len(wantPropose) == 0 || !strings.Contains(written, "propose.yaml: "+base64.StdEncoding.EncodeToString(wantPropose)) {
+		t.Errorf("vcs: up didn't write propose.yaml:\n%s", written)
+	}
+	cfgVCS, _ := agent.SwitchboardConfig(root, p.Env)
+	c.workspace, _ = agent.Workspace(root, p.Env)
+	c.secrets["switchboard/switchboard-agent"] = map[string][]byte{
+		"config.json": cfgVCS, "triage.yaml": want, "propose.yaml": wantPropose, "token": []byte(tok.Attach),
+	}
+	if r, err := Status(ctx, p, c); err != nil || len(r.Changes) != 0 {
+		t.Errorf("vcs in sync: %+v, %v", r, err)
+	}
+	p.Env.Agent.VCS = nil
+	if r, err := Status(ctx, p, c); err != nil || !strings.Contains(fmt.Sprint(r.Changes), "differs (keys config.json, propose.yaml) against the render") || !strings.Contains(fmt.Sprint(r.Changes), "files differ from the render") {
+		t.Errorf("vcs removed: %+v, %v", r, err)
+	}
 	// Without switchboard in the render, nothing.
 	if r, err := Status(ctx, plan(t), inSync(t)); err != nil || len(r.Changes) != 0 {
 		t.Errorf("no switchboard: %+v, %v", r, err)
@@ -1383,7 +1414,8 @@ func TestSwitchboardWiring(t *testing.T) {
 	for _, want := range []string{
 		"secretName: " + SwitchboardSecret,
 		"key: config.json", "path: config.json", "key: triage.yaml", "path: triage.yaml",
-		"mountPath: /etc/switchboard\n",
+		"key: propose.yaml", "path: propose.yaml", "optional: true",
+		"mountPath: /etc/switchboard\n", "mountPath: /etc/switchboard/propose\n",
 		"--config=/etc/switchboard/config.json",
 		"name: " + c.AppEnv, "name: " + c.BotEnv, "name: " + c.Agents[0].TokenEnv,
 	} {
