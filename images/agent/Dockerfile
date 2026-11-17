@@ -61,7 +61,7 @@
 #
 #   docker build -f images/agent/Dockerfile $(images/agent/build-args.sh) .
 
-ARG GO_VERSION=1.26.10
+ARG GO_VERSION=1.26.11
 ARG AX_GO_VERSION=1.27.1
 
 FROM --platform=$BUILDPLATFORM golang:${AX_GO_VERSION}-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS ax-runner
@@ -80,7 +80,7 @@ RUN git init -q . \
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags "-s -w" -o /out/ax-task-runner ./cmd/ax-task-runner
 
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS core-agent
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS core-agent
 ARG CORE_AGENT_REPO
 ARG CORE_AGENT_COMMIT
 ARG TARGETOS

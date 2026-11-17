@@ -159,6 +159,13 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- core-agent v3.2.0-rc.2 (`fe3b18e7`) and Go 1.26.11 (for GO-2026-6859) in
+  `images/agent`: brings the pure-Go `vcs_*` tool suite over core-vcs
+  v1.1.0 and `builtin:propose-change` (go-steer/core-agent#1490,
+  unregistered unless `config.vcs` is set, so existing bundles are
+  unchanged) and core-models v0.15.3 (#1557). The `agent` image pin stays
+  until CI publishes the new build.
+
 - ax-server at mastersingh24/ax 9a017f7: an actor whose drain suspend
   failed and then crashed is reverted to its latest snapshot (task
   AutoSuspended `RevertedAfterFailedSuspend`) instead of staying Failed.
