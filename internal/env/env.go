@@ -115,8 +115,9 @@ type Agent struct {
 }
 
 // VCS configures the agent's GitHub repositories, egress-injected
-// credential Secret, and whether lookout incidents open pull requests
-// autonomously.
+// credential Secret, whether lookout incidents open pull requests
+// autonomously, and whether Slack chat opens pull requests without
+// interactive approval prompts.
 type VCS struct {
 	// Secret is the Secret name in ate-credentials carrying keys "bearer"
 	// (injected on api.github.com) and "basic" (injected on github.com).
@@ -125,6 +126,11 @@ type VCS struct {
 	// autonomous lookout incident tasks with propose-change so concrete
 	// GitOps manifest fixes open pull requests automatically.
 	IncidentAutoPR bool `yaml:"incidentAutoPR,omitempty"`
+	// ChatAutoApprove, when true (with agent.chatImage), allowlists
+	// vcs_publish and vcs_propose in chat-config.json so the Slack agent
+	// pushes topic branches and opens pull requests without interactive
+	// Slack approval prompts.
+	ChatAutoApprove bool `yaml:"chatAutoApprove,omitempty"`
 	// Repositories lists the GitHub repositories ("<owner>/<repo>") the
 	// propose-change specialist may clone, commit, push a branch to and
 	// open a pull request on.
@@ -358,7 +364,9 @@ func (e *Env) check() error {
 		}
 	}
 	if vcs := a.VCS; vcs != nil {
-		if !vcs.IncidentAutoPR && a.ChatImage == "" {
+		if vcs.ChatAutoApprove && a.ChatImage == "" {
+			fail("agent.vcs.chatAutoApprove: needs agent.chatImage (the core-agent image)")
+		} else if !vcs.IncidentAutoPR && a.ChatImage == "" {
 			fail("agent.vcs: needs agent.chatImage (the core-agent image)")
 		}
 		if vcs.IncidentAutoPR && a.IncidentImage == "" {

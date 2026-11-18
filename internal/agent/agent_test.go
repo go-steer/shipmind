@@ -694,6 +694,20 @@ func TestChatAndIncidentVCSAndAlertFlows(t *testing.T) {
 	if err != nil || !strings.Contains(string(singleCfg), `"role": "gitops"`) {
 		t.Errorf("single-repo ChatConfig should use role=gitops: %s, %v", singleCfg, err)
 	}
+
+	autoApproveEnv := *e
+	autoApproveEnv.Agent.VCS = &env.VCS{
+		Secret:          "gh-token",
+		ChatAutoApprove: true,
+		Repositories:    []env.Repository{{Repository: "acme/gitops"}},
+	}
+	autoApproveCfg, err := ChatConfig(root, &autoApproveEnv)
+	if err != nil ||
+		!strings.Contains(string(autoApproveCfg), `"vcs_commit:*"`) ||
+		!strings.Contains(string(autoApproveCfg), `"vcs_publish:*"`) ||
+		!strings.Contains(string(autoApproveCfg), `"vcs_propose:*"`) {
+		t.Errorf("ChatConfig with ChatAutoApprove=true should allowlist vcs_publish and vcs_propose:\n%s, %v", autoApproveCfg, err)
+	}
 	if _, err := ChatConfig(t.TempDir(), e); err == nil {
 		t.Error("ChatConfig with missing base JSON succeeded")
 	}
