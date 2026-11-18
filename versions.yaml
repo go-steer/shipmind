@@ -237,11 +237,11 @@ components:
 
   - name: switchboard
     source: github.com/go-steer/switchboard
-    version: v0.10.0
+    version: v0.11.0
     profiles: [standalone, substrate]
     images:
       - name: switchboard
-        ref: ghcr.io/go-steer/switchboard:0.10.0@sha256:223caeb12948898351abbbdfd1c727e1d327e6897f779783057e83d597401c08
+        ref: ghcr.io/go-steer/switchboard:0.11.0@sha256:7208f02d1810d2cec05456a0a72779db36c18e913ec8e0d2ebc2e1d592e3c2bc
     manifests:
       - deploy/base/11-serviceaccount.yaml
       - deploy/base/16-networkpolicy.yaml
@@ -258,8 +258,12 @@ components:
       remembered posts, PATCH edits, and continuation rollovers in that
       thread (switchboard#194) so a reply on an autonomous incident alert
       carries the diagnosis without chat-history scopes, and builds on Go
-      1.26.11 for GO-2026-6859. It starts agents as ax tasks (switchboard
-      docs/ax-backend.md): one per Slack thread, reached through
+      1.26.11 for GO-2026-6859. v0.11.0 streams subagent inner-tool progress
+      (`_fallback`, `propose-change`, awaited `spawn_agent`) in `status` and
+      `stream` modes across Slack and Google Chat (switchboard#193) and
+      surfaces tool activity on agent frames carrying both narration text and
+      `functionCall` parts (switchboard#197). It starts agents as ax tasks
+      (switchboard docs/ax-backend.md): one per Slack thread, reached through
       Substrate's router over mTLS. deploy/switchboard/slack runs its Slack
       gateway in front of the SRE triage agent; an environment opts in by
       referencing it. Vendored: the base and the durable-state PVC (the
