@@ -10,6 +10,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- Bumped `switchboard` to `v0.10.0` (unbound outbound-ingress thread context
+  seeding for the first inbound reply without Slack/Chat history scopes,
+  completing the `incident -> Slack alert -> human reply -> open PR` flow when
+  `agent.vcs.incidentAutoPR` is `false`; built on Go 1.26.11 for
+  `GO-2026-6859`).
 - Unified general-purpose Slack agent and autonomous lookout incident
   remediation flows: `agent.vcs` (`secret` in `ate-credentials` plus
   `repositories`, with Substrate egress credential injection: `Bearer` on
