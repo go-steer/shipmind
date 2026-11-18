@@ -293,9 +293,10 @@ func appendPermissionsAllow(doc map[string]any, patterns ...string) {
 // chat-config.json when e.Agent.ChatImage and e.Agent.VCS are configured:
 // core-agent-gke-chat.base.json (checked at Docker build time against
 // imported gke-chat) plus the environment's vcs block and propose-change
-// specialist. Local sandbox file edits and vcs_commit are allowlisted,
-// while vcs_publish and vcs_propose remain in ask mode so switchboard
-// prompts in Slack before any branch push or pull request creation.
+// specialist. Local sandbox file edits and vcs_commit are allowlisted;
+// vcs_publish and vcs_propose remain in ask mode by default so switchboard
+// prompts in Slack before any branch push or pull request creation, unless
+// e.Agent.VCS.ChatAutoApprove opts into allowlisting them.
 func ChatConfig(root string, e *env.Env) ([]byte, error) {
 	if e.Agent.ChatImage == "" || e.Agent.VCS == nil {
 		return nil, nil
@@ -312,6 +313,12 @@ func ChatConfig(root string, e *env.Env) ([]byte, error) {
 		"write_file:/workspace/repos/*",
 		"vcs_commit:*",
 	)
+	if e.Agent.VCS.ChatAutoApprove {
+		appendPermissionsAllow(doc,
+			"vcs_publish:*",
+			"vcs_propose:*",
+		)
+	}
 	return json.MarshalIndent(doc, "", "  ")
 }
 

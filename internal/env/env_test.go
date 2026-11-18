@@ -116,6 +116,7 @@ func TestParseErrors(t *testing.T) {
 		{"secret restart", withSecrets("  - secret: switchboard/slack\n    keys: {a: b}\n    restart: [Switchboard]\n"), "restart \"Switchboard\""},
 		{"secret twice", withSecrets("  - secret: switchboard/slack\n    keys: {a: b}\n  - secret: switchboard/slack\n    keys: {a: b}\n"), "listed twice"},
 		{"vcs without chatImage", strings.Replace(good, "expect:", "  vcs:\n    secret: gh-token\n    repositories:\n      - repository: org/repo\nexpect:", 1), "needs agent.chatImage"},
+		{"vcs chatAutoApprove without chatImage", strings.Replace(strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent-core@"+digest+"\n  clusters:\n", 1), "expect:", "  vcs:\n    secret: gh-token\n    incidentAutoPR: true\n    chatAutoApprove: true\n    repositories:\n      - repository: org/repo\nexpect:", 1), "agent.vcs.chatAutoApprove: needs agent.chatImage"},
 		{"vcs incidentAutoPR without incidentImage", withVCS("    secret: gh-token\n    incidentAutoPR: true\n    repositories:\n      - repository: org/repo\n"), "needs agent.incidentImage"},
 		{"vcs bad secret", withVCS("    secret: Bad_Secret\n    repositories:\n      - repository: org/repo\n"), "agent.vcs.secret"},
 		{"vcs no repos", withVCS("    secret: gh-token\n    repositories: []\n"), "at least one repository"},
@@ -215,11 +216,11 @@ func withVCS(vcsBody string) string {
 }
 
 func TestParseVCS(t *testing.T) {
-	e, err := Parse(strings.NewReader(withVCS("    secret: gh-token\n    repositories:\n      - repository: org/gitops\n      - repository: org/apps\n        baseBranch: release\n")))
+	e, err := Parse(strings.NewReader(withVCS("    secret: gh-token\n    chatAutoApprove: true\n    repositories:\n      - repository: org/gitops\n      - repository: org/apps\n        baseBranch: release\n")))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if e.Agent.VCS == nil || e.Agent.VCS.Secret != "gh-token" || len(e.Agent.VCS.Repositories) != 2 {
+	if e.Agent.VCS == nil || e.Agent.VCS.Secret != "gh-token" || !e.Agent.VCS.ChatAutoApprove || len(e.Agent.VCS.Repositories) != 2 {
 		t.Fatalf("vcs = %+v", e.Agent.VCS)
 	}
 	if got := e.Agent.VCS.Repositories[0].Base(); got != "main" {

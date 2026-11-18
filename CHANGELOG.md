@@ -10,6 +10,10 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- `agent.vcs.chatAutoApprove` option in `shipmind.yaml` (default `false`): when
+  `true`, allowlists `vcs_publish` and `vcs_propose` in the Workspace's
+  `chat-config.json` so the Slack chat agent pushes `agent/*` branches and opens
+  pull requests directly without pausing on Slack approval buttons.
 - Bumped `switchboard` to `v0.10.0` (unbound outbound-ingress thread context
   seeding for the first inbound reply without Slack/Chat history scopes,
   completing the `incident -> Slack alert -> human reply -> open PR` flow when

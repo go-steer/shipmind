@@ -4,6 +4,35 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-18: Optional zero-HITL pull request creation in Slack chat (`agent.vcs.chatAutoApprove`)
+
+Extends 2026-11-17 ("One general-purpose chat agent plus autonomous incident
+PRs and Slack alerts").
+
+`agent.vcs.chatAutoApprove` (boolean, default `false`, requiring
+`agent.chatImage`) allowlists `vcs_publish:*` and `vcs_propose:*` in the
+Workspace's `chat-config.json` when set to `true`. When `false` (or omitted),
+`vcs_publish` and `vcs_propose` stay in `ask` mode so switchboard prompts for
+approval in Slack before pushing a branch or opening a pull request.
+
+**Why:** `core-vcs` already enforces the repository allowlist, the `agent/`
+topic-branch prefix, and `TARGET_IS_BRANCH` (never pushing to `main`), so the
+GitHub pull request itself is the human review gate before anything reaches
+production. In environments where an operator explicitly asks `@shipmind-<env>`
+in Slack to open a pull request (including on an alert-only incident thread),
+pausing twice more on Slack `Allow` buttons (`vcs_publish`, then `vcs_propose`)
+adds friction without adding production-branch protection. Keeping `false` as
+the default preserves explicit per-action confirmation for environments that
+want a chat gate before any remote branch or pull request is written.
+
+**Rejected:** making auto-approve the unconditional behavior with no opt-out
+(breaks environments that treat remote repository writes as human-confirmed);
+sharing `agent.vcs.incidentAutoPR` for both incident and chat behavior
+(conflates whether autonomous incidents open unprompted pull requests with
+whether human-initiated chat turns prompt in Slack — in `incident -> Slack alert
+-> human reply -> open PR`, an environment wants `incidentAutoPR: false` and
+`chatAutoApprove: true`).
+
 ## 2026-11-17: One general-purpose chat agent plus autonomous incident PRs and Slack alerts
 
 Supersedes 2026-11-17 ("A separate switchboard 'propose' agent opens GitOps

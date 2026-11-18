@@ -220,7 +220,8 @@ layers `chat-config.json` onto `triage` so the single general-purpose
 Slack agent delegates GitOps repository edits and pull requests to
 `propose-change` (using core-agent's pure-Go `vcs_*` tools and Substrate
 egress credential injection from `ate-credentials/<secret>`, with Slack
-approval prompts on `vcs_publish` and `vcs_propose`); setting
+approval prompts on `vcs_publish` and `vcs_propose` by default, or
+allowlisted when `agent.vcs.chatAutoApprove: true`); setting
 `agent.vcs.incidentAutoPR: true` (with `agent.incidentImage`) equips
 lookout's autonomous incident tasks with `propose-change` as well. When
 `slack.alertChannel` is set, `up` turns on switchboard's `:8080` outbound
