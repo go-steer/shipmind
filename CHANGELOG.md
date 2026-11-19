@@ -195,6 +195,12 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Bumped `core-agent` to `v3.2.0-rc.4` (`9908a221`): `core-vcs` `v1.2.0` with
+  shared bare object caches under `<workspace_dir>/.cache` (`core-agent#1581`),
+  `core-models` `v0.15.4` (`core-agent#1581`), lexical + symlink containment on
+  open-prefix permission rules (`core-agent#1579`), and synchronous subagent
+  alert race fixes (`core-agent#1580`). The `agent` image pin moves once CI
+  publishes the new build.
 - `agent` image pinned at `866bb3e` (`sha256:91482f9c`): unified `gke-chat` and
   `gke-triage-f` bundles (#118, retiring `gke-propose`) on core-agent
   v3.2.0-rc.3 with `ax-runner` at `db1c1de`.

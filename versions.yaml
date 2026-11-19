@@ -117,20 +117,23 @@ components:
 
   - name: core-agent
     source: github.com/go-steer/core-agent
-    version: a0dbed2fc99ed070e48bc3f54dcb1901780327d0
+    version: 9908a2216b6ac02bee44c64f921e49a2f459c7c4
     profiles: [substrate]
     note: >-
-      v3.2.0-rc.3, pinned by commit because images/agent builds it from
+      v3.2.0-rc.4, pinned by commit because images/agent builds it from
       source and checks what it fetched. The harness replacing mast (#48),
       built into images/agent with the ax-runner pin above; its own
       `config import-workload` converts agents/sre-triage's bundles at
       build time. 3.2.0-rc adds the pure-Go `vcs_*` tool suite over
-      core-vcs v1.1.0 and `builtin:propose-change` (core-agent#1490,
-      unregistered unless `config.vcs` is set, so existing bundles stay
-      unchanged), defers `VCSEventSink` audit writes past in-flight turns
-      so database-backed sessions don't trip ADK's stale-session check
-      (core-agent#1571), bumps core-models to v0.15.3 (#1557), and builds
-      on Go 1.26.11 for GO-2026-6859 (#1549). 3.1's importer gives each specialist its
+      core-vcs v1.2.0 (with shared bare object caches under
+      `<workspace_dir>/.cache`, core-agent#1490, #1581) and
+      `builtin:propose-change` (unregistered unless `config.vcs` is set, so
+      existing bundles stay unchanged), defers `VCSEventSink` audit writes
+      past in-flight turns so database-backed sessions don't trip ADK's
+      stale-session check (core-agent#1571), hardens open-prefix permission
+      rules against `..` traversal and escaping symlinks (core-agent#1579),
+      bumps core-models to v0.15.4 (#1581), and builds on Go 1.26.11 for
+      GO-2026-6859 (#1549). 3.1's importer gives each specialist its
       own content root and the main agent no MCP servers (core-agent#1498),
       which images/agent checks; it enforces agent.max_steps (#1500).
       3.1.0-rc.1 began refusing a request on its loopback attach listener
