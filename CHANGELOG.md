@@ -195,6 +195,9 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- `agent` image pinned at `dfac600` (`sha256:187872c2`): `core-agent`
+  `v3.2.0-rc.4` (`9908a221`, #123) on `distroless/static-debian12:nonroot` with
+  `ax-runner` at `db1c1de`.
 - Bumped `core-agent` to `v3.2.0-rc.4` (`9908a221`): `core-vcs` `v1.2.0` with
   shared bare object caches under `<workspace_dir>/.cache` (`core-agent#1581`),
   `core-models` `v0.15.4` (`core-agent#1581`), lexical + symlink containment on
