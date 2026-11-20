@@ -126,6 +126,8 @@ agents/
 images/
   agent-mast/            mast + ax runner + agent bundles
   agent/                 core-agent + ax runner + the bundles, converted (#48)
+  console/               the admin console (shipmind console -in-cluster, #128)
+  e2e-runner/            shipmind + ax CLI + kubectl + scenarios
   token-refresher/
 deploy/
   vendor/<component>/    manifests at the pinned version, one kustomize base each, and other listed files (generated)
@@ -133,10 +135,13 @@ deploy/
   profiles/standalone/
   envs/kind/
 cmd/shipmind/            the CLI
-internal/                the CLI's packages (bom today)
+internal/                the CLI's packages (bom, env, deploy, scenario, console, ...)
 e2e/
   scenarios/             break manifest + expected outcome, one directory each
 docs/
+  DESIGN.md              this design
+  console-design.md      admin console technical design (#128)
+  decisions.md           decision log
 ```
 
 Environment-specific values (project IDs, domains, registry paths, the
@@ -304,6 +309,56 @@ pinned fork commit with pre-built images, and keeps the cluster-specific
 inputs (installer settings, the worker ComputeClass, the WorkerPool) in
 the profile and the overlay. Source-level manifest patches stay in the
 fork.
+
+## Admin console {#SM-9}
+
+`shipmind` ships a first-party Admin Console in-tree (`shipmind console`
+CLI subcommand and `images/console`, published to
+`ghcr.io/go-steer/shipmind/console` and pinned by digest in
+`versions.yaml`), deployed in `shipmind-system` by both the `standalone`
+and `substrate` profiles (#128). Full technical specification:
+[`console-design.md`](./console-design.md).
+
+Four rules govern the console so external adopters get the same control
+plane on Day 0 (`kind`, bare-metal Kubernetes, or GKE) and in multi-user
+production:
+
+1. **Both profiles, no GCP lock-in.** Talks to `core-agent`,
+   `k8s-lookout`, `switchboard` and a `1Gi` SQLite PVC (`console.db`) for
+   posture ledgers, scenario scorecards and action audit logs, with Cloud
+   Storage archival (`console.archive`) optional. Under `substrate`, it
+   reads `ax` tasks and Substrate actor/worker state without ever waking a
+   suspended actor unless an admin explicitly confirms (`409` wake guard),
+   and deep-links to `substrate-scope`. Both profiles embed a pinned,
+   vendored `mast-web` under `/mast-web/` for live session transcripts,
+   chat and permission prompts.
+2. **In-cluster release metadata (`shipmind-system/shipmind-release`).**
+   `shipmind up` stamps (and `status` checks) a sanitized, non-secret
+   `ConfigMap` holding the effective `shipmind.yaml`, active
+   `versions.yaml` BOM, `shipmind` commit SHA and rendered object digest
+   inventory, so the in-cluster console knows its drift baseline without
+   the deployer's workstation or private Git repository.
+3. **Portable authentication (`go-steer/purser`).** Defaults to loopback
+   (`shipmind console <env-dir>`) and generated bearer-token auth
+   (`shipmind-system/shipmind-console-auth`) for zero-setup Day-0 access,
+   with pluggable `purser` modes (`oidc`, `proxy-header`, `iap-jwt`)
+   forwarding verified operator identity (`X-Asserted-Caller`) on session
+   attach, approvals and day-2 actions.
+4. **Drift-free three-tier configuration write path.** Declarative
+   `shipmind.yaml` edits never patch cluster objects behind `shipmind
+   status`: local mode validates and runs `shipmind up -dry-run` / `up`,
+   in-cluster without VCS exports a validated diff and `shipmind up`
+   command, and in-cluster with `console.overlayRepo` opens a reviewed
+   pull/merge request through `go-steer/core-vcs`. Ephemeral day-2 actions
+   (test alert, on-demand posture audit, write-gate approval, `lookout`
+   ack/severity override, `ax` task wake/delete) run live with caller
+   attribution.
+
+It presents five panes: (1) Environment, BOM & Integration Health
+(surfacing `lookout` skipped sources and `switchboard` `:8080` delivery
+errors directly), (2) Posture & Scheduled Audits (#127), (3) Incidents,
+Watchboard & Chat Activity, (4) Scenario & Eval Scorecard (#93), and (5)
+Config Studio (`shipmind.yaml`).
 
 ## Testing
 

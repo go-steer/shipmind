@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -161,7 +162,7 @@ func TestDesignAnchorAndTrailerValidatorsRejectInvalidInputs(t *testing.T) {
 
 	// 1. Missing anchors rejected.
 	errs, _ := validateDesignMarkdown("docs/DESIGN.md", "# Empty\n## Unanchored\n")
-	if len(errs) != 1 || !strings.Contains(errs[0], "zero {#SM-N}") {
+	if len(errs) != 1 || !strings.Contains(errs[0], "zero {#") {
 		t.Fatalf("unanchored doc errors = %v, want zero-anchors error", errs)
 	}
 
@@ -177,30 +178,47 @@ func TestDesignAnchorAndTrailerValidatorsRejectInvalidInputs(t *testing.T) {
 		t.Fatalf("badDoc errors = %v (len %d), want 3 (duplicate, malformed, unknown baseline)", errs, len(errs))
 	}
 
+	// 2b. Cross-document duplicate anchor IDs rejected across docs/DESIGN.md and docs/*-design.md.
+	crossErrs := checkCrossDocDuplicateIDs(map[string]map[string]int{
+		"docs/DESIGN.md":         {"SM-1": 10},
+		"docs/console-design.md": {"CON-1": 5, "SM-1": 12},
+	})
+	if len(crossErrs) != 1 || !strings.Contains(crossErrs[0], "SM-1") {
+		t.Fatalf("cross-doc duplicate errors = %v, want 1 error on SM-1", crossErrs)
+	}
+
 	// 3. Commit trailer validator: nested 4-backtick fence and indented examples ignored;
-	// normalized ./docs/DESIGN.md#SM-1 accepted; dangling Design-Item, still-present Design-Removed,
-	// malformed trailer, and unreachable Design-Rev rejected.
+	// normalized ./docs/DESIGN.md#SM-1, companion docs/console-design.md#CON-1, and Design-Rev: self accepted;
+	// dangling Design-Item, still-present Design-Removed, malformed trailer, and unreachable Design-Rev rejected.
 	rawLog := "\x1e11111111deadbeef\x1ffeat: valid with nested fence\n\n" +
 		"````text\n```markdown\nDesign-Item: docs/DESIGN.md#FAKE-1\n```\n````\n" +
 		"  Design-Item: docs/DESIGN.md#IND-1\n\n" +
 		"Design-Item: ./docs/DESIGN.md#SM-1\n" +
+		"Design-Item: docs/console-design.md#CON-1\n" +
 		"Design-Rev: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+		"\x1e33333333feedface\x1ffeat: valid self design rev\n\n" +
+		"Design-Item: docs/console-design.md#CON-1\n" +
+		"Design-Rev: SELF\n" +
 		"\x1e22222222cafebabe\x1ffeat: invalid trailers\n\n" +
 		"Design-Item: docs/DESIGN.md#SM-404\n" +
+		"Design-Item: docs/console-design.md#CON-99\n" +
 		"Design-Item: malformed-without-hash\n" +
 		"Design-Removed: docs/DESIGN.md#SM-1\n" +
 		"Design-Rev: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
 
-	docMap := map[string]map[string]int{"docs/DESIGN.md": ids}
+	docMap := map[string]map[string]int{
+		"docs/DESIGN.md":         ids,
+		"docs/console-design.md": {"CON-1": 42},
+	}
 	tErrs := validateCommitTrailerLog(rawLog, docMap, func(rev string) bool {
 		return rev == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	})
-	if len(tErrs) != 4 {
-		t.Fatalf("trailer errors = %v (len %d), want 4 (unknown anchor, malformed, still-present removed, unreachable rev)", tErrs, len(tErrs))
+	if len(tErrs) != 5 {
+		t.Fatalf("trailer errors = %v (len %d), want 5 (two unknown anchors, malformed, still-present removed, unreachable rev)", tErrs, len(tErrs))
 	}
 	for _, e := range tErrs {
-		if strings.Contains(e, "11111111") {
-			t.Fatalf("valid commit 11111111 falsely flagged: %s", e)
+		if strings.Contains(e, "11111111") || strings.Contains(e, "33333333") {
+			t.Fatalf("valid commit falsely flagged: %s", e)
 		}
 	}
 }
@@ -244,16 +262,113 @@ func countCodeLines(lines []string, startLine, endLine int) int {
 
 func verifyShipmindDesignAnchors(t *testing.T, repoRoot string) {
 	t.Helper()
-	designPath := filepath.Join(repoRoot, "docs", "DESIGN.md")
-	raw, err := os.ReadFile(designPath)
+	relDocs, err := discoverDesignDocs(repoRoot)
 	if err != nil {
-		t.Fatalf("read docs/DESIGN.md: %v", err)
+		t.Fatalf("discover design docs: %v", err)
 	}
-	errs, ids := validateDesignMarkdown("docs/DESIGN.md", string(raw))
-	for _, e := range errs {
+	if !slices.Contains(relDocs, "docs/DESIGN.md") {
+		t.Fatalf("docs/DESIGN.md missing from discovered design docs %v", relDocs)
+	}
+	docIDs := make(map[string]map[string]int, len(relDocs))
+	for _, rel := range relDocs {
+		raw, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		errs, ids := validateDesignMarkdown(rel, string(raw))
+		for _, e := range errs {
+			t.Error(e)
+		}
+		docIDs[rel] = ids
+	}
+	for _, e := range checkCrossDocDuplicateIDs(docIDs) {
 		t.Error(e)
 	}
-	verifyDesignCommitTrailers(t, repoRoot, map[string]map[string]int{"docs/DESIGN.md": ids})
+	verifyDesignCommitTrailers(t, repoRoot, docIDs)
+}
+
+func discoverDesignDocs(repoRoot string) ([]string, error) {
+	seen := make(map[string]bool)
+	addFile := func(abs string) error {
+		info, err := os.Stat(abs)
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(repoRoot, abs)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		seen[rel] = true
+		return nil
+	}
+
+	if err := addFile(filepath.Join(repoRoot, "DESIGN.md")); err != nil {
+		return nil, err
+	}
+	for _, pat := range []string{
+		filepath.Join(repoRoot, "design", "*.md"),
+		filepath.Join(repoRoot, "docs", "design", "*.md"),
+	} {
+		matches, err := filepath.Glob(pat)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range matches {
+			if err := addFile(m); err != nil {
+				return nil, err
+			}
+		}
+	}
+	docsEntries, err := os.ReadDir(filepath.Join(repoRoot, "docs"))
+	if err == nil {
+		for _, d := range docsEntries {
+			name := d.Name()
+			if !d.IsDir() && strings.HasSuffix(strings.ToLower(name), ".md") && strings.Contains(strings.ToLower(name), "design") {
+				if err := addFile(filepath.Join(repoRoot, "docs", name)); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	out := make([]string, 0, len(seen))
+	for rel := range seen {
+		out = append(out, rel)
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+func checkCrossDocDuplicateIDs(docIDs map[string]map[string]int) []string {
+	docs := make([]string, 0, len(docIDs))
+	for doc := range docIDs {
+		docs = append(docs, doc)
+	}
+	slices.Sort(docs)
+
+	type loc struct {
+		doc  string
+		line int
+	}
+	firstSeen := make(map[string]loc)
+	var errs []string
+	for _, doc := range docs {
+		ids := make([]string, 0, len(docIDs[doc]))
+		for id := range docIDs[doc] {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		for _, id := range ids {
+			line := docIDs[doc][id]
+			if prev, dup := firstSeen[id]; dup {
+				errs = append(errs, fmt.Sprintf("%s:%d requirement anchor {#%s} collides with %s:%d", doc, line, id, prev.doc, prev.line))
+			} else {
+				firstSeen[id] = loc{doc: doc, line: line}
+			}
+		}
+	}
+	return errs
 }
 
 func validateDesignMarkdown(relPath, content string) ([]string, map[string]int) {
@@ -288,11 +403,11 @@ func validateDesignMarkdown(relPath, content string) ([]string, map[string]int) 
 			continue
 		}
 		if bad := badBraceRe.FindStringSubmatch(line); bad != nil {
-			errs = append(errs, fmt.Sprintf("%s:%d malformed requirement anchor {#%s} (expected {#SM-N})", relPath, idx+1, bad[3]))
+			errs = append(errs, fmt.Sprintf("%s:%d malformed requirement anchor {#%s} (expected {#PREFIX-N})", relPath, idx+1, bad[3]))
 		}
 	}
 	if len(ids) == 0 {
-		errs = append(errs, fmt.Sprintf("%s has zero {#SM-N} requirement anchors", relPath))
+		errs = append(errs, fmt.Sprintf("%s has zero {#PREFIX-N} requirement anchors", relPath))
 	}
 	for _, b := range baselines {
 		if _, exists := ids[b]; !exists {
@@ -379,8 +494,9 @@ func validateCommitTrailerLog(
 				}
 			}
 		}
-		if hasItem && (!designHexRevRe.MatchString(rev) || (revReachable != nil && !revReachable(rev))) {
-			errs = append(errs, fmt.Sprintf("commit %s has Design-Item trailer without reachable hex Design-Rev", sha))
+		validRev := strings.EqualFold(rev, "self") || (designHexRevRe.MatchString(rev) && (revReachable == nil || revReachable(rev)))
+		if hasItem && !validRev {
+			errs = append(errs, fmt.Sprintf("commit %s has Design-Item trailer without reachable hex Design-Rev (or Design-Rev: self)", sha))
 		}
 	}
 	return errs
