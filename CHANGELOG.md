@@ -195,6 +195,12 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Bumped `k8s-lookout` to `v0.44.0` (`lookout:v0.44.0-gke@sha256:21066cab`):
+  typed Kubernetes Protobuf negotiation by default (`k8s-lookout#824`),
+  paginated/trimmed pod and event streaming plus copy-on-write graph edges for
+  200k-pod watch/read scale (`k8s-lookout#825`, `#830`, `#831`), `steward`
+  `v0.4.0` (`k8s-lookout#819`), and Go `1.26.11` for `GO-2026-6859`
+  (`k8s-lookout#826`).
 - `agent` image pinned at `dfac600` (`sha256:187872c2`): `core-agent`
   `v3.2.0-rc.4` (`9908a221`, #123) on `distroless/static-debian12:nonroot` with
   `ax-runner` at `db1c1de`.
