@@ -1,5 +1,7 @@
 # shipmind design
 
+<!-- design-baseline: SM-1, SM-3, SM-4, SM-5, SM-6 -->
+
 shipmind puts the go-steer agent platform together: one repository that
 pins every component, deploys them as one system and tests them end to
 end. The first agent it ships is an SRE agent for Kubernetes, but the
@@ -68,7 +70,7 @@ site. A monorepo was considered and rejected (see
 A profile is one way of running agents. Both profiles share lookout, the
 agent bundles, switchboard and mast-web; they differ in what an agent is.
 
-### substrate (first)
+### substrate (first) {#SM-1}
 
 An agent is an ax task: one Substrate actor per incident or per Chat
 thread, suspended when idle and woken by the next request.
@@ -105,7 +107,7 @@ substrate-scope and the nightly scenario each present their pod's
 podidentity certificate and verify the router against the servicedns
 trust bundle, both projected volumes.
 
-### standalone (second)
+### standalone (second) {#SM-2}
 
 An agent is a Kubernetes Deployment: lookout delivers incidents to mast
 (or core-agent) over `POST /inject`, switchboard relays digests and
@@ -146,7 +148,7 @@ shipmind is a reviewed commit there, as moving a component pin is here. Nothing 
 either repository is a secret; keys and tokens stay in Secret Manager and
 Kubernetes Secrets.
 
-## The bill of materials
+## The bill of materials {#SM-3}
 
 `versions.yaml` lists every component with its source repository, a
 release tag (`vX.Y.Z`) or a full commit SHA (never a branch, and never an
@@ -168,7 +170,7 @@ A shipmind release is a tag on a commit whose component set passed the
 nightly tier. Releases are versioned on their own (`v0.1.0`, ...), not
 after any component.
 
-## Deployment mechanics
+## Deployment mechanics {#SM-4}
 
 **Vendoring.** A component that ships Kubernetes manifests lists them
 under `manifests` in `versions.yaml`. `shipmind vendor` reads each one
@@ -312,7 +314,7 @@ fork.
 | Scenarios | nightly (from M1) | GKE, substrate profile, real model | Each scenario breaks a workload, waits for the platform's answer and scores it: the right diagnosis, the cost, idle suspend afterwards, wake without a restart. |
 | Release | before a tag | the nightly result for that commit | The pinned set works together. |
 
-### How a scenario run is graded
+### How a scenario run is graded {#SM-5}
 
 A scenario (`e2e/scenarios/<name>/scenario.yaml`) states what a correct
 handling looks like, and every run is checked against it (epic #93):
@@ -412,7 +414,7 @@ profile). Without them it speaks plain HTTP, as v0.5's router expects.
 
 ## Milestones
 
-### Milestone 1: agent-substrate deploys from shipmind
+### Milestone 1: agent-substrate deploys from shipmind {#SM-6}
 
 Done when the demo cluster's platform components are deployed from this
 repository (plus its private overlay) and one nightly scenario runs.
@@ -437,14 +439,14 @@ repository (plus its private overlay) and one nightly scenario runs.
     correct diagnosis → idle suspend → wake with no restart.
 11. Redeploy agent-substrate from shipmind (a scheduled cutover).
 
-### Milestone 2: standalone profile and PR wiring tests
+### Milestone 2: standalone profile and PR wiring tests {#SM-7}
 
 The standalone profile on kind, the wiring tier on every PR, and
 core-agent as a second harness. Retire the cross-repository checks this
 replaces (core-agent's lookout pin check and gke-troubleshoot recipe e2e)
 once shipmind covers them.
 
-### Milestone 3: switchboard starts agents
+### Milestone 3: switchboard starts agents {#SM-8}
 
 switchboard's ax backend (target switchboard v0.9; designed in
 go-steer/switchboard `docs/ax-backend.md`, tracked in

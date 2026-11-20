@@ -66,7 +66,9 @@ The default test run needs no network, no cluster and no credentials.
   no header. `goheader` enforces it on `.go`; run
   `dev/tools/add-license-headers` for the rest.
 - **Conventional Commits**, small self-contained commits, bodies explaining
-  *why* + the verification done. **DCO sign-off** (`git commit -s`).
+  *why* + the verification done. **DCO sign-off** (`git commit -s`). When a
+  commit implements an anchored `{#SM-N}` section in `docs/DESIGN.md`, include
+  `Design-Item: docs/DESIGN.md#SM-N` and `Design-Rev: <40-char-sha>` trailers.
 - **No `Co-Authored-By` trailer and no assistant attribution** — in commits,
   PR titles/bodies, or any committed/published artifact. Author under your
   own name. `verify-no-agent-attribution` and the `agent-attribution`
@@ -85,10 +87,13 @@ force-push `main`. Full contributor flow + DCO in
 
 - **Run presubmits before every push.** `dev/tools/ci` runs the same scripts
   CI runs (`dev/ci/presubmits/*`).
-- **Adversarial-review gate before every PR touching Go code.** Run a skeptic
-  subagent over the staged diff (correctness, races, API misuse — verified
-  against real dependency source, not memory), fix or pin every finding, and
-  record the outcome in the PR body under an `## Adversarial review` heading.
+- **Adversarial-review gate before every PR touching Go code.** Run a read-only
+  skeptic subagent over the staged diff supplied with four mandatory inputs —
+  (1) fenced task/issue brief (intent only), (2) `docs/DESIGN.md` +
+  `docs/decisions.md` conformance, (3) beyond-the-diff caller `git grep` across
+  the tree, and (4) correctness, races, and API contracts verified against real
+  dependency source, not memory — fix or pin every finding, and record the
+  outcome in the PR body under an `## Adversarial review` heading.
   For bug fixes, also verify the new regression test FAILS on the pre-fix
   code. Enforced by the `review-gate` required CI check (docs-only and bot
   PRs exempt). `dev/claude/settings-review-gate.json` is an opt-in local
