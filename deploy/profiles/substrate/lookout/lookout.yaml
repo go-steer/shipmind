@@ -40,6 +40,20 @@ subjects:
     name: lookout-ax
     namespace: lookout-ax
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lookout-ax-watch-capacity
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lookout-ax-watch-capacity
+subjects:
+  - kind: ServiceAccount
+    name: lookout-ax
+    namespace: lookout-ax
+---
 # Incident state survives a restart: without it lookout re-opens every
 # open incident as new work after each rollout.
 apiVersion: v1
@@ -91,6 +105,10 @@ spec:
             - --ax-task-template=/etc/lookout-ax/task.yaml
             - --token-env=AGENT_TOKEN
             - --log-level=debug
+            # Reactive sources only: topology-drift and compute-class are
+            # scheduled leeway report posture (#127), not streaming watch
+            # sources. Keep at the end so args 1 and 2 stay at their indices.
+            - --sources=k8s-events,object-state,rollout,workload,autoscaling,saturation,degradation,expiry,capacity,ingress,gateway
           env:
             - name: AGENT_TOKEN
               valueFrom:
