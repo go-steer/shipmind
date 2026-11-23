@@ -19,6 +19,7 @@ package render
 // pin that breaks one fails `go test ./...`.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -340,6 +341,311 @@ func TestSubstrateLookoutStorePersists(t *testing.T) {
 	}
 	if len(stores) != 1 || stores[0] != "/var/lib/lookout/lookout.db" {
 		t.Errorf("lookout --store values %v, want exactly /var/lib/lookout/lookout.db", stores)
+	}
+}
+
+const wantLookoutReactiveSources = "k8s-events,object-state,rollout,workload,autoscaling,saturation,degradation,expiry,capacity,ingress,gateway"
+
+// checkSubstrateLookoutReactiveSources verifies #127 §1 on a rendered
+// substrate profile (or its lookout part):
+//   - args[0..2] stay at --in-cluster, --cluster-name=CLUSTER,
+//     --namespace=NAMESPACES so environment overlays' RFC-6902 test+replace
+//     patches on /spec/template/spec/containers/0/args/1 and /args/2 keep
+//     matching;
+//   - --sources is pinned once to the reactive portable set (with capacity,
+//     and without topology-drift or compute-class);
+//   - kube-system Role + RoleBinding grant ServiceAccount lookout-ax/lookout-ax
+//     get on cluster-autoscaler-status and list on configmaps, alongside the
+//     cluster-wide lookout-ax-watch ClusterRole + ClusterRoleBinding.
+func checkSubstrateLookoutReactiveSources(objs Objects) error {
+	d, ok := objs.Find("Deployment", "lookout-ax", "lookout-ax")
+	if !ok {
+		return fmt.Errorf("no Deployment lookout-ax/lookout-ax")
+	}
+	argsNode, err := d.Pipe(yaml.Lookup("spec", "template", "spec", "containers", "[name=lookout]", "args"))
+	if err != nil || argsNode == nil {
+		return fmt.Errorf("lookout args: %v", err)
+	}
+	elems, err := argsNode.Elements()
+	if err != nil {
+		return err
+	}
+	var args []string
+	for _, e := range elems {
+		args = append(args, yaml.GetValue(e))
+	}
+	wantPrefix := []string{"--in-cluster", "--cluster-name=CLUSTER", "--namespace=NAMESPACES"}
+	if len(args) < len(wantPrefix) || !slices.Equal(args[:len(wantPrefix)], wantPrefix) {
+		return fmt.Errorf("lookout args[0:3] = %v, want %v (environment overlays patch args/1 and args/2 by index)", args[:min(len(args), 3)], wantPrefix)
+	}
+	var sourcesFlags []string
+	for i, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--sources="), strings.HasPrefix(a, "-sources="):
+			sourcesFlags = append(sourcesFlags, a[strings.Index(a, "=")+1:])
+		case a == "--sources" || a == "-sources":
+			if i+1 < len(args) {
+				sourcesFlags = append(sourcesFlags, args[i+1])
+			} else {
+				sourcesFlags = append(sourcesFlags, "")
+			}
+		}
+	}
+	if len(sourcesFlags) != 1 {
+		return fmt.Errorf("lookout --sources values %v, want exactly 1", sourcesFlags)
+	}
+	gotSources := strings.Split(sourcesFlags[0], ",")
+	for _, forbidden := range []string{"topology-drift", "compute-class", "auto"} {
+		if slices.Contains(gotSources, forbidden) {
+			return fmt.Errorf("lookout --sources %q includes forbidden source %q", sourcesFlags[0], forbidden)
+		}
+	}
+	if sourcesFlags[0] != wantLookoutReactiveSources {
+		return fmt.Errorf("lookout --sources = %q, want %q", sourcesFlags[0], wantLookoutReactiveSources)
+	}
+
+	if _, ok := objs.Find("ClusterRole", "", "lookout-ax-watch"); !ok {
+		return fmt.Errorf("no ClusterRole lookout-ax-watch")
+	}
+	crb, ok := objs.Find("ClusterRoleBinding", "", "lookout-ax-watch")
+	if !ok {
+		return fmt.Errorf("no ClusterRoleBinding lookout-ax-watch")
+	}
+	if err := checkBinding(crb, "ClusterRole", "lookout-ax-watch", "lookout-ax", "lookout-ax"); err != nil {
+		return fmt.Errorf("ClusterRoleBinding lookout-ax-watch: %w", err)
+	}
+
+	if _, leaked := objs.Find("Role", "kube-system", "lookout-watch-capacity"); leaked {
+		return fmt.Errorf("unrenamed Role kube-system/lookout-watch-capacity leaked into render")
+	}
+	role, ok := objs.Find("Role", "kube-system", "lookout-ax-watch-capacity")
+	if !ok {
+		return fmt.Errorf("no Role kube-system/lookout-ax-watch-capacity")
+	}
+	if err := checkCapacityRoleRules(role); err != nil {
+		return fmt.Errorf("Role kube-system/lookout-ax-watch-capacity: %w", err)
+	}
+	rb, ok := objs.Find("RoleBinding", "kube-system", "lookout-ax-watch-capacity")
+	if !ok {
+		return fmt.Errorf("no RoleBinding kube-system/lookout-ax-watch-capacity")
+	}
+	if err := checkBinding(rb, "Role", "lookout-ax-watch-capacity", "lookout-ax", "lookout-ax"); err != nil {
+		return fmt.Errorf("RoleBinding kube-system/lookout-ax-watch-capacity: %w", err)
+	}
+	return nil
+}
+
+func checkBinding(o Object, wantRoleKind, wantRoleName, wantSANamespace, wantSAName string) error {
+	var b struct {
+		RoleRef struct {
+			APIGroup string `yaml:"apiGroup"`
+			Kind     string `yaml:"kind"`
+			Name     string `yaml:"name"`
+		} `yaml:"roleRef"`
+		Subjects []struct {
+			Kind      string `yaml:"kind"`
+			Name      string `yaml:"name"`
+			Namespace string `yaml:"namespace"`
+		} `yaml:"subjects"`
+	}
+	s, err := o.String()
+	if err != nil {
+		return err
+	}
+	if err := yaml.Unmarshal([]byte(s), &b); err != nil {
+		return err
+	}
+	if b.RoleRef.APIGroup != "rbac.authorization.k8s.io" || b.RoleRef.Kind != wantRoleKind || b.RoleRef.Name != wantRoleName {
+		return fmt.Errorf("roleRef = %+v, want rbac.authorization.k8s.io/%s/%s", b.RoleRef, wantRoleKind, wantRoleName)
+	}
+	if len(b.Subjects) != 1 || b.Subjects[0].Kind != "ServiceAccount" || b.Subjects[0].Namespace != wantSANamespace || b.Subjects[0].Name != wantSAName {
+		return fmt.Errorf("subjects = %+v, want [ServiceAccount %s/%s]", b.Subjects, wantSANamespace, wantSAName)
+	}
+	return nil
+}
+
+func checkCapacityRoleRules(o Object) error {
+	var r struct {
+		Rules []struct {
+			APIGroups     []string `yaml:"apiGroups"`
+			Resources     []string `yaml:"resources"`
+			ResourceNames []string `yaml:"resourceNames"`
+			Verbs         []string `yaml:"verbs"`
+		} `yaml:"rules"`
+	}
+	s, err := o.String()
+	if err != nil {
+		return err
+	}
+	if err := yaml.Unmarshal([]byte(s), &r); err != nil {
+		return err
+	}
+	hasGetStatus, hasList := false, false
+	for _, rule := range r.Rules {
+		if !slices.Equal(rule.APIGroups, []string{""}) || !slices.Equal(rule.Resources, []string{"configmaps"}) {
+			return fmt.Errorf("unexpected rule %+v", rule)
+		}
+		switch {
+		case slices.Equal(rule.Verbs, []string{"get"}) && slices.Equal(rule.ResourceNames, []string{"cluster-autoscaler-status"}):
+			hasGetStatus = true
+		case slices.Equal(rule.Verbs, []string{"list"}) && len(rule.ResourceNames) == 0:
+			hasList = true
+		default:
+			return fmt.Errorf("unexpected configmaps rule %+v", rule)
+		}
+	}
+	if !hasGetStatus || !hasList {
+		return fmt.Errorf("rules %+v, want get on cluster-autoscaler-status + list on configmaps", r.Rules)
+	}
+	return nil
+}
+
+func TestSubstrateLookoutReactiveSourcesAndCapacityRBAC(t *testing.T) {
+	for _, dir := range []string{
+		filepath.Join(profilesDir, "substrate", "lookout"),
+		filepath.Join(profilesDir, "substrate"),
+	} {
+		if err := checkSubstrateLookoutReactiveSources(build(t, dir)); err != nil {
+			t.Errorf("%s: %v", dir, err)
+		}
+	}
+
+	// Verify the RFC-6902 test+replace overlay contract used by
+	// go-steer/shipmind-deploy on args/1 and args/2.
+	overlayDir := t.TempDir()
+	absSubstrate, err := filepath.Abs(filepath.Join(profilesDir, "substrate"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(absSubstrate, filepath.Join(overlayDir, "substrate")); err != nil {
+		t.Fatal(err)
+	}
+	patch := `- op: test
+  path: /spec/template/spec/containers/0/args/1
+  value: --cluster-name=CLUSTER
+- op: replace
+  path: /spec/template/spec/containers/0/args/1
+  value: --cluster-name=demo-cluster
+- op: test
+  path: /spec/template/spec/containers/0/args/2
+  value: --namespace=NAMESPACES
+- op: replace
+  path: /spec/template/spec/containers/0/args/2
+  value: --namespace=triage-lab
+`
+	if err := os.WriteFile(filepath.Join(overlayDir, "lookout-ax.yaml"), []byte(patch), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kustomization := `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - substrate
+patches:
+  - path: lookout-ax.yaml
+    target:
+      kind: Deployment
+      namespace: lookout-ax
+      name: lookout-ax
+`
+	if err := os.WriteFile(filepath.Join(overlayDir, "kustomization.yaml"), []byte(kustomization), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overlayObjs := build(t, overlayDir)
+	d, ok := overlayObjs.Find("Deployment", "lookout-ax", "lookout-ax")
+	if !ok {
+		t.Fatal("overlay missing Deployment lookout-ax/lookout-ax")
+	}
+	argsNode, err := d.Pipe(yaml.Lookup("spec", "template", "spec", "containers", "[name=lookout]", "args"))
+	if err != nil || argsNode == nil {
+		t.Fatalf("overlay lookout args: %v", err)
+	}
+	elems, err := argsNode.Elements()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotArgs []string
+	for _, e := range elems {
+		gotArgs = append(gotArgs, yaml.GetValue(e))
+	}
+	if gotArgs[1] != "--cluster-name=demo-cluster" || gotArgs[2] != "--namespace=triage-lab" {
+		t.Errorf("overlay args[1:3] = %v, want [--cluster-name=demo-cluster --namespace=triage-lab]", gotArgs[1:3])
+	}
+	if gotArgs[len(gotArgs)-1] != "--sources="+wantLookoutReactiveSources {
+		t.Errorf("overlay last arg = %q, want --sources=%s", gotArgs[len(gotArgs)-1], wantLookoutReactiveSources)
+	}
+
+	// Negative cases: every invariant check must fail when violated.
+	clone := func() Objects {
+		return build(t, filepath.Join(profilesDir, "substrate", "lookout"))
+	}
+	setArgs := func(objs Objects, args ...string) Objects {
+		d, _ := objs.Find("Deployment", "lookout-ax", "lookout-ax")
+		c, err := d.Pipe(yaml.Lookup("spec", "template", "spec", "containers", "[name=lookout]"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		seq := yaml.NewListRNode(args...)
+		if err := c.PipeE(yaml.SetField("args", seq)); err != nil {
+			t.Fatal(err)
+		}
+		return objs
+	}
+	drop := func(objs Objects, kind, ns, name string) Objects {
+		return slices.DeleteFunc(objs, func(o Object) bool {
+			return o.Kind() == kind && o.Namespace() == ns && o.Name() == name
+		})
+	}
+	negatives := []struct {
+		name string
+		objs Objects
+		want string
+	}{
+		{
+			name: "shifted args[1..2] placeholders",
+			objs: setArgs(clone(), "--in-cluster", "--sources="+wantLookoutReactiveSources, "--cluster-name=CLUSTER", "--namespace=NAMESPACES"),
+			want: "args[0:3]",
+		},
+		{
+			name: "missing --sources",
+			objs: setArgs(clone(), "--in-cluster", "--cluster-name=CLUSTER", "--namespace=NAMESPACES"),
+			want: "--sources values",
+		},
+		{
+			name: "duplicate --sources",
+			objs: setArgs(clone(), "--in-cluster", "--cluster-name=CLUSTER", "--namespace=NAMESPACES", "--sources="+wantLookoutReactiveSources, "--sources="+wantLookoutReactiveSources),
+			want: "--sources values",
+		},
+		{
+			name: "topology-drift still enabled",
+			objs: setArgs(clone(), "--in-cluster", "--cluster-name=CLUSTER", "--namespace=NAMESPACES", "--sources="+wantLookoutReactiveSources+",topology-drift"),
+			want: `forbidden source "topology-drift"`,
+		},
+		{
+			name: "compute-class still enabled",
+			objs: setArgs(clone(), "--in-cluster", "--cluster-name=CLUSTER", "--namespace=NAMESPACES", "--sources="+wantLookoutReactiveSources+",compute-class"),
+			want: `forbidden source "compute-class"`,
+		},
+		{
+			name: "--sources=auto",
+			objs: setArgs(clone(), "--in-cluster", "--cluster-name=CLUSTER", "--namespace=NAMESPACES", "--sources=auto"),
+			want: `forbidden source "auto"`,
+		},
+		{
+			name: "missing capacity Role",
+			objs: drop(clone(), "Role", "kube-system", "lookout-ax-watch-capacity"),
+			want: "no Role kube-system/lookout-ax-watch-capacity",
+		},
+		{
+			name: "missing capacity RoleBinding",
+			objs: drop(clone(), "RoleBinding", "kube-system", "lookout-ax-watch-capacity"),
+			want: "no RoleBinding kube-system/lookout-ax-watch-capacity",
+		},
+	}
+	for _, tc := range negatives {
+		err := checkSubstrateLookoutReactiveSources(tc.objs)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want error containing %q", tc.name, err, tc.want)
+		}
 	}
 }
 

@@ -103,15 +103,119 @@ func TestAgentsMD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AgentsMD: %v", err)
 	}
+	md := string(b)
 	want := "| cluster | full name |\n|---|---|\n" +
 		"| demo | projects/example-project/locations/us-central1/clusters/demo |\n" +
 		"| prod | projects/example-project/locations/europe-west1/clusters/prod |\n" +
 		"\nIf the cluster is neither"
-	if !strings.Contains(string(b), want) {
+	if !strings.Contains(md, want) {
 		t.Errorf("AGENTS.md lacks the cluster table:\n%s", b)
 	}
-	if !strings.HasPrefix(string(b), "# Clusters\n") || !strings.Contains(string(b), "# Repeated and related signals") {
-		t.Errorf("AGENTS.md lacks its sections:\n%s", b)
+	_, repeatSection, ok := strings.Cut(md, "# Repeated and related signals\n")
+	if !strings.HasPrefix(md, "# Clusters\n") || !ok {
+		t.Fatalf("AGENTS.md lacks its sections:\n%s", b)
+	}
+	repeatNorm := strings.Join(strings.Fields(repeatSection), " ")
+	for _, wantSignal := range []string{
+		`"kind":"watchboard.digest"`,
+		"`sequence`",
+		"`entries`",
+		"`namespace`",
+		"`kind_of_object`",
+		"`name`",
+		"never by `fingerprint` alone",
+		"intervening `resolved`",
+		"`watchboard.rotated`",
+		"`shipmind.dev/scenario`",
+		"finding stands",
+	} {
+		if !strings.Contains(repeatNorm, wantSignal) {
+			t.Errorf("AGENTS.md without AlertChannel lacks %s in # Repeated and related signals:\n%s", wantSignal, repeatSection)
+		}
+	}
+	if strings.Contains(repeatNorm, "(or `fingerprint`)") {
+		t.Errorf("# Repeated and related signals must not match watchboard repeats by class fingerprint alone:\n%s", repeatSection)
+	}
+	for _, unwanted := range []string{
+		"# GitOps pull requests",
+		"# Slack incident notifications",
+	} {
+		if strings.Contains(md, unwanted) {
+			t.Errorf("AGENTS.md without VCS or AlertChannel should omit %q:\n%s", unwanted, md)
+		}
+	}
+
+	withChatVCS := testEnv()
+	withChatVCS.Agent.VCS = &env.VCS{
+		Secret:       "gh-token",
+		Repositories: []env.Repository{{Repository: "acme/gitops"}},
+	}
+	chatVCSBytes, err := AgentsMD(root, withChatVCS)
+	if err != nil {
+		t.Fatalf("AgentsMD(with chat VCS only): %v", err)
+	}
+	chatVCSMD := string(chatVCSBytes)
+	if !strings.Contains(chatVCSMD, "# GitOps pull requests") ||
+		strings.Contains(chatVCSMD, "On an autonomous incident") ||
+		strings.Contains(chatVCSMD, "# Slack incident notifications") {
+		t.Errorf("AGENTS.md with IncidentAutoPR=false has wrong sections:\n%s", chatVCSMD)
+	}
+
+	withAutoPR := testEnv()
+	withAutoPR.Agent.VCS = &env.VCS{
+		Secret:         "gh-token",
+		IncidentAutoPR: true,
+		Repositories:   []env.Repository{{Repository: "acme/gitops"}},
+	}
+	autoPRBytes, err := AgentsMD(root, withAutoPR)
+	if err != nil {
+		t.Fatalf("AgentsMD(with IncidentAutoPR, no AlertChannel): %v", err)
+	}
+	autoPRMD := string(autoPRBytes)
+	_, gitopsSection, ok := strings.Cut(autoPRMD, "# GitOps pull requests\n")
+	if !ok || strings.Contains(autoPRMD, "# Slack incident notifications") {
+		t.Fatalf("AGENTS.md with IncidentAutoPR only has wrong optional sections:\n%s", autoPRMD)
+	}
+	gitopsNorm := strings.Join(strings.Fields(gitopsSection), " ")
+	for _, wantGitOps := range []string{
+		"On an autonomous incident",
+		"`shipmind.dev/scenario` (on the object or its owning workload)",
+		"`watchboard.rotated`",
+	} {
+		if !strings.Contains(gitopsNorm, wantGitOps) {
+			t.Errorf("# GitOps pull requests with IncidentAutoPR lacks %s:\n%s", wantGitOps, gitopsSection)
+		}
+	}
+
+	withAlert := testEnv()
+	withAlert.Slack = &env.Slack{App: "shipmind", Command: "/shipmind", AlertChannel: "C0123456789"}
+	alertBytes, err := AgentsMD(root, withAlert)
+	if err != nil {
+		t.Fatalf("AgentsMD(with AlertChannel): %v", err)
+	}
+	alertMD := string(alertBytes)
+	_, slackSection, ok := strings.Cut(alertMD, "# Slack incident notifications\n")
+	if !ok {
+		t.Fatalf("AGENTS.md with AlertChannel lacks # Slack incident notifications:\n%s", alertMD)
+	}
+	slackNorm := strings.Join(strings.Fields(slackSection), " ")
+	for _, wantSlack := range []string{
+		"call `alert` once on the initial diagnosis",
+		`"kind":"watchboard.digest"`,
+		"`sequence`",
+		"`shipmind.dev/scenario`",
+		"never matched by `fingerprint` alone",
+		"intervening `resolved`",
+		"once for that digest batch",
+		"finding stands",
+		"`watchboard.rotated`",
+	} {
+		if !strings.Contains(slackNorm, wantSlack) {
+			t.Errorf("# Slack incident notifications lacks %s:\n%s", wantSlack, slackSection)
+		}
+	}
+	if strings.Contains(alertMD, "# GitOps pull requests") {
+		t.Errorf("AGENTS.md with AlertChannel only should omit # GitOps pull requests:\n%s", alertMD)
 	}
 }
 

@@ -195,6 +195,13 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Pinned reactive `--sources` on `lookout-ax` in `deploy/profiles/substrate/lookout`
+  (`k8s-events,object-state,rollout,workload,autoscaling,saturation,degradation,expiry,capacity,ingress,gateway`,
+  excluding `topology-drift` and `compute-class` in favor of scheduled `leeway report`
+  posture sweeps, with `args[1]` and `args[2]` preserved for environment overlays)
+  and vendored `k8s-lookout` `v0.44.0`'s `deploy/14-role-watcher-capacity.yaml` with
+  its `kube-system` `RoleBinding` so the `capacity` source starts with explicit RBAC
+  grants (#127).
 - Bumped `k8s-lookout` to `v0.44.0` (`lookout:v0.44.0-gke@sha256:21066cab`):
   typed Kubernetes Protobuf negotiation by default (`k8s-lookout#824`),
   paginated/trimmed pod and event streaming plus copy-on-write graph edges for
@@ -326,6 +333,15 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Fixed
 
+- Shared `watchboard.digest` sessions in `agents/sre-triage/ax/AGENTS.md.tmpl`
+  now evaluate warning entries and Slack `alert` calls per arriving digest
+  `sequence` rather than once for the whole session lifetime: new actionable
+  non-`shipmind.dev/scenario` warning entries diagnose and call `alert` once for
+  that digest batch even when an earlier digest in the same watchboard session
+  was a synthetic `shipmind.dev/scenario` probe or already alerted on an
+  unrelated warning, while ordinary incident sessions keep
+  `alert`-once-on-initial-diagnosis and repeat ("finding stands") suppression
+  (#127).
 - `up` and `status` no longer ignore a live task template whose tokens
   are malformed when the tokens Secret exists; they refuse, as for any
   other disagreement, instead of overwriting it.
