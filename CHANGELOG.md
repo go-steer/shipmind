@@ -10,6 +10,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- Pinned `leeway` `v0.1.7` (`ghcr.io/go-steer/leeway:v0.1.7`) in
+  `versions.yaml` for the substrate profile, ahead of the scheduled posture
+  sweeps. Nothing renders it yet, and no `LeewayPolicy` or
+  `ClusterLeewayPolicy` CRDs are vendored or installed on target clusters
+  (#127).
 - Bumped `switchboard` to `v0.11.0` (live subagent inner-tool progress for
   `_fallback`, `propose-change`, and synchronously awaited `spawn_agent` in
   `status` and `stream` modes across Slack and Google Chat, plus tool-activity
