@@ -201,6 +201,22 @@ components:
       200k-pod watch/read scale (#825, #830, #831), includes steward
       v0.4.0 (#819), and builds on Go 1.26.11 for GO-2026-6859 (#826).
 
+  - name: leeway
+    source: github.com/go-steer/leeway
+    version: v0.1.7
+    profiles: [substrate]
+    images:
+      - name: leeway
+        ref: ghcr.io/go-steer/leeway:v0.1.7@sha256:234b7ef85d814cee0e9bdc2f1231d9b2e28d9dde9d64e2e10bc9ce6b575f89c1
+    note: >-
+      v0.1.7 (8e06005e318b015a634a019993239e43606fd054): runtime placement
+      skew and ComputeClass priority-rank posture (leeway report,
+      leeway.report/v1alpha1), with deterministic Finding.Remediation YAML
+      and addon-reconciled platform_managed guards (shipmind#127,
+      shipmind#134). Pinned ahead of the scheduled posture sweeps; nothing
+      in the substrate profile renders it yet. No LeewayPolicy or
+      ClusterLeewayPolicy CRDs are vendored or installed on target clusters.
+
   - name: substrate-scope
     source: github.com/go-steer/substrate-scope
     version: d52a8aab965cc5c4cf0d5e5e6e8e6480447e560a

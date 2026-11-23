@@ -262,4 +262,14 @@ func TestRepoVersionsFile(t *testing.T) {
 	if err := f.Check(); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
+	lw, ok := f.Component("leeway")
+	if !ok {
+		t.Fatal("versions.yaml is missing leeway")
+	}
+	if lw.Source != "github.com/go-steer/leeway" || !slices.Equal(lw.Profiles, []string{"substrate"}) || len(lw.Images) != 1 || lw.Images[0].Name != "leeway" {
+		t.Errorf("leeway component = %+v", lw)
+	}
+	if len(lw.Manifests) != 0 || len(lw.Files) != 0 {
+		t.Errorf("leeway must not vendor LeewayPolicy or ClusterLeewayPolicy CRDs: manifests=%v files=%v", lw.Manifests, lw.Files)
+	}
 }
