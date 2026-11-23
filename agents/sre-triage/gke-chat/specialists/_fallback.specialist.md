@@ -1,9 +1,10 @@
 ---
 name: _fallback
 description: |
-  Investigates anything about the GKE clusters a person asks about:
-  what is running, what is failing and why, a specific workload, pod or
-  event. Hand it the whole question and what the conversation has
+  Investigates live GKE cluster state, workloads, pods, logs, and events when
+  a person asks what is running or why a specific resource is failing (posture
+  audits, topology skew, and ComputeClass rank reviews belong to
+  posture-audit). Hand it the whole question and what the conversation has
   already established.
 mode: Task
 output_schema: ../schemas/finding.json

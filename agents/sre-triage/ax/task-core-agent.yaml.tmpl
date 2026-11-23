@@ -129,7 +129,7 @@ spec:
     - name: CORE_AGENT_SWITCHBOARD_TOKEN
       value: injected
 {{- end }}
-{{- if .ConfigPath }}
+{{- if .TrustRecipe }}
     - name: CORE_AGENT_TRUSTED_DIRS
       value: "/workspace/repo,/opt/core-agent/recipes/{{ .Bundle }}/.agents"
 {{- end }}
@@ -138,10 +138,19 @@ spec:
     # core-agent has no default location (mast defaulted to global).
     - name: GOOGLE_CLOUD_LOCATION
       value: global
+{{- if .PostureScope }}
+    # The environment's clusters span projects: a leeway report that names
+    # no cluster sweeps all of them, not just GOOGLE_CLOUD_PROJECT (#104,
+    # #127). lookout mcp needs no such list: it runs --clusters-from=auto
+    # (mcp.json), which ignores LOOKOUT_CLUSTERS_FROM, and reaches a cluster
+    # in another project by its full path.
+    - name: LEEWAY_CLUSTERS_FROM
+      value: {{ printf "%q" .PostureScope }}
+{{- end }}
     - name: CORE_AGENT_ATTACH_TOKEN
       value: {{ printf "%q" .AttachToken }}
   egress:
-    - hosts: [aiplatform.googleapis.com, container.googleapis.com]
+    - hosts: [{{ .GoogleHosts }}]
       credentials:
         - header: Authorization
           prefix: "Bearer "

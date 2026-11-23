@@ -9,6 +9,16 @@
           "scopes": ["https://www.googleapis.com/auth/cloud-platform"]
         }
       }
+    },
+    "lookout": {
+      "transport": "stdio",
+      "command": "/usr/local/bin/lookout",
+      "args": ["mcp", "--profile=audit", "--clusters-from=auto"]
+    },
+    "leeway": {
+      "transport": "stdio",
+      "command": "/usr/local/bin/leeway",
+      "args": ["mcp"]
     }
   }
 }

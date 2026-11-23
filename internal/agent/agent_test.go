@@ -523,11 +523,24 @@ func TestChatTaskCoreAgent(t *testing.T) {
 		t.Errorf("attach token %q", envs["CORE_AGENT_ATTACH_TOKEN"])
 	case envs["CORE_AGENT_GOOGLE_AUTH"] != "injected" || envs["GOOGLE_CLOUD_PROJECT"] != "example-project" || envs["GOOGLE_CLOUD_LOCATION"] == "":
 		t.Errorf("env %v", envs)
+	case envs["CORE_AGENT_TRUSTED_DIRS"] != "/workspace/repo,/opt/core-agent/recipes/"+ChatBundle+"/.agents":
+		t.Errorf("CORE_AGENT_TRUSTED_DIRS = %q", envs["CORE_AGENT_TRUSTED_DIRS"])
 	case strings.Contains(string(b), "MAST_"):
 		t.Errorf("core-agent task carries mast settings:\n%s", b)
 	}
+	wantChatEgress := []any{map[string]any{
+		"hosts": []any{"aiplatform.googleapis.com", "container.googleapis.com", "*.europe-west1.gke.goog", "*.us-central1.gke.goog"},
+		"credentials": []any{map[string]any{
+			"header":        "Authorization",
+			"prefix":        "Bearer ",
+			"credentialUri": "ate-secret://k8s.io/default/ate-credentials/google-token/token",
+		}},
+	}}
+	if !reflect.DeepEqual(got.Egress, wantChatEgress) {
+		t.Errorf("chat egress = %#v, want %#v", got.Egress, wantChatEgress)
+	}
 	for name, pair := range map[string][2]any{
-		"egress": {got.Egress, mast.Egress}, "http": {got.HTTP, mast.HTTP}, "idle": {got.Idle, mast.Idle},
+		"http": {got.HTTP, mast.HTTP}, "idle": {got.Idle, mast.Idle},
 		"resources": {got.Resources, mast.Resources}, "workspace": {got.Workspace, mast.Workspace}, "debug": {got.Debug, mast.Debug},
 	} {
 		if !reflect.DeepEqual(pair[0], pair[1]) {
@@ -957,22 +970,32 @@ func TestTaskCoreAgent(t *testing.T) {
 		t.Errorf("command %q", cmd)
 	case strings.Contains(string(b), "MAST_"):
 		t.Errorf("core-agent incident task carries mast settings:\n%s", b)
+	case strings.Contains(string(b), ".gke.goog"):
+		t.Errorf("incident task should keep narrow hosted GKE MCP egress (#131):\n%s", b)
+	case strings.Contains(string(b), "name: CORE_AGENT_TRUSTED_DIRS"):
+		t.Errorf("incident task without ConfigPath needs no CORE_AGENT_TRUSTED_DIRS:\n%s", b)
 	}
-	// The incident and chat tasks differ in nothing but image and bundle.
+	// The incident and chat tasks differ only in bundle, CORE_AGENT_TRUSTED_DIRS
+	// (chat trusts its posture stdio MCP root), and GKE DNS control-plane egress
+	// for lookout audit and leeway report (#127).
 	e.Agent.ChatImage = e.Agent.IncidentImage
 	chat, err := ChatTask(root, e, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
+	normChat := string(chat)
+	normChat = strings.ReplaceAll(normChat, "recipes/"+ChatBundle+"/", "recipes/"+IncidentBundle+"/")
+	normChat = strings.Replace(normChat, "    - name: CORE_AGENT_TRUSTED_DIRS\n      value: \"/workspace/repo,/opt/core-agent/recipes/"+IncidentBundle+"/.agents\"\n", "", 1)
+	normChat = strings.Replace(normChat, `[aiplatform.googleapis.com, container.googleapis.com, "*.europe-west1.gke.goog", "*.us-central1.gke.goog"]`, `[aiplatform.googleapis.com, container.googleapis.com]`, 1)
 	var gotDoc, chatDoc any
 	if err := yaml.Unmarshal(b, &gotDoc); err != nil {
 		t.Fatal(err)
 	}
-	if err := yaml.Unmarshal([]byte(strings.Replace(string(chat), "recipes/"+ChatBundle+"/", "recipes/"+IncidentBundle+"/", 1)), &chatDoc); err != nil {
+	if err := yaml.Unmarshal([]byte(normChat), &chatDoc); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(gotDoc, chatDoc) {
-		t.Error("the core-agent incident and chat tasks differ in more than the bundle")
+		t.Error("the core-agent incident and chat tasks differ beyond bundle, trusted dirs, and GKE DNS egress")
 	}
 	// Switchboard's threads don't follow incidentImage.
 	e.Agent.ChatImage = ""
@@ -1014,5 +1037,153 @@ func TestTaskIdleSuspend(t *testing.T) {
 				t.Errorf("%s, %s: rendered task lacks %q", tc.name, kind, tc.want)
 			}
 		}
+	}
+}
+
+func TestPostureBundleAndImageChecks(t *testing.T) {
+	dockerfileBytes, err := os.ReadFile(filepath.Join(root, "images/agent/Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := string(dockerfileBytes)
+	for _, want := range []string{
+		"AS lookout",
+		"-tags allproviders",
+		"/usr/local/bin/lookout version",
+		"COPY --from=lookout /out/lookout /usr/local/bin/lookout",
+		"AS leeway",
+		"/usr/local/bin/leeway version",
+		"COPY --from=leeway /out/leeway /usr/local/bin/leeway",
+		"lookout $(jq -r '.servers.lookout.args | join(\" \")' /in/gke-chat/mcp.json) --list-tools",
+		"grep -q '^k8s_list_clusters ' /tmp/lookout-tools",
+		"leeway $(jq -r '.servers.leeway.args | join(\" \")' /in/gke-chat/mcp.json)",
+		"gcr.io/distroless/static-debian12:nonroot@",
+		"tools allowlist names |has no tool matching ",
+		"mcp: [0-9]+ server\\(s\\), [1-9][0-9]* down",
+	} {
+		if !strings.Contains(dockerfile, want) {
+			t.Errorf("images/agent/Dockerfile lacks %q", want)
+		}
+	}
+	// The image carries the components' own binaries and no shipmind
+	// wrapper in front of them (go-steer/leeway#37, go-steer/k8s-lookout#858).
+	if strings.Contains(dockerfile, "/usr/local/bin/shipmind") || strings.Contains(dockerfile, "AS shipmind") {
+		t.Error("images/agent/Dockerfile builds or installs shipmind; the agent image runs lookout and leeway directly")
+	}
+
+	buildArgsBytes, err := os.ReadFile(filepath.Join(root, "images/agent/build-args.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildArgs := string(buildArgsBytes)
+	for _, want := range []string{"LOOKOUT_REPO=", "LOOKOUT_VERSION=", "LOOKOUT_COMMIT=", "LEEWAY_REPO=", "LEEWAY_VERSION=", "LEEWAY_COMMIT="} {
+		if !strings.Contains(buildArgs, want) {
+			t.Errorf("images/agent/build-args.sh lacks %q", want)
+		}
+	}
+
+	chatMCPBytes, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, "mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chatMCP struct {
+		Servers map[string]struct {
+			Transport string   `json:"transport"`
+			Command   string   `json:"command"`
+			Args      []string `json:"args"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(chatMCPBytes, &chatMCP); err != nil {
+		t.Fatal(err)
+	}
+	// lookout runs with an explicit --clusters-from=auto: without it the
+	// cluster-choice tool and the cluster argument exist only when the
+	// task's environment happens to select injected auth.
+	if got := chatMCP.Servers["lookout"]; got.Transport != "stdio" || got.Command != "/usr/local/bin/lookout" || !slices.Equal(got.Args, []string{"mcp", "--profile=audit", "--clusters-from=auto"}) {
+		t.Errorf("gke-chat lookout MCP server = %+v", got)
+	}
+	if got := chatMCP.Servers["leeway"]; got.Transport != "stdio" || got.Command != "/usr/local/bin/leeway" || !slices.Equal(got.Args, []string{"mcp"}) {
+		t.Errorf("gke-chat leeway MCP server = %+v", got)
+	}
+
+	// Incident bundle MCP stays strictly on hosted GKE read-only (#131).
+	incMCPBytes, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", IncidentBundle, "mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(incMCPBytes), "lookout") || strings.Contains(string(incMCPBytes), "leeway") {
+		t.Errorf("gke-triage-f/mcp.json must stay untouched until #131:\n%s", incMCPBytes)
+	}
+
+	postureSpec, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, "specialists/posture-audit.specialist.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Neither server reads the Workspace's cluster table, so the specialist
+	// must be told to use full paths (a short name resolves only in the
+	// agent's own project).
+	for _, want := range []string{"- report", "k8s_audit_all", "k8s_audit_computeclass", "k8s_audit_ai", "leeway_report", "platform_managed", "projects/<project>/locations/<location>/clusters/<cluster>", "Do\n  not shorten it to a bare name"} {
+		if !strings.Contains(string(postureSpec), want) {
+			t.Errorf("posture-audit.specialist.md lacks %q", want)
+		}
+	}
+	if strings.Contains(string(postureSpec), "v0.44.0") {
+		t.Error("posture-audit.specialist.md still carries the v0.44.0 audit-all workaround")
+	}
+
+	baseCfg, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-"+ChatBundle+".base.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"spawn_agent:posture-audit"`, `"mcp:lookout_k8s_audit_all*"`, `"mcp:leeway_report*"`, `"name": "report"`} {
+		if !strings.Contains(string(baseCfg), want) {
+			t.Errorf("core-agent-gke-chat.base.json lacks %q", want)
+		}
+	}
+}
+
+// A chat task whose clusters span projects tells leeway mcp to sweep all of
+// them; one whose clusters share the agent's project, and every incident
+// task, carries no such setting.
+func TestChatTaskPostureScope(t *testing.T) {
+	core := func() *env.Env {
+		e := testEnv()
+		e.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
+		e.Agent.IncidentImage = e.Agent.ChatImage
+		return e
+	}
+	e := core()
+	chat, err := ChatTask(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(chat), "_CLUSTERS_FROM") {
+		t.Errorf("single-project chat task sets a cluster scope:\n%s", chat)
+	}
+
+	e = core()
+	e.Agent.Clusters = append(e.Agent.Clusters,
+		env.Cluster{Name: "zeta", Path: "projects/zeta-project/locations/us-east1/clusters/zeta"},
+		env.Cluster{Name: "alpha", Path: "projects/alpha-project/locations/us-east1/clusters/alpha"},
+		env.Cluster{Name: "alpha2", Path: "projects/alpha-project/locations/us-east4/clusters/alpha2"},
+	)
+	chat, err = ChatTask(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "    - name: LEEWAY_CLUSTERS_FROM\n      value: \"example-project,alpha-project,zeta-project\"\n"
+	if !strings.Contains(string(chat), want) {
+		t.Errorf("multi-project chat task lacks %q:\n%s", want, chat)
+	}
+	// lookout runs --clusters-from=auto, which ignores this variable.
+	if strings.Contains(string(chat), "name: LOOKOUT_CLUSTERS_FROM") {
+		t.Error("chat task sets LOOKOUT_CLUSTERS_FROM, which --clusters-from=auto ignores")
+	}
+	inc, err := Task(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(inc), "name: LEEWAY_CLUSTERS_FROM") {
+		t.Errorf("incident task sets a posture scope (#131):\n%s", inc)
 	}
 }

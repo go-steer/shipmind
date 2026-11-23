@@ -30,23 +30,101 @@
   },
   "permissions": {
     "allow": [
+      "spawn_agent:posture-audit",
       "spawn_agent:_fallback",
       "mcp:gke_triage-classifier*",
+      "mcp:lookout_triage-classifier*",
+      "mcp:leeway_triage-classifier*",
       "mcp:gke_get_k8s_resource*",
+      "mcp:lookout_get_k8s_resource*",
+      "mcp:leeway_get_k8s_resource*",
       "mcp:gke_describe_k8s_resource*",
+      "mcp:lookout_describe_k8s_resource*",
+      "mcp:leeway_describe_k8s_resource*",
       "mcp:gke_list_k8s_events*",
+      "mcp:lookout_list_k8s_events*",
+      "mcp:leeway_list_k8s_events*",
       "mcp:gke_get_k8s_logs*",
+      "mcp:lookout_get_k8s_logs*",
+      "mcp:leeway_get_k8s_logs*",
       "mcp:gke_get_k8s_rollout_status*",
+      "mcp:lookout_get_k8s_rollout_status*",
+      "mcp:leeway_get_k8s_rollout_status*",
       "mcp:gke_list_k8s_api_resources*",
+      "mcp:lookout_list_k8s_api_resources*",
+      "mcp:leeway_list_k8s_api_resources*",
       "mcp:gke_get_k8s_cluster_info*",
+      "mcp:lookout_get_k8s_cluster_info*",
+      "mcp:leeway_get_k8s_cluster_info*",
       "mcp:gke_get_k8s_version*",
+      "mcp:lookout_get_k8s_version*",
+      "mcp:leeway_get_k8s_version*",
       "mcp:gke_check_k8s_auth*",
+      "mcp:lookout_check_k8s_auth*",
+      "mcp:leeway_check_k8s_auth*",
       "mcp:gke_list_clusters*",
+      "mcp:lookout_list_clusters*",
+      "mcp:leeway_list_clusters*",
       "mcp:gke_get_cluster*",
+      "mcp:lookout_get_cluster*",
+      "mcp:leeway_get_cluster*",
       "mcp:gke_list_node_pools*",
+      "mcp:lookout_list_node_pools*",
+      "mcp:leeway_list_node_pools*",
       "mcp:gke_get_node_pool*",
+      "mcp:lookout_get_node_pool*",
+      "mcp:leeway_get_node_pool*",
       "mcp:gke_list_operations*",
-      "mcp:gke_get_operation*"
+      "mcp:lookout_list_operations*",
+      "mcp:leeway_list_operations*",
+      "mcp:gke_get_operation*",
+      "mcp:lookout_get_operation*",
+      "mcp:leeway_get_operation*",
+      "mcp:gke_k8s_list_clusters*",
+      "mcp:lookout_k8s_list_clusters*",
+      "mcp:leeway_k8s_list_clusters*",
+      "mcp:gke_k8s_audit_all*",
+      "mcp:lookout_k8s_audit_all*",
+      "mcp:leeway_k8s_audit_all*",
+      "mcp:gke_k8s_audit_workloads*",
+      "mcp:lookout_k8s_audit_workloads*",
+      "mcp:leeway_k8s_audit_workloads*",
+      "mcp:gke_k8s_audit_hardening*",
+      "mcp:lookout_k8s_audit_hardening*",
+      "mcp:leeway_k8s_audit_hardening*",
+      "mcp:gke_k8s_audit_rbac*",
+      "mcp:lookout_k8s_audit_rbac*",
+      "mcp:leeway_k8s_audit_rbac*",
+      "mcp:gke_k8s_audit_netpol*",
+      "mcp:lookout_k8s_audit_netpol*",
+      "mcp:leeway_k8s_audit_netpol*",
+      "mcp:gke_k8s_audit_namespaces*",
+      "mcp:lookout_k8s_audit_namespaces*",
+      "mcp:leeway_k8s_audit_namespaces*",
+      "mcp:gke_k8s_audit_cluster*",
+      "mcp:lookout_k8s_audit_cluster*",
+      "mcp:leeway_k8s_audit_cluster*",
+      "mcp:gke_k8s_audit_upgrades*",
+      "mcp:lookout_k8s_audit_upgrades*",
+      "mcp:leeway_k8s_audit_upgrades*",
+      "mcp:gke_k8s_audit_computeclass*",
+      "mcp:lookout_k8s_audit_computeclass*",
+      "mcp:leeway_k8s_audit_computeclass*",
+      "mcp:gke_k8s_audit_ai*",
+      "mcp:lookout_k8s_audit_ai*",
+      "mcp:leeway_k8s_audit_ai*",
+      "mcp:gke_k8s_audit_policy*",
+      "mcp:lookout_k8s_audit_policy*",
+      "mcp:leeway_k8s_audit_policy*",
+      "mcp:gke_k8s_audit_exemptions*",
+      "mcp:lookout_k8s_audit_exemptions*",
+      "mcp:leeway_k8s_audit_exemptions*",
+      "mcp:gke_k8s_scan*",
+      "mcp:lookout_k8s_scan*",
+      "mcp:leeway_k8s_scan*",
+      "mcp:gke_report*",
+      "mcp:lookout_report*",
+      "mcp:leeway_report*"
     ],
     "mode": "ask"
   },
@@ -117,6 +195,66 @@
       {
         "mutating": false,
         "name": "get_operation"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_list_clusters"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_all"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_workloads"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_hardening"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_rbac"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_netpol"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_namespaces"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_cluster"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_upgrades"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_computeclass"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_ai"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_policy"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_exemptions"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_scan"
+      },
+      {
+        "mutating": false,
+        "name": "report"
       },
       {
         "mutating": true,

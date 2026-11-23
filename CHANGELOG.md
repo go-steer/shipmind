@@ -10,6 +10,17 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- Built static `lookout` (`-tags allproviders`) and `leeway` binaries from
+  their pins into `images/agent`, and equipped `gke-chat` with a read-only
+  `posture-audit` specialist that runs `lookout mcp --profile=audit`
+  (`k8s_audit_all` plus the individual workload, hardening, RBAC,
+  NetworkPolicy, namespace, cluster, upgrade, `ComputeClass` and AI checks)
+  and `leeway mcp` (live placement skew, `ComputeClass` priority-rank
+  occupancy, and deterministic remediation) directly, with Substrate's
+  injected Google auth and `*.<location>.gke.goog` egress for the
+  environment's clusters. Added a chat scenario kind so a candidate agent
+  image can be exercised as one throwaway task in a running environment
+  before its pin moves (#127).
 - Bumped `k8s-lookout` from `v0.44.0` to `v0.45.0` and `leeway` from
   `v0.1.7` to `v0.1.8`. lookout `v0.45.0` removes its in-tree leeway
   sources, flags, CRDs and signal kinds (the vendored watcher ClusterRole
