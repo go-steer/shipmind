@@ -195,6 +195,13 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Pinned reactive `--sources` on `lookout-ax` in `deploy/profiles/substrate/lookout`
+  (`k8s-events,object-state,rollout,workload,autoscaling,saturation,degradation,expiry,capacity,ingress,gateway`,
+  excluding `topology-drift` and `compute-class` in favor of scheduled `leeway report`
+  posture sweeps, with `args[1]` and `args[2]` preserved for environment overlays)
+  and vendored `k8s-lookout` `v0.44.0`'s `deploy/14-role-watcher-capacity.yaml` with
+  its `kube-system` `RoleBinding` so the `capacity` source starts with explicit RBAC
+  grants (#127).
 - Bumped `k8s-lookout` to `v0.44.0` (`lookout:v0.44.0-gke@sha256:21066cab`):
   typed Kubernetes Protobuf negotiation by default (`k8s-lookout#824`),
   paginated/trimmed pod and event streaming plus copy-on-write graph edges for

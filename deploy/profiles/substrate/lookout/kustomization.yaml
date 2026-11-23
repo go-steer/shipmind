@@ -13,7 +13,8 @@
 # limitations under the License.
 
 # k8s-lookout, opening an ax task per incident. Its RBAC is lookout's own
-# watcher ClusterRole at the pinned version, renamed for this deployment.
+# watcher ClusterRole and kube-system capacity Role at the pinned version,
+# renamed for this deployment.
 #
 # Not rendered here: Secret lookout-ax-agent (the agent's attach token
 # and the ax task template, which carries the agent's tokens as plain
@@ -23,6 +24,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../../vendor/k8s-lookout/deploy/12-clusterrole-watcher
+  - ../../../vendor/k8s-lookout/deploy/14-role-watcher-capacity
   - lookout.yaml
 patches:
   - target:
@@ -32,6 +34,17 @@ patches:
       - op: replace
         path: /metadata/name
         value: lookout-ax-watch
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1name
+        value: lookout-ax-watch
+  - target:
+      kind: Role
+      namespace: kube-system
+      name: lookout-watch-capacity
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: lookout-ax-watch-capacity
       - op: replace
         path: /metadata/labels/app.kubernetes.io~1name
         value: lookout-ax-watch

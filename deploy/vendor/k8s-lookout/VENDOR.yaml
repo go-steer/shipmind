@@ -4,3 +4,4 @@ version: v0.44.0
 commit: 238f4c696c093b99406a2aa04f73b04fcba79356
 files:
     deploy/12-clusterrole-watcher.yaml: sha256:288426291f64351d996ae943cbd99abaf3a4e178c82eb9cb97319bc962974087
+    deploy/14-role-watcher-capacity.yaml: sha256:cd70ae683ca374901b7b791bbacda3e6fba0bef8ad107db9d64c3da6268a3859
