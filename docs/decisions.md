@@ -4,6 +4,51 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-20: The admin console lives in-tree in shipmind (#128)
+
+Clarifies 2026-10-20 ("A distribution, not a monorepo"). Design:
+[`console-design.md`](./console-design.md).
+
+`shipmind`'s first-party Admin Console (`shipmind console` CLI subcommand,
+`internal/console`, and `images/console`, published to
+`ghcr.io/go-steer/shipmind/console` and pinned by digest in
+`versions.yaml`) lives in-tree in `go-steer/shipmind` and deploys in
+`shipmind-system` across both `standalone` and `substrate` profiles.
+`shipmind up` stamps a sanitized, non-secret `ConfigMap`
+(`shipmind-system/shipmind-release`) so the in-cluster console knows its
+effective `shipmind.yaml`, BOM, and drift baseline without the deployer's
+workstation, authenticates operators via `go-steer/purser` (`loopback`,
+`bearer`, `oidc`, `proxy-header`, `iap-jwt`), embeds a vendored
+`mast-web` release under `/mast-web/` (enforcing `substrate-scope`'s
+never-wake-on-read invariant on `substrate`), and routes `shipmind.yaml`
+edits through a drift-free three-tier write path (local `up`, browser diff
+export, or `go-steer/core-vcs` pull requests against
+`console.overlayRepo`). Component-side status and auth additions stay in
+their component repositories (`core-agent`, `purser`, `k8s-lookout`,
+`switchboard`, `mast-web`) and enter `shipmind` via `versions.yaml` pin
+bumps.
+
+**Why:** unlike `k8s-lookout`, `switchboard`, `mast-web`, and
+`substrate-scope` — which are standalone components usable without
+`shipmind` — the admin console *is* `shipmind`'s distribution control
+plane, like `cmd/shipmind`, `internal/deploy`, and `images/e2e-runner`.
+Keeping it in `go-steer/shipmind` means `internal/env`, `internal/bom`,
+`internal/deploy`, `internal/archive`, `internal/slackapp`, and Config
+Studio move in one pull request with zero schema skew whenever
+`shipmind.yaml` evolves, and one `shipmind` binary serves both Day-0
+workstation bootstrap (`shipmind console <env-dir>`) and distroless
+in-cluster serving (`images/console`).
+
+**Rejected:** a separate `go-steer/shipmind-console` repository (forces a
+two-repository release and pin bump on every `shipmind.yaml` field and
+duplicates `internal/env` validation and `internal/deploy` drift rules);
+growing `substrate-scope` or `mast-web` into the platform admin console
+(`substrate-scope` is a Substrate-only 3D visualizer with no role on the
+`standalone` profile, and `mast-web` is a single-agent session client);
+patching cluster Deployments or Secrets directly from the UI (causes
+immediate `shipmind status` exit-3 drift and loses changes on the next
+`shipmind up`).
+
 ## 2026-11-18: Optional zero-HITL pull request creation in Slack chat (`agent.vcs.chatAutoApprove`)
 
 Extends 2026-11-17 ("One general-purpose chat agent plus autonomous incident
