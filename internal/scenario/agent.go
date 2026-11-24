@@ -101,6 +101,88 @@ func (r *Router) getJSON(ctx context.Context, task, path string, v any) error {
 	return json.NewDecoder(resp.Body).Decode(v)
 }
 
+// postJSON sends body to the task as JSON and decodes a 2xx answer into
+// v (nil: discard it).
+func (r *Router) postJSON(ctx context.Context, task, path string, body, v any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(r.Base, "/")+path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("ate-target-actor", r.Atespace+"/"+task)
+	req.Header.Set("Authorization", "Bearer "+r.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := r.client().Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return &statusError{code: resp.StatusCode, msg: fmt.Sprintf("POST %s on %s: %s: %s", path, task, resp.Status, strings.TrimSpace(string(msg)))}
+	}
+	if v == nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// CreateSession opens a session on the task (core-agent's POST
+// /sessions), owned by the attach token's caller, and returns its ID.
+func (r *Router) CreateSession(ctx context.Context, task string) (string, error) {
+	var out struct {
+		ID string `json:"sessionID"`
+	}
+	if err := r.postJSON(ctx, task, "/sessions", struct{}{}, &out); err != nil {
+		return "", err
+	}
+	if out.ID == "" {
+		return "", fmt.Errorf("POST /sessions on %s: the answer names no session", task)
+	}
+	return out.ID, nil
+}
+
+// Inject sends the session a message, as a person in a thread would.
+func (r *Router) Inject(ctx context.Context, task, session, message string) error {
+	return r.postJSON(ctx, task, "/sessions/"+url.PathEscape(session)+"/inject", map[string]string{"message": message}, nil)
+}
+
+// SubagentEvents reads the turns a subagent (a specialist) has taken
+// under the session, which core-agent records apart from the session's
+// own stream. known is false when the agent has no subagent of that name
+// (core-agent's 404); a subagent it has but that has not run comes back
+// known, with no events. The transcript's Truncated says the history ran
+// past the one page read.
+func (r *Router) SubagentEvents(ctx context.Context, task, session, name string) (t *Transcript, known bool, err error) {
+	var out struct {
+		Events []struct {
+			Seq   int       `json:"seq"`
+			Event wireEvent `json:"event"`
+		} `json:"events"`
+		Truncated bool `json:"truncated"`
+	}
+	// The largest page core-agent serves, from the start of the
+	// specialist's history: all of it in any run a scenario bounds. A
+	// longer one is cut at its end, and says so.
+	err = r.getJSON(ctx, task, "/sessions/"+url.PathEscape(session)+"/agents/"+url.PathEscape(name)+"/events?limit=5000", &out)
+	var se *statusError
+	switch {
+	case errors.As(err, &se) && se.code == http.StatusNotFound:
+		return nil, false, nil
+	case err != nil:
+		return nil, false, err
+	}
+	t = &Transcript{Truncated: out.Truncated}
+	for _, f := range out.Events {
+		t.Events = append(t.Events, f.Event.event(f.Seq))
+	}
+	return t, true, nil
+}
+
 // Sessions lists a task's sessions.
 func (r *Router) Sessions(ctx context.Context, task string) ([]Session, error) {
 	var out struct {
@@ -331,6 +413,8 @@ type Transcript struct {
 	// Cost is the session's running cost in US dollars, from the last
 	// usage update.
 	Cost float64
+	// Truncated: a subagent's history ran past what was read.
+	Truncated bool
 }
 
 // Event is one agent event: who wrote it and its text parts.
@@ -341,6 +425,131 @@ type Event struct {
 	Texts  []string
 	// Calls are the tools the event calls, as the agent names them.
 	Calls []string
+	// Failed are the tool results in the event that are errors, as
+	// "<tool>: <message>": core-agent answers a failed call (an MCP
+	// result with isError, a transport failure, a denied permission) with
+	// a response carrying an "error".
+	Failed []string
+	// Results are the tool results in the event that are not errors.
+	Results []ToolResult
+}
+
+// ToolResult is one successful tool result: the tool, as the agent names
+// it, and what it returned (see resultOutput).
+type ToolResult struct {
+	Tool   string `json:"tool"`
+	Output string `json:"output"`
+	// Method is how core-agent digested the result before the model saw
+	// it: "passthrough" (whole), "structural_json" (long arrays and
+	// strings cut, fields like status kept) or "llm_fallback" (a model's
+	// summary). Empty for a result that was not digested.
+	Method string `json:"method,omitempty"`
+}
+
+// MethodSummarized is the digest method whose output is a model's prose,
+// which a pattern written for the tool's own output can't be held to.
+const MethodSummarized = "llm_fallback"
+
+// wireEvent is an agent event as mast and core-agent serialize it, in
+// the session's stream and in a subagent's history alike.
+type wireEvent struct {
+	Author  string `json:"author"`
+	Content *struct {
+		Role  string `json:"role"`
+		Parts []struct {
+			Text         string `json:"text"`
+			FunctionCall *struct {
+				Name string `json:"name"`
+			} `json:"functionCall"`
+			FunctionResponse *struct {
+				Name     string          `json:"name"`
+				Response json.RawMessage `json:"response"`
+			} `json:"functionResponse"`
+		} `json:"parts"`
+	} `json:"content"`
+}
+
+// maxFailure bounds how much of a tool's error message a result keeps.
+const maxFailure = 300
+
+func (w wireEvent) event(seq int) Event {
+	e := Event{Seq: seq, Author: w.Author}
+	c := w.Content
+	if c == nil {
+		return e
+	}
+	e.Role = c.Role
+	for _, p := range c.Parts {
+		if p.Text != "" {
+			e.Texts = append(e.Texts, p.Text)
+		}
+		if p.FunctionCall != nil && p.FunctionCall.Name != "" {
+			e.Calls = append(e.Calls, p.FunctionCall.Name)
+		}
+		if r := p.FunctionResponse; r != nil {
+			// genai's response is an object; one that isn't is kept
+			// whole as the result rather than costing the event.
+			var response map[string]json.RawMessage
+			if json.Unmarshal(r.Response, &response) != nil {
+				e.Results = append(e.Results, ToolResult{Tool: r.Name, Output: string(r.Response)})
+				continue
+			}
+			if raw, ok := response["error"]; ok && string(raw) != "null" && string(raw) != `""` {
+				msg := string(raw)
+				var s string
+				if json.Unmarshal(raw, &s) == nil {
+					msg = s
+				}
+				if len(msg) > maxFailure {
+					msg = msg[:maxFailure] + "…"
+				}
+				e.Failed = append(e.Failed, r.Name+": "+msg)
+				continue
+			}
+			output, method := resultOutput(response)
+			e.Results = append(e.Results, ToolResult{Tool: r.Name, Output: output, Method: method})
+		}
+	}
+	return e
+}
+
+// resultOutput is a successful tool response as text, and how core-agent
+// digested it.
+//
+// An MCP tool's response is {"output": ...}: its text, or its structured
+// content. core-agent wraps that, by default, as {"digest": "<JSON
+// text>", "method": ...}: the same object as text when it is small, and
+// pruned when it is not, in which case a tool's JSON text has been parsed
+// into the object in its place. Both layers are unwrapped, so a pattern
+// written against the tool's own JSON matches either. Any other tool's
+// response is kept whole, as JSON.
+func resultOutput(response map[string]json.RawMessage) (output, method string) {
+	if raw, ok := response["digest"]; ok {
+		var digest string
+		if json.Unmarshal(raw, &digest) == nil {
+			_ = json.Unmarshal(response["method"], &method)
+			var inner map[string]json.RawMessage
+			if json.Unmarshal([]byte(digest), &inner) != nil {
+				return digest, method
+			}
+			if _, ok := inner["output"]; !ok {
+				return digest, method
+			}
+			response = inner
+		}
+	}
+	if raw, ok := response["output"]; ok {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return s, method
+		}
+		return string(raw), method
+	}
+	b, err := json.Marshal(response)
+	if err != nil {
+		return "", method
+	}
+	return string(b), method
 }
 
 // ParseEvents reads the agent's server-sent events (mast's and
@@ -358,21 +567,10 @@ func ParseEvents(r io.Reader) (*Transcript, error) {
 			continue
 		}
 		var d struct {
-			Seq   *int `json:"seq"`
-			Event struct {
-				Author  string `json:"author"`
-				Content *struct {
-					Role  string `json:"role"`
-					Parts []struct {
-						Text         string `json:"text"`
-						FunctionCall *struct {
-							Name string `json:"name"`
-						} `json:"functionCall"`
-					} `json:"parts"`
-				} `json:"content"`
-			} `json:"event"`
-			Cost   *float64 `json:"cost_usd_total"`
-			Server string   `json:"server"`
+			Seq    *int      `json:"seq"`
+			Event  wireEvent `json:"event"`
+			Cost   *float64  `json:"cost_usd_total"`
+			Server string    `json:"server"`
 		}
 		if json.Unmarshal([]byte(data), &d) != nil {
 			continue
@@ -386,19 +584,7 @@ func ParseEvents(r io.Reader) (*Transcript, error) {
 		if d.Seq == nil {
 			continue
 		}
-		e := Event{Seq: *d.Seq, Author: d.Event.Author}
-		if c := d.Event.Content; c != nil {
-			e.Role = c.Role
-			for _, p := range c.Parts {
-				if p.Text != "" {
-					e.Texts = append(e.Texts, p.Text)
-				}
-				if p.FunctionCall != nil && p.FunctionCall.Name != "" {
-					e.Calls = append(e.Calls, p.FunctionCall.Name)
-				}
-			}
-		}
-		t.Events = append(t.Events, e)
+		t.Events = append(t.Events, d.Event.event(*d.Seq))
 	}
 	return t, sc.Err()
 }
@@ -410,6 +596,25 @@ func (t *Transcript) Calls() []string {
 		calls = append(calls, e.Calls...)
 	}
 	return calls
+}
+
+// Failures returns every failed tool result in the transcript, in order.
+func (t *Transcript) Failures() []string {
+	var failed []string
+	for _, e := range t.Events {
+		failed = append(failed, e.Failed...)
+	}
+	return failed
+}
+
+// Results returns every successful tool result in the transcript, in
+// order.
+func (t *Transcript) Results() []ToolResult {
+	var results []ToolResult
+	for _, e := range t.Events {
+		results = append(results, e.Results...)
+	}
+	return results
 }
 
 // isUser reports whether e is a message sent to the agent: authored by

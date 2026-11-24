@@ -63,6 +63,8 @@ var (
 	newScenarioKube     = func(kubeContext string) scenarioKube { return cluster.Kube{Context: kubeContext} }
 	newScenarioTasks    = func(ax scenario.Ax) scenario.Tasks { return ax }
 	newScenarioAgent    = func(r *scenario.Router) scenario.Agent { return r }
+	newChatTasks        = func(ax scenario.Ax) scenario.ChatTasks { return ax }
+	newChatAgent        = func(r *scenario.Router) scenario.ChatAgent { return r }
 	newScenarioArchiver = func(g *archive.GCS) scenario.Archiver { return g }
 	newRouterClient     = func(t scenario.RouterTLS) (*http.Client, func() error, error) { return t.Client() }
 	newJudge            = func(ctx context.Context, model, project, region, effort string) (scenario.Grader, error) {
@@ -86,7 +88,8 @@ var (
 	}
 )
 
-const scenarioUsage = `usage: shipmind scenario run -atespace A (-context C -router URL | -in-cluster) [-router-cert F -router-trust F] [-keep] [-json FILE] [-archive gs://bucket/prefix] [-judge MODEL -judge-project P] <scenario-dir>
+const scenarioUsage = `usage: shipmind scenario run -atespace A (-context C -router URL | -in-cluster) [-router-cert F -router-trust F] [-keep] [-json FILE] [-archive gs://bucket/prefix] [-judge MODEL -judge-project P] [-task FILE -cluster PATH [-workspace FILE]] <scenario-dir>
+       shipmind scenario canary -image REF [-runner-image REF] [-root DIR] [-cluster NAME] [-dry-run] <environment-dir> <scenario>
        shipmind scenario judge -model MODEL -project P [-region R] [-effort E] [-scenarios DIR] <result.json>...`
 
 // judgeFlags are the judge model's flags, shared by run and judge.
@@ -142,6 +145,9 @@ func runScenarioCmd(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "judge" {
 		return runJudge(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "canary" {
+		return runCanary(args[1:], stdout, stderr)
+	}
 	return runScenario(args, stdout, stderr)
 }
 
@@ -164,6 +170,9 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 	keep := fs.Bool("keep", false, "leave the workload and task in place for inspection")
 	jsonOut := fs.String("json", "", "also write the result as JSON to this file")
 	archiveTo := fs.String("archive", "", "store each run's record (the session's events, usage, result) under gs://bucket/prefix, with the pod's workload identity")
+	taskFile := fs.String("task", "", "for a chat scenario: the ax Task manifest to start, named (`shipmind scenario canary` renders one)")
+	workspaceFile := fs.String("workspace", "", "for a chat scenario: the ax Workspace manifest that task mounts, applied first and deleted last")
+	clusterPath := fs.String("cluster", "", "for a chat scenario: the cluster to ask about, projects/<project>/locations/<location>/clusters/<name>")
 	jf := addJudgeFlags(fs, "judge")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -219,6 +228,11 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "shipmind scenario run: %v\n", err)
 		return 1
 	}
+	chat, err := chatRun(s, *taskFile, *workspaceFile, *clusterPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "shipmind scenario run: %v\n", err)
+		return 2
+	}
 	// A SIGTERM (a Job's deadline, a node drain) cancels the run, and the
 	// runner still cleans up: scenario.Run's cleanup outlives ctx.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
@@ -263,14 +277,21 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "shipmind scenario run: judge: %v\n", err)
 		grader = judge.Broken{Model: *jf.model, Err: err}
 	}
-	res, runErr := scenario.Run(ctx, s, kube, newScenarioTasks(ax), newScenarioAgent(rt), scenario.Options{
+	opts := scenario.Options{
 		Keep:    *keep,
 		Archive: archiver,
 		Judge:   grader,
 		Log: func(format string, a ...any) {
 			fmt.Fprintf(stderr, "scenario %s: "+format+"\n", append([]any{s.Name}, a...)...)
 		},
-	})
+	}
+	var res *scenario.Result
+	var runErr error
+	if chat != nil {
+		res, runErr = scenario.RunChat(ctx, s, newChatTasks(ax), newChatAgent(rt), *chat, opts)
+	} else {
+		res, runErr = scenario.Run(ctx, s, kube, newScenarioTasks(ax), newScenarioAgent(rt), opts)
+	}
 	if runErr != nil {
 		fmt.Fprintf(stderr, "shipmind scenario run: %v\n", runErr)
 		if res == nil {
@@ -302,6 +323,7 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 type graded struct {
 	Scenario string   `json:"scenario"`
 	Workload string   `json:"workload"`
+	Cluster  string   `json:"cluster,omitempty"`
 	Answer   string   `json:"answer"`
 	Want     string   `json:"want,omitempty"`
 	Failures []string `json:"failures,omitempty"`
@@ -375,7 +397,8 @@ func runJudge(args []string, stdout, stderr io.Writer) int {
 			}
 			loaded[in.Scenario] = s
 		}
-		expected, err := s.Diagnosis(in.Workload)
+		// A chat run's ground truth names the cluster it asked about.
+		expected, err := s.ForCluster(in.Cluster).Diagnosis(in.Workload)
 		if err == nil && expected == "" {
 			err = fmt.Errorf("scenario %s has no expect.diagnosis", in.Scenario)
 		}

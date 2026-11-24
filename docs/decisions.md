@@ -4,6 +4,44 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-24: gke-chat runs lookout and leeway as their own MCP servers, and a canary proves an agent image before its pin moves (#127)
+
+`gke-chat`'s `posture-audit` specialist gets lookout's audit and leeway's
+report by running the two components' own binaries as stdio MCP servers
+inside the agent task: `lookout mcp --profile=audit --clusters-from=auto`
+and `leeway mcp`, built from their `versions.yaml` pins into
+`images/agent`. shipmind adds only configuration: the bundle's
+`mcp.json`, the chat task's trusted directories, `*.<location>.gke.goog`
+egress for the environment's clusters, and a project list for leeway
+when those clusters span projects.
+
+A first version of this change put a bridge in shipmind
+(`internal/posture`, `shipmind mcp`): an MCP server wrapped around
+`leeway report`, a fake metadata server for injected Google auth, a
+credential-proxy translator, and cluster-name mapping. That was component
+source in the distribution, against the first hard rule, and it was
+never merged. The capability went upstream instead (go-steer/leeway#37
+in `v0.1.8`, go-steer/k8s-lookout#858 in `v0.45.0`), and shipmind moved
+its pins.
+
+What the components do not do, shipmind does not paper over. Neither
+reads the Workspace's cluster table, so the specialist is told to name
+clusters by full path. lookout's cluster list covers the agent's own
+project and reaches others on demand by path. There is no whole-call
+timeout from shipmind.
+
+Because none of this can be shown to work without a cluster, the change
+adds a canary: a chat scenario kind and `shipmind scenario canary`
+(DESIGN.md, "Canary runs of a candidate agent image"). It runs a
+candidate agent image as one throwaway task in a running environment and
+changes nothing the environment deploys.
+
+Rejected: keeping the bridge as a stopgap (it would have had to be
+maintained against two components' internals); running the canary from a
+workstation (scenarios run in CI or as Jobs); and adding the canary to
+the nightly e2e component (it would reach a cluster only by upgrading the
+environment, which is what a canary exists to precede).
+
 ## 2026-11-20: The admin console lives in-tree in shipmind (#128)
 
 Clarifies 2026-10-20 ("A distribution, not a monorepo"). Design:

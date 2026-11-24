@@ -63,7 +63,7 @@ type Ax struct {
 	Atespace        string
 }
 
-func (a Ax) run(ctx context.Context, args ...string) (string, error) {
+func (a Ax) command(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	bin := a.Bin
 	if bin == "" {
 		bin = "ax"
@@ -75,9 +75,16 @@ func (a Ax) run(ctx context.Context, args ...string) (string, error) {
 	case a.Context != "":
 		conn = []string{"--context", a.Context}
 	default:
-		return "", errors.New("ax: neither a server nor a kube context")
+		return nil, errors.New("ax: neither a server nor a kube context")
 	}
-	cmd := exec.CommandContext(ctx, bin, append(append(conn, "-a", a.Atespace), args...)...) //nolint:gosec // fixed binary and arguments
+	return exec.CommandContext(ctx, bin, append(append(conn, "-a", a.Atespace), args...)...), nil //nolint:gosec // fixed binary and arguments
+}
+
+func (a Ax) run(ctx context.Context, args ...string) (string, error) {
+	cmd, err := a.command(ctx, args...)
+	if err != nil {
+		return "", err
+	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -194,7 +201,11 @@ type Result struct {
 
 	Answer  string   `json:"answer,omitempty"`
 	Missing []string `json:"missing,omitempty"`
-	CostUSD float64  `json:"cost_usd"`
+	// Cluster is the cluster a chat run asked about, and Unwanted the
+	// expect.absent patterns its answer matched.
+	Cluster  string   `json:"cluster,omitempty"`
+	Unwanted []string `json:"unwanted,omitempty"`
+	CostUSD  float64  `json:"cost_usd"`
 	// Superseded: a later message (lookout re-sending the incident)
 	// arrived before the answer settled, so Usage may include calls
 	// made for it.
@@ -231,6 +242,9 @@ type Result struct {
 type TrajectoryResult struct {
 	ToolCalls  []string `json:"tool_calls"`
 	ModelCalls int      `json:"model_calls,omitempty"`
+	// ToolErrors are the tool results that were errors, for a chat run,
+	// which fails on one whose tool never succeeded.
+	ToolErrors []string `json:"tool_errors,omitempty"`
 	Failures   []string `json:"failures,omitempty"`
 	Notes      []string `json:"notes,omitempty"`
 }

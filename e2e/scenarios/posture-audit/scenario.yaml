@@ -1,0 +1,86 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A chat scenario (#127): a person asks gke-chat for a posture review of
+# one cluster, and the posture-audit specialist must answer from lookout's
+# audit and leeway's report, both run inside the agent task with the
+# egress gateway's injected Google credentials.
+#
+# It breaks nothing and plants nothing, so what it proves is the path, not
+# the findings: both tools were called, neither call came back an error,
+# and the answer is about the cluster asked for. `shipmind scenario canary`
+# runs it against a candidate agent image in a running environment before
+# that image's pin moves.
+chat:
+  ask: |
+    Run a posture review of the cluster {{.Cluster}}: the static audit
+    and the live placement report. Summarize the findings by severity.
+    If either tool fails, or cannot reach or authenticate to the cluster,
+    begin your answer with the line "TOOL FAILURE" and name the tool.
+  # The main agent delegates; the audit and report calls are the
+  # specialist's.
+  specialists:
+    - posture-audit
+expect:
+  mentions:
+    - "{{.ClusterName}}"
+  # The line the question asks for when a tool did not work. A marker,
+  # because an audit's own findings talk about permissions and access;
+  # in capitals at the start of a line, because a good answer may say
+  # there were no tool failures.
+  absent:
+    - '(?m)^\W*(?-i:TOOL FAILURE)\b'
+  # A tool can answer and still have reached nothing: leeway returns a
+  # report in which a cluster it could not list carries status "error",
+  # and a report that covered no cluster. In an environment whose report
+  # sweeps several clusters, any one of them failing fails the run.
+  results:
+    - tool: report
+      absent:
+        - '"status":\s*"error"'
+        - '"clusters_succeeded":\s*0\b'
+        - '"clusters_failed":\s*[1-9]'
+  trajectory:
+    must_call:
+      - k8s_audit_all
+      # leeway's one tool, leeway_report behind its server prefix.
+      - report
+    never_call:
+      - patch_k8s_resource
+      - apply_k8s_manifest
+      - delete_k8s_resource
+      - create_cluster
+      - update_cluster
+      - create_node_pool
+      - update_node_pool
+      - cancel_operation
+    # One delegation, then a handful of reads; the bounds catch a runaway.
+    max_tool_calls: 15
+    max_model_calls: 15
+  # Reported, not gated (#90).
+  diagnosis: |
+    The agent ran both a static posture audit (lookout's k8s_audit_all)
+    and a live placement and ComputeClass report (leeway's report) against
+    the cluster {{.Cluster}}, and both reached it. A good answer names
+    that cluster, summarizes real findings from each tool by severity (or
+    says a tool found none), and quotes any remediation leeway offered
+    rather than inventing one. An answer that reports the cluster as
+    unreachable, reports an authentication or permission failure calling
+    the tools, or covers a different cluster is wrong.
+limits:
+  # From applying the task to its agent accepting a session: a cold start.
+  start: 5m
+  # From the question to a settled answer. An audit of every namespace
+  # plus a report takes a few minutes.
+  diagnose: 10m

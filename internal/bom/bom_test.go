@@ -272,4 +272,8 @@ func TestRepoVersionsFile(t *testing.T) {
 	if len(lw.Manifests) != 0 || len(lw.Files) != 0 {
 		t.Errorf("leeway must not vendor LeewayPolicy or ClusterLeewayPolicy CRDs: manifests=%v files=%v", lw.Manifests, lw.Files)
 	}
+	lo, ok := f.Component("k8s-lookout")
+	if !ok || lo.Source != "github.com/go-steer/k8s-lookout" || len(lo.Images) != 1 {
+		t.Errorf("k8s-lookout component = %+v, ok=%v", lo, ok)
+	}
 }

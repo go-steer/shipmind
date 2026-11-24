@@ -19,6 +19,11 @@
 #                   ax-runner pin in versions.yaml
 #   core-agent      built from core-agent at the core-agent pin, a full
 #                   commit SHA, checked after the fetch
+#   lookout         built (-tags allproviders) from k8s-lookout at its pin
+#                   in versions.yaml; gke-chat runs lookout mcp
+#                   --profile=audit as a stdio MCP server (#127)
+#   leeway          built from leeway at its pin in versions.yaml; gke-chat
+#                   runs leeway mcp as a stdio MCP server (#127)
 #   /opt/core-agent/recipes/<bundle>  agents/sre-triage's mast bundles,
 #                   converted at build time by that same core-agent
 #                   (`core-agent config import-workload`), so the image
@@ -32,7 +37,7 @@
 #                   its own content root (.agents/roots/<name>/mcp.json,
 #                   core-agent#1498) and the main agent no MCP servers;
 #                   the build checks both, then gives the main agent only
-#                   the tools
+#                   the gke tools
 #                   agents/sre-triage/ax/core-agent-<bundle>.main-tools.json
 #                   names (a bundle with no such file gets none). A bundle
 #                   with core-agent-<bundle>.fold-specialist runs the
@@ -99,11 +104,71 @@ RUN ldflags="-s -w -X github.com/go-steer/core-agent/v3/internal/version.Version
     go build -trimpath -ldflags "$ldflags" -o /out/core-agent ./cmd/core-agent \
  && CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o /usr/local/bin/core-agent ./cmd/core-agent
 
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS lookout
+ARG LOOKOUT_REPO
+ARG LOOKOUT_VERSION
+ARG LOOKOUT_COMMIT
+ARG TARGETOS
+ARG TARGETARCH
+RUN test -n "$LOOKOUT_REPO" && test -n "$LOOKOUT_VERSION" && test -n "$LOOKOUT_COMMIT" && apk add --no-cache git
+WORKDIR /src
+RUN git init -q . \
+ && case "$LOOKOUT_VERSION" in \
+      v*) git fetch -q --depth=1 "$LOOKOUT_REPO" "refs/tags/${LOOKOUT_VERSION}:refs/tags/${LOOKOUT_VERSION}" \
+       && git checkout -q "refs/tags/${LOOKOUT_VERSION}" ;; \
+      *)  git fetch -q --depth=1 "$LOOKOUT_REPO" "$LOOKOUT_VERSION" \
+       && git checkout -q FETCH_HEAD ;; \
+    esac \
+ && sha="$(git rev-parse HEAD)" \
+ && test "$sha" = "$LOOKOUT_COMMIT"
+RUN go mod download
+RUN sha="$(git rev-parse HEAD)" \
+ && ldflags="-s -w -X github.com/go-steer/k8s-lookout/internal/version.Version=${LOOKOUT_VERSION} -X github.com/go-steer/k8s-lookout/internal/version.Commit=${sha}" \
+ && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -tags allproviders -trimpath -ldflags "$ldflags" -o /out/lookout ./cmd/lookout \
+ && CGO_ENABLED=0 go build -tags allproviders -trimpath -ldflags "$ldflags" -o /usr/local/bin/lookout ./cmd/lookout \
+ && /usr/local/bin/lookout version | grep -qF "$LOOKOUT_VERSION"
+
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS leeway
+ARG LEEWAY_REPO
+ARG LEEWAY_VERSION
+ARG LEEWAY_COMMIT
+ARG TARGETOS
+ARG TARGETARCH
+RUN test -n "$LEEWAY_REPO" && test -n "$LEEWAY_VERSION" && test -n "$LEEWAY_COMMIT" && apk add --no-cache git
+WORKDIR /src
+RUN git init -q . \
+ && case "$LEEWAY_VERSION" in \
+      v*) git fetch -q --depth=1 "$LEEWAY_REPO" "refs/tags/${LEEWAY_VERSION}:refs/tags/${LEEWAY_VERSION}" \
+       && git checkout -q "refs/tags/${LEEWAY_VERSION}" ;; \
+      *)  git fetch -q --depth=1 "$LEEWAY_REPO" "$LEEWAY_VERSION" \
+       && git checkout -q FETCH_HEAD ;; \
+    esac \
+ && sha="$(git rev-parse HEAD)" \
+ && test "$sha" = "$LEEWAY_COMMIT"
+RUN go mod download
+RUN sha="$(git rev-parse HEAD)" \
+ && ldflags="-s -w -X github.com/go-steer/leeway/internal/version.Version=${LEEWAY_VERSION} -X github.com/go-steer/leeway/internal/version.Commit=${sha}" \
+ && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags "$ldflags" -o /out/leeway ./cmd/leeway \
+ && CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o /usr/local/bin/leeway ./cmd/leeway \
+ && /usr/local/bin/leeway version | grep -qF "$LEEWAY_VERSION"
+
 FROM --platform=$BUILDPLATFORM alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f AS recipes
 RUN apk add --no-cache jq curl
 COPY --from=core-agent /usr/local/bin/core-agent /usr/local/bin/core-agent
+COPY --from=lookout /usr/local/bin/lookout /usr/local/bin/lookout
+COPY --from=leeway /usr/local/bin/leeway /usr/local/bin/leeway
 COPY agents/sre-triage /in
+# The posture servers, run exactly as gke-chat's mcp.json runs them, with no
+# network and no credentials: lookout must offer its cluster-choice tool
+# (multi-cluster mode) and the audit tools, leeway its report tool. The
+# boot below then has core-agent list both servers' tools for real.
 RUN set -e; \
+    lookout $(jq -r '.servers.lookout.args | join(" ")' /in/gke-chat/mcp.json) --list-tools > /tmp/lookout-tools; \
+    grep -q '^k8s_list_clusters ' /tmp/lookout-tools; \
+    grep -q '^k8s_audit_all ' /tmp/lookout-tools; \
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | leeway $(jq -r '.servers.leeway.args | join(" ")' /in/gke-chat/mcp.json) | grep -q '"name":"report"'; \
     for b in gke-triage-f gke-chat; do \
       core-agent config import-workload -o "/out/$b" "/in/$b"; \
       over="/in/ax/core-agent-$b.json"; \
@@ -138,9 +203,9 @@ RUN set -e; \
       main="/in/ax/core-agent-$b.main-tools.json"; \
       if [ -f "$main" ] && [ "$(jq length "$main")" -gt 0 ]; then \
         [ -f "$mcp" ] || cp "/in/$b/mcp.json" "$mcp"; \
-        jq --slurpfile t "$main" '.servers |= map_values(.tools = $t[0])' "$mcp" > /tmp/mcp.json; \
+        jq --slurpfile t "$main" '.servers = {"gke": (.servers.gke | .tools = $t[0])}' "$mcp" > /tmp/mcp.json; \
         mv /tmp/mcp.json "$mcp"; \
-        if ! jq -e --slurpfile t "$main" '[.servers[].tools] | all(. == $t[0])' "$mcp" >/dev/null; then echo "recipe $b: main agent's tools aren't $(cat "$main")"; exit 1; fi; \
+        if ! jq -e --slurpfile t "$main" '(.servers | keys) == ["gke"] and .servers.gke.tools == $t[0]' "$mcp" >/dev/null; then echo "recipe $b: main agent's tools aren't $(cat "$main")"; exit 1; fi; \
       else \
         rm -f "$mcp"; \
       fi; \
@@ -151,7 +216,9 @@ RUN set -e; \
         diff -u "/tmp/want-$b.json" "/tmp/got-$b.json" || true; \
         exit 1; \
       fi; \
-    done
+    done; \
+    jq -e '(.servers | keys | sort) == ["leeway", "lookout"]' /out/gke-chat/.agents/roots/posture-audit/mcp.json >/dev/null; \
+    jq -e '(.servers | keys) == ["gke"]' /out/gke-chat/.agents/roots/_fallback/mcp.json >/dev/null
 # The Host Substrate's router sends (switchboard's and lookout's
 # default router URL; the nightly's too).
 ARG ROUTER_HOST=atenet-router.ate-system.svc.cluster.local
@@ -179,6 +246,8 @@ RUN set -e; mkdir -p /tmp/content; \
       if [ "$code" != 200 ]; then echo "recipe $label: GET /sessions as the router ($ROUTER_HOST) answered $code, not 200"; exit 1; fi; \
       if grep -q "workspace trust:.*is untrusted" "/tmp/smoke-$label.log"; then echo "recipe $label: workspace trust clamped config:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
       if grep -q "is not deliverable" "/tmp/smoke-$label.log"; then echo "recipe $label: alert target was dropped:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if grep -Eq "tools allowlist names |has no tool matching " "/tmp/smoke-$label.log"; then echo "recipe $label: unmatched MCP tool allowlist:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if grep -Eq "mcp: [0-9]+ server\(s\), [1-9][0-9]* down" "/tmp/smoke-$label.log"; then echo "recipe $label: subagent MCP server failed to start:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
       echo "recipe $label: core-agent starts and answers the router"; \
     }; \
     for b in gke-triage-f gke-chat; do \
@@ -189,16 +258,18 @@ RUN set -e; mkdir -p /tmp/content; \
 
 # Distroless nonroot (UID/GID 65532): carries CA certificates, tzdata and
 # /etc/passwd, with no shell, package manager, git or curl. ax-task-runner
-# execs core-agent directly, and core-agent's vcs_* tools use go-git in
-# process rather than shelling out to git.
+# execs core-agent directly, core-agent's vcs_* tools use go-git in process,
+# and core-agent runs lookout mcp and leeway mcp directly over stdio.
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 LABEL org.opencontainers.image.source="https://github.com/go-steer/shipmind" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.description="core-agent as an ax task image, with the shipmind sre-triage agent bundles."
+      org.opencontainers.image.description="core-agent as an ax task image, with lookout, leeway, and the shipmind sre-triage agent bundles."
 
 COPY --from=ax-runner /out/ax-task-runner /usr/local/bin/ax-task-runner
 COPY --from=core-agent /out/core-agent /usr/local/bin/core-agent
+COPY --from=lookout /out/lookout /usr/local/bin/lookout
+COPY --from=leeway /out/leeway /usr/local/bin/leeway
 COPY --from=recipes /out /opt/core-agent/recipes
 
 USER 65532:65532

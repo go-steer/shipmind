@@ -39,6 +39,13 @@ func TestRepoScenarios(t *testing.T) {
 			t.Errorf("%v", err)
 			continue
 		}
+		if s.Chat != nil {
+			// A chat scenario breaks nothing; its question must render.
+			if ask, err := s.ForCluster("projects/example-project/locations/us-central1/clusters/demo").Ask(RunName(s.Name, t0)); err != nil || strings.Contains(ask, "{{") {
+				t.Errorf("%s: question %q: %v", s.Name, ask, err)
+			}
+			continue
+		}
 		m, err := s.Manifest(RunName(s.Name, t0))
 		if err != nil {
 			t.Errorf("%s: %v", s.Name, err)
@@ -296,13 +303,14 @@ func TestToolMatches(t *testing.T) {
 	}
 }
 
-// The scenarios' tool catalog is the bundles' tool_catalog, so a
-// trajectory can't name a tool that doesn't exist; a typo is refused.
+// The scenarios' tool catalog is the union of the bundles' tool_catalogs, so
+// a trajectory can't name a tool that doesn't exist; a typo is refused.
 func TestToolCatalog(t *testing.T) {
 	known, err := loadTools("../../e2e/scenarios/tools.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
+	inBundles := map[string]bool{}
 	for _, bundle := range []string{"gke-triage-f", "gke-chat"} {
 		b, err := os.ReadFile("../../agents/sre-triage/" + bundle + "/workload.yaml")
 		if err != nil {
@@ -318,17 +326,24 @@ func TestToolCatalog(t *testing.T) {
 		if err := yaml.Unmarshal(b, &w); err != nil {
 			t.Fatal(err)
 		}
-		var names []string
+		if len(w.Catalog.Tools) == 0 {
+			t.Errorf("%s: tool_catalog has no tools", bundle)
+		}
+		seen := map[string]bool{}
 		for _, tl := range w.Catalog.Tools {
-			names = append(names, tl.Name)
-		}
-		if len(names) == 0 || len(names) != len(known) {
-			t.Errorf("%s: tool_catalog has %d tools, e2e/scenarios/tools.yaml %d", bundle, len(names), len(known))
-		}
-		for _, n := range names {
-			if !known[n] {
-				t.Errorf("%s: tool %q isn't in e2e/scenarios/tools.yaml", bundle, n)
+			if seen[tl.Name] {
+				t.Errorf("%s: tool %q listed twice in tool_catalog", bundle, tl.Name)
 			}
+			seen[tl.Name] = true
+			inBundles[tl.Name] = true
+			if !known[tl.Name] {
+				t.Errorf("%s: tool %q isn't in e2e/scenarios/tools.yaml", bundle, tl.Name)
+			}
+		}
+	}
+	for n := range known {
+		if !inBundles[n] {
+			t.Errorf("e2e/scenarios/tools.yaml lists %q, which no bundle declares", n)
 		}
 	}
 

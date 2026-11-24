@@ -16,6 +16,8 @@ mode: single_session
 tool_catalog:
   mcp:
     - server: gke
+    - server: lookout
+    - server: leeway
 
   # Every tool this workload can reach, classified. mast's predicate is
   # default-deny-unknown, and ADK's mcptoolset drops MCP's own
@@ -71,6 +73,37 @@ tool_catalog:
       mutating: false
     - name: get_operation
       mutating: false
+    # Posture reads — lookout mcp --profile=audit and leeway report (#127).
+    - name: k8s_list_clusters
+      mutating: false
+    - name: k8s_audit_all
+      mutating: false
+    - name: k8s_audit_workloads
+      mutating: false
+    - name: k8s_audit_hardening
+      mutating: false
+    - name: k8s_audit_rbac
+      mutating: false
+    - name: k8s_audit_netpol
+      mutating: false
+    - name: k8s_audit_namespaces
+      mutating: false
+    - name: k8s_audit_cluster
+      mutating: false
+    - name: k8s_audit_upgrades
+      mutating: false
+    - name: k8s_audit_computeclass
+      mutating: false
+    - name: k8s_audit_ai
+      mutating: false
+    - name: k8s_audit_policy
+      mutating: false
+    - name: k8s_audit_exemptions
+      mutating: false
+    - name: k8s_scan
+      mutating: false
+    - name: report
+      mutating: false
     # Kubernetes writes — the workload's actual remediation surface.
     - name: patch_k8s_resource
       mutating: true
@@ -93,6 +126,7 @@ tool_catalog:
       mutating: true
 
 specialists:
+  - posture-audit
   - _fallback
   # The one specialist that can change the cluster. Everything above it
   # diagnoses and stops — mast refuses to start this roster if a

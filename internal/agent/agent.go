@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"text/template"
 
 	"github.com/go-steer/shipmind/internal/env"
@@ -151,10 +152,59 @@ func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image, cfgPath, vc
 		"AttachToken":        t.Attach,
 		"IdleSuspend":        e.Agent.IdleSuspend(),
 		"ConfigPath":         cfgPath,
+		"TrustRecipe":        cfgPath != "" || bundle == ChatBundle,
+		"GoogleHosts":        googleEgressHosts(bundle, e.Agent.Clusters),
+		"PostureScope":       postureScope(bundle, e.Agent.Project, e.Agent.Clusters),
 		"EnableFileTools":    vcsSecret != "",
 		"VCSSecret":          vcsSecret,
 		"SwitchboardIngress": switchboardIngress,
 	})
+}
+
+func googleEgressHosts(bundle string, clusters []env.Cluster) string {
+	hosts := []string{"aiplatform.googleapis.com", "container.googleapis.com"}
+	if bundle != ChatBundle {
+		return strings.Join(hosts, ", ")
+	}
+	var wildcards []string
+	for _, c := range clusters {
+		parts := strings.Split(c.Path, "/")
+		if len(parts) == 6 && parts[0] == "projects" && parts[2] == "locations" && parts[3] != "" {
+			w := fmt.Sprintf("%q", "*."+parts[3]+".gke.goog")
+			if !slices.Contains(wildcards, w) {
+				wildcards = append(wildcards, w)
+			}
+		}
+	}
+	slices.Sort(wildcards)
+	hosts = append(hosts, wildcards...)
+	return strings.Join(hosts, ", ")
+}
+
+// postureScope is the project list leeway mcp sweeps when a report names
+// no cluster, for a chat task whose clusters span more than the agent's
+// own project: that project first, then the others, comma-separated. It
+// defaults to the agent's project alone, so an environment whose clusters
+// all live there gets "" and no setting.
+func postureScope(bundle, project string, clusters []env.Cluster) string {
+	if bundle != ChatBundle {
+		return ""
+	}
+	var others []string
+	for _, c := range clusters {
+		parts := strings.Split(c.Path, "/")
+		if len(parts) != 6 || parts[0] != "projects" || parts[1] == "" || parts[1] == project {
+			continue
+		}
+		if !slices.Contains(others, parts[1]) {
+			others = append(others, parts[1])
+		}
+	}
+	if len(others) == 0 {
+		return ""
+	}
+	slices.Sort(others)
+	return strings.Join(append([]string{project}, others...), ",")
 }
 
 func task(root string, e *env.Env, t Tokens, bundle string) ([]byte, error) {
