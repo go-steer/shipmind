@@ -72,6 +72,7 @@ commands:
   down      delete an environment's rendered objects (-yes; keeps namespaces and volumes unless -all)
   slack-app print an environment's Slack app manifest (switchboard's, under its names)
   scenario  run an end-to-end scenario (scenario run -h)
+  audit     run a scheduled posture sweep (audit run -h)
 `
 
 func main() {
@@ -92,6 +93,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runSlackApp(args, stdout, stderr)
 	case "scenario":
 		return runScenarioCmd(args, stdout, stderr)
+	case "audit":
+		return runAuditCmd(args, stdout, stderr)
 	case "-h", "-help", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -223,6 +226,10 @@ func runDeploy(cmd string, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	plan := &deploy.Plan{Env: e, Root: *root, Objects: res.Objects, Ref: res.Ref, Secrets: secretSource}
+	if err := deploy.Prepare(plan); err != nil {
+		fmt.Fprintf(stderr, "shipmind %s: %v\n", cmd, err)
+		return 1
+	}
 	if f, err := bom.Load(filepath.Join(*root, "versions.yaml")); err == nil {
 		if sub, ok := f.Component("substrate"); ok {
 			for _, img := range sub.Images {
@@ -235,7 +242,7 @@ func runDeploy(cmd string, args []string, stdout, stderr io.Writer) int {
 	}
 	c := newCluster(e.Context)
 	ctx := context.Background()
-	fmt.Fprintf(stdout, "%s: context %s, shipmind %s, %d objects rendered\n", dir, e.Context, res.Ref[:12], len(res.Objects))
+	fmt.Fprintf(stdout, "%s: context %s, shipmind %s, %d objects rendered\n", dir, e.Context, res.Ref[:12], len(plan.Objects))
 
 	switch cmd {
 	case "status":

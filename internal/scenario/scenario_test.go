@@ -40,11 +40,12 @@ func TestRepoScenarios(t *testing.T) {
 			continue
 		}
 		if s.Chat != nil {
-			// A chat scenario breaks nothing; its question must render.
 			if ask, err := s.ForCluster("projects/example-project/locations/us-central1/clusters/demo").Ask(RunName(s.Name, t0)); err != nil || strings.Contains(ask, "{{") {
 				t.Errorf("%s: question %q: %v", s.Name, ask, err)
 			}
-			continue
+			if s.Workload == "" {
+				continue
+			}
 		}
 		m, err := s.Manifest(RunName(s.Name, t0))
 		if err != nil {

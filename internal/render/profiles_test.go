@@ -41,9 +41,14 @@ const e2eDir = "../../deploy/e2e"
 // (deploy/switchboard/<platform>), held to the same invariants.
 const switchboardDir = "../../deploy/switchboard"
 
+// auditsDir holds scheduled posture sweeps environments opt into via
+// shipmind.yaml `audits` (deploy/audits/<profile>), held to the same invariants.
+const auditsDir = "../../deploy/audits"
+
 // profileParts returns every profile (deploy/profiles/<profile>), every
 // part directly under one (deploy/profiles/<profile>/<part>), every
-// end-to-end deployment (deploy/e2e/<profile>) and every switchboard
+// end-to-end deployment (deploy/e2e/<profile>), every scheduled audit
+// deployment (deploy/audits/<profile>) and every switchboard
 // gateway (deploy/switchboard/<platform>).
 func profileParts(t *testing.T) []string {
 	t.Helper()
@@ -53,6 +58,7 @@ func profileParts(t *testing.T) []string {
 		filepath.Join(profilesDir, "*", "*", "kustomization.yaml"),
 		filepath.Join(e2eDir, "*", "kustomization.yaml"),
 		filepath.Join(e2eDir, "*", "*", "kustomization.yaml"),
+		filepath.Join(auditsDir, "*", "kustomization.yaml"),
 		filepath.Join(switchboardDir, "*", "kustomization.yaml"),
 	} {
 		matches, err := filepath.Glob(pattern)
@@ -211,7 +217,7 @@ func TestSubstrateAxPostgresPersists(t *testing.T) {
 // kustomization is named kustomization.yaml, so nothing hides from this
 // check (or from profileParts) under another name kustomize accepts.
 func TestProfilesHaveNoRemoteResources(t *testing.T) {
-	for _, root := range []string{profilesDir, e2eDir, switchboardDir} {
+	for _, root := range []string{profilesDir, e2eDir, auditsDir, switchboardDir} {
 		testNoRemote(t, root)
 	}
 }
@@ -696,6 +702,7 @@ func TestSubstrateRouterClientsMountMTLS(t *testing.T) {
 		{filepath.Join(profilesDir, "substrate"), "Deployment", "substrate-scope", "substrate-scope"},
 		{filepath.Join(profilesDir, "..", "e2e", "substrate"), "CronJob", "shipmind-e2e", "missing-env"},
 		{filepath.Join(profilesDir, "..", "e2e", "substrate"), "CronJob", "shipmind-e2e", "oom-killed"},
+		{filepath.Join(auditsDir, "substrate"), "CronJob", "shipmind-audits", "posture-audit"},
 		{filepath.Join(switchboardDir, "slack"), "Deployment", "switchboard", "switchboard"},
 	} {
 		o, ok := build(t, c.dir).Find(c.kind, c.ns, c.name)
@@ -721,5 +728,62 @@ func TestSubstrateRouterClientsMountMTLS(t *testing.T) {
 				t.Errorf("%s %s/%s: volumes lack %q", c.kind, c.ns, c.name, want)
 			}
 		}
+	}
+}
+
+func TestSubstratePostureAuditsAndConfigureCronJob(t *testing.T) {
+	objs := build(t, filepath.Join(auditsDir, "substrate"))
+	pvc, ok := objs.Find("PersistentVolumeClaim", AuditNamespace, "posture-ledger")
+	if !ok {
+		t.Fatal("no PersistentVolumeClaim shipmind-audits/posture-ledger")
+	}
+	if storage, _ := pvc.Pipe(yaml.Lookup("spec", "resources", "requests", "storage")); storage == nil || yaml.GetValue(storage) == "" {
+		t.Error("posture-ledger PVC has no storage request")
+	}
+	if _, ok := objs.Find("Role", "ate-credentials", "shipmind-audits-google-token"); !ok {
+		t.Error("no Role ate-credentials/shipmind-audits-google-token")
+	}
+	rb, ok := objs.Find("RoleBinding", "ate-credentials", "shipmind-audits-google-token")
+	if !ok {
+		t.Fatal("no RoleBinding ate-credentials/shipmind-audits-google-token")
+	}
+	if err := checkBinding(rb, "Role", "shipmind-audits-google-token", AuditNamespace, "shipmind-audits"); err != nil {
+		t.Errorf("RoleBinding shipmind-audits-google-token: %v", err)
+	}
+	const overrideImg = "ghcr.io/go-steer/shipmind/e2e-runner@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if err := ConfigureAuditCronJob(objs, "0 6 * * *", true, overrideImg); err != nil {
+		t.Fatalf("ConfigureAuditCronJob: %v", err)
+	}
+	cj, _ := objs.Find("CronJob", AuditNamespace, AuditCronJob)
+	sched, _ := cj.Pipe(yaml.Lookup("spec", "schedule"))
+	susp, _ := cj.Pipe(yaml.Lookup("spec", "suspend"))
+	if yaml.GetValue(sched) != "0 6 * * *" || yaml.GetValue(susp) != "true" {
+		t.Errorf("schedule=%q suspend=%q", yaml.GetValue(sched), yaml.GetValue(susp))
+	}
+	imgs, err := objs.Images()
+	if err != nil || len(imgs) != 1 || imgs[0].Ref != overrideImg {
+		t.Errorf("imgs = %+v, %v", imgs, err)
+	}
+	if err := ConfigureAuditCronJob(Objects{}, "0 6 * * *", false, ""); err == nil {
+		t.Error("ConfigureAuditCronJob on empty Objects succeeded")
+	}
+	noSpec, _ := yaml.Parse("apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: posture-audit\n  namespace: shipmind-audits\n")
+	if err := ConfigureAuditCronJob(Objects{Object{noSpec}}, "0 6 * * *", false, ""); err == nil {
+		t.Error("ConfigureAuditCronJob without spec succeeded")
+	}
+	noCtr, _ := yaml.Parse("apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: posture-audit\n  namespace: shipmind-audits\nspec:\n  schedule: '* * * * *'\n")
+	if err := ConfigureAuditCronJob(Objects{Object{noCtr}}, "0 6 * * *", false, overrideImg); err == nil {
+		t.Error("ConfigureAuditCronJob without audit container succeeded")
+	}
+
+	// Switchboard's NetworkPolicy admits posture-audit pods to :8080 ingress.
+	swObjs := build(t, filepath.Join(switchboardDir, "slack"))
+	np, ok := swObjs.Find("NetworkPolicy", "switchboard", "switchboard")
+	if !ok {
+		t.Fatal("no NetworkPolicy switchboard/switchboard")
+	}
+	npYAML, err := np.String()
+	if err != nil || !strings.Contains(npYAML, "shipmind-audits") {
+		t.Errorf("switchboard NetworkPolicy does not admit shipmind-audits:\n%s", npYAML)
 	}
 }

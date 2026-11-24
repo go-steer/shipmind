@@ -1,0 +1,72 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A seeded placement-posture scenario (#127 §4) for multi-zone clusters:
+# plants a running 4-replica Deployment in triage-lab whose preferred
+# hostname podAffinity packs all replicas into a single zone with no
+# topologySpreadConstraints, waits for the pods to reach Running, then
+# asks gke-chat's posture-audit specialist to run leeway's live placement
+# report and quote leeway's deterministic GitOps remediation YAML patch.
+namespace: triage-lab
+workload: workload.yaml
+chat:
+  ask: |
+    Run leeway's live placement report on cluster `{{.Cluster}}` for
+    Deployment `{{.Name}}` in namespace `{{.Namespace}}`, summarize its
+    zone placement drift finding, and quote the declarative
+    `topologySpreadConstraints` GitOps remediation YAML patch.
+    If leeway fails or cannot authenticate to the cluster, begin your
+    answer with the line "TOOL FAILURE" and name the tool.
+  specialists:
+    - posture-audit
+expect:
+  mentions:
+    - "{{.Name}}"
+    - "topologySpreadConstraints"
+    - 'topology\.kubernetes\.io/zone'
+  absent:
+    - '(?m)^\W*(?-i:TOOL FAILURE)\b'
+  results:
+    - tool: report
+      absent:
+        - '"status":\s*"error"'
+        - '"clusters_succeeded":\s*0\b'
+        - '"clusters_failed":\s*[1-9]'
+  trajectory:
+    must_call:
+      - report
+    never_call:
+      - patch_k8s_resource
+      - apply_k8s_manifest
+      - delete_k8s_resource
+      - create_cluster
+      - update_cluster
+      - create_node_pool
+      - update_node_pool
+      - cancel_operation
+    max_tool_calls: 15
+    max_model_calls: 15
+  diagnosis: |
+    Deployment {{.Name}} in namespace {{.Namespace}} on multi-zone cluster
+    {{.Cluster}} runs 4 replicas packed into a single zone by a preferred
+    kubernetes.io/hostname podAffinity with no topologySpreadConstraints on
+    topology.kubernetes.io/zone. leeway's report flags live placement drift
+    (relocation >= 2, drift >= 0.50) and returns a deterministic
+    manifest_patch adding topologySpreadConstraints on
+    topology.kubernetes.io/zone matching app={{.Name}}. A good answer cites
+    {{.Name}} and quotes that GitOps YAML patch without mutating the cluster
+    directly.
+limits:
+  start: 5m
+  diagnose: 10m

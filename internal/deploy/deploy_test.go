@@ -99,7 +99,7 @@ func (f *fakeCluster) Diff(_ context.Context, m []byte) ([]string, error) {
 }
 
 func (f *fakeCluster) Namespaces(context.Context) ([]string, error) {
-	all := []string{"ns", "lookout-ax", "default", "ax-system", "switchboard"}
+	all := []string{"ns", "lookout-ax", "default", "ax-system", "switchboard", "shipmind-audits"}
 	var have []string
 	for _, n := range all {
 		if !contains(f.missingNS, n) {

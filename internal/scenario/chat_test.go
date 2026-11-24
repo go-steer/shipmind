@@ -708,3 +708,116 @@ func TestLoadChat(t *testing.T) {
 		}
 	}
 }
+
+type fakeSeededKube struct {
+	ops        *[]string
+	failApply  bool
+	readyAfter int
+	readyPolls int
+	readyCount int
+}
+
+func (f *fakeSeededKube) Apply(_ context.Context, m []byte, _ bool) (string, error) {
+	*f.ops = append(*f.ops, "apply fixture "+strings.SplitN(string(m), "\n", 2)[0])
+	if f.failApply {
+		return "", errors.New("kubectl apply failed")
+	}
+	return "applied", nil
+}
+
+func (f *fakeSeededKube) Delete(_ context.Context, _ []byte) (string, error) {
+	*f.ops = append(*f.ops, "delete fixture")
+	return "deleted", nil
+}
+
+func (f *fakeSeededKube) PodStarts(_ context.Context, _, _ string) ([]time.Time, error) {
+	f.readyPolls++
+	if f.readyPolls < f.readyAfter {
+		return []time.Time{time.Now()}, nil
+	}
+	n := f.readyCount
+	if n == 0 {
+		n = 4
+	}
+	out := make([]time.Time, n)
+	for i := range out {
+		out[i] = time.Now()
+	}
+	return out, nil
+}
+
+func TestRunChatSeededPostureScenarios(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. posture-workloads: plants Deployment fixture before Workspace/Task, checks lookout audit findings + remediation, cleans up fixture on exit.
+	w1, _, run1, o1 := newChatWorld(t)
+	sWork, err := Load("../../e2e/scenarios/posture-workloads")
+	if err != nil {
+		t.Fatalf("Load posture-workloads: %v", err)
+	}
+	// Missing ChatRun.Kube must fail fast before applying anything.
+	if _, err := RunChat(ctx, sWork, w1, w1, run1, o1); err == nil || !strings.Contains(err.Error(), "ChatRun.Kube") {
+		t.Fatalf("RunChat without Kube = %v, want ChatRun.Kube error", err)
+	}
+
+	runName := RunName(sWork.Name, w1.now)
+	w1.answer = fmt.Sprintf(
+		"Deployment `%s` in `triage-lab` is missing a `PodDisruptionBudget` (`minAvailable: 1`), `readinessProbe`, memory `limits`, and `runAsNonRoot: true`.",
+		runName,
+	)
+	w1.specialists = map[string]*Transcript{"posture-audit": {Events: []Event{
+		{Seq: 1, Author: "posture-audit", Calls: []string{"lookout_k8s_audit_workloads", "lookout_k8s_audit_hardening"}},
+		{Seq: 2, Author: "user", Results: []ToolResult{
+			{Tool: "lookout_k8s_audit_workloads", Output: `{"findings":2}`},
+			{Tool: "lookout_k8s_audit_hardening", Output: `{"findings":2}`},
+		}},
+	}}}
+	kube1 := &fakeSeededKube{ops: &w1.ops, readyAfter: 2, readyCount: 2}
+	run1.Kube = kube1
+	r1, err := RunChat(ctx, sWork, w1, w1, run1, o1)
+	if err != nil || !r1.Pass || !r1.Correct {
+		t.Fatalf("posture-workloads RunChat = %+v, %v", r1, err)
+	}
+	if kube1.readyPolls < 2 {
+		t.Errorf("expected waitFixtureReady to poll until 2 running pods, got %d polls", kube1.readyPolls)
+	}
+	if len(w1.ops) == 0 || !strings.HasPrefix(w1.ops[0], "apply fixture ") || w1.ops[len(w1.ops)-1] != "delete fixture" {
+		t.Errorf("fixture lifecycle ops = %v", w1.ops)
+	}
+
+	// 2. posture-placement: plants 4-replica Deployment with preferred hostname podAffinity, waits for 4 Running pods, runs leeway report.
+	w2, _, run2, o2 := newChatWorld(t)
+	sPlace, err := Load("../../e2e/scenarios/posture-placement")
+	if err != nil {
+		t.Fatalf("Load posture-placement: %v", err)
+	}
+	placeName := RunName(sPlace.Name, w2.now)
+	w2.answer = fmt.Sprintf(
+		"Deployment `%s` has live zone placement drift. Add `topologySpreadConstraints` on `topology.kubernetes.io/zone`:\n```yaml\ntopologySpreadConstraints:\n  - maxSkew: 1\n    topologyKey: topology.kubernetes.io/zone\n```",
+		placeName,
+	)
+	w2.specialists = map[string]*Transcript{"posture-audit": {Events: []Event{
+		{Seq: 1, Author: "posture-audit", Calls: []string{"leeway_report"}},
+		{Seq: 2, Author: "user", Results: []ToolResult{{Tool: "leeway_report", Output: leewayOK}}},
+	}}}
+	kube2 := &fakeSeededKube{ops: &w2.ops, readyAfter: 2, readyCount: 4}
+	run2.Kube = kube2
+	r2, err := RunChat(ctx, sPlace, w2, w2, run2, o2)
+	if err != nil || !r2.Pass || !r2.Correct {
+		t.Fatalf("posture-placement RunChat = %+v, %v", r2, err)
+	}
+	// Fixture timeout before Running pods fails cleanly and cleans up the planted fixture.
+	w3, _, run3, o3 := newChatWorld(t)
+	run3.Kube = &fakeSeededKube{ops: &w3.ops, readyAfter: 1000, readyCount: 4}
+	r3, err := RunChat(ctx, sPlace, w3, w3, run3, o3)
+	if err != nil || r3.Pass || !slices.ContainsFunc(r3.Failures, func(s string) bool { return strings.Contains(s, "running pods") }) {
+		t.Fatalf("timeout RunChat = %+v, %v", r3, err)
+	}
+	if w3.ops[len(w3.ops)-1] != "delete fixture" {
+		t.Errorf("timeout cleanup ops = %v", w3.ops)
+	}
+	// Run() incident runner still refuses seeded chat scenarios.
+	if r, err := Run(ctx, sPlace, nil, nil, nil, Options{}); r != nil || err == nil {
+		t.Errorf("Run on seeded chat scenario = %+v, %v", r, err)
+	}
+}

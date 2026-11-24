@@ -51,6 +51,7 @@ var packageLayer = map[string]int{
 	"internal/overlay":   1,
 	"internal/scenario":  1,
 	"internal/slackapp":  1,
+	"internal/audit":     2,
 	"internal/deploy":    2,
 	"cmd/shipmind":       3,
 }

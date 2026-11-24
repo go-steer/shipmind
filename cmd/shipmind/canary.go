@@ -101,6 +101,13 @@ func runCanary(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "shipmind scenario canary: %v\n", err)
 		return 1
 	}
+	if s.Workload != "" {
+		targetPath := selectedClusterPath(e, *clusterName)
+		if wantCtx := gkeContextForCluster(targetPath); wantCtx != "" && strings.HasPrefix(e.Context, "gke_") && e.Context != wantCtx {
+			fmt.Fprintf(stderr, "shipmind scenario canary: seeded chat scenario %s targets %s, which does not match environment context %q\n", name, targetPath, e.Context)
+			return 2
+		}
+	}
 	run, err := deploy.Canary(context.Background(), *root, e, newCluster(e.Context), deploy.CanaryOptions{
 		Image: *image, RunnerImage: *runner, Scenario: name, Cluster: *clusterName, DryRun: *dryRun,
 	})
@@ -136,4 +143,27 @@ func pinnedRunner(root string) (string, error) {
 		return "", errors.New("versions.yaml pins no e2e-runner image: pass -runner-image")
 	}
 	return c.Images[0].Ref, nil
+}
+
+func gkeContextForCluster(path string) string {
+	parts := strings.Split(strings.TrimSpace(path), "/")
+	if len(parts) != 6 || parts[0] != "projects" || parts[2] != "locations" || parts[4] != "clusters" {
+		return ""
+	}
+	return "gke_" + parts[1] + "_" + parts[3] + "_" + parts[5]
+}
+
+func selectedClusterPath(e *env.Env, name string) string {
+	if len(e.Agent.Clusters) == 0 {
+		return ""
+	}
+	if name == "" {
+		return e.Agent.Clusters[0].Path
+	}
+	for _, cl := range e.Agent.Clusters {
+		if cl.Name == name {
+			return cl.Path
+		}
+	}
+	return ""
 }

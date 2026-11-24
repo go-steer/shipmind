@@ -48,8 +48,9 @@ const (
 // What a drain scenario (#105) needs from the real ax CLI and kubectl,
 // checked here rather than on a live cluster.
 var (
-	_ scenario.TaskInspector = scenario.Ax{}
-	_ scenario.WorkerPods    = cluster.Kube{}
+	_ scenario.TaskInspector  = scenario.Ax{}
+	_ scenario.WorkerPods     = cluster.Kube{}
+	_ scenario.FixtureReadier = cluster.Kube{}
 )
 
 // scenarioKube is what a run needs from kubectl.
@@ -233,6 +234,12 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "shipmind scenario run: %v\n", err)
 		return 2
 	}
+	if chat != nil && s.Workload != "" && !*inCluster {
+		if wantCtx := gkeContextForCluster(chat.Cluster); wantCtx != "" && strings.HasPrefix(*kubeContext, "gke_") && *kubeContext != wantCtx {
+			fmt.Fprintf(stderr, "shipmind scenario run: seeded chat scenario %s targets %s, but -context %q points to a different cluster\n", s.Name, chat.Cluster, *kubeContext)
+			return 2
+		}
+	}
 	// A SIGTERM (a Job's deadline, a node drain) cancels the run, and the
 	// runner still cleans up: scenario.Run's cleanup outlives ctx.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
@@ -288,6 +295,7 @@ func runScenario(args []string, stdout, stderr io.Writer) int {
 	var res *scenario.Result
 	var runErr error
 	if chat != nil {
+		chat.Kube = kube
 		res, runErr = scenario.RunChat(ctx, s, newChatTasks(ax), newChatAgent(rt), *chat, opts)
 	} else {
 		res, runErr = scenario.Run(ctx, s, kube, newScenarioTasks(ax), newScenarioAgent(rt), opts)

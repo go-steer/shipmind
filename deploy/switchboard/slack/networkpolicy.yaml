@@ -13,9 +13,8 @@
 # limitations under the License.
 
 # Admit outbound-ingress POSTs (:8080) from Substrate's egress proxy in
-# ate-system alone: ax incident tasks cannot dial cluster Services
-# directly and reach switchboard only when their egress policy grants
-# http://switchboard.switchboard.svc.cluster.local:8080.
+# ate-system (for ax incident tasks) and from the scheduled posture-audit
+# CronJob pods in shipmind-audits (#127).
 - op: test
   path: /spec/ingress/0/ports/0/port
   value: metrics
@@ -29,6 +28,12 @@
         podSelector:
           matchLabels:
             app: atenet-egress
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: shipmind-audits
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: shipmind-audits
     ports:
       - port: ingress
         protocol: TCP
