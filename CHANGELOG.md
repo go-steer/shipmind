@@ -10,6 +10,17 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- Bumped `k8s-lookout` from `v0.44.0` to `v0.45.0` and `leeway` from
+  `v0.1.7` to `v0.1.8`. lookout `v0.45.0` removes its in-tree leeway
+  sources, flags, CRDs and signal kinds (the vendored watcher ClusterRole
+  loses its LeewayPolicy rule; the substrate profile used none of them) and
+  runs `audit computeclass` and `audit ai` inside `audit all`. It also
+  debounces `FailedScheduling` alerts, on by default here: an unschedulable
+  pod now opens an incident after 5 events over 2 minutes, or up to 15
+  minutes after a triggered scale-up, instead of on the first event. Both
+  releases can now serve MCP from inside an agent task with injected Google
+  auth and no wrapper (`lookout mcp`, `leeway mcp`), which the `gke-chat`
+  posture work builds on (#127).
 - Pinned `leeway` `v0.1.7` (`ghcr.io/go-steer/leeway:v0.1.7`) in
   `versions.yaml` for the substrate profile, ahead of the scheduled posture
   sweeps. Nothing renders it yet, and no `LeewayPolicy` or
