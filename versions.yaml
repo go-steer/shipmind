@@ -179,11 +179,11 @@ components:
 
   - name: k8s-lookout
     source: github.com/go-steer/k8s-lookout
-    version: v0.44.0
+    version: v0.45.0
     profiles: [substrate]
     images:
       - name: lookout
-        ref: ghcr.io/go-steer/lookout:v0.44.0-gke@sha256:21066cab523a9f1a49dcc290c96a4bce8bd59f85e072e36b9e82ec16062388c0
+        ref: ghcr.io/go-steer/lookout:v0.45.0-gke@sha256:d06dcb71f966336319cc2dc947bf2f8f1bc474a314d42dd4af096c243d6a7523
     manifests:
       - deploy/12-clusterrole-watcher.yaml
       - deploy/14-role-watcher-capacity.yaml
@@ -200,21 +200,36 @@ components:
       high-cardinality pod/event lists and copy-on-write graph edges for
       200k-pod watch/read scale (#825, #830, #831), includes steward
       v0.4.0 (#819), and builds on Go 1.26.11 for GO-2026-6859 (#826).
+      v0.45.0 removes the in-tree leeway sources, flags, CRDs and signal
+      kinds (#842; the vendored ClusterRole loses its LeewayPolicy rule),
+      gates FailedScheduling on autoscaler verdicts and a count/span
+      debounce (5 events over 2m, or up to 15m after a triggered scale-up;
+      on by default with the capacity source, which this profile enables)
+      (#835), reads
+      events.k8s.io/v1 Series counts (#833), runs audit computeclass and
+      audit ai inside audit all (#845), and gives lookout mcp injected
+      Google auth, CREDENTIAL_PROXY_URL routing, GKE cluster paths and
+      offline tools/list (#858), so an agent task can run it without a
+      wrapper. Upstream deprecates the root deploy/*.yaml paths vendored
+      here in favour of deploy/base/ (#852); they are still shipped.
 
   - name: leeway
     source: github.com/go-steer/leeway
-    version: v0.1.7
+    version: v0.1.8
     profiles: [substrate]
     images:
       - name: leeway
-        ref: ghcr.io/go-steer/leeway:v0.1.7@sha256:234b7ef85d814cee0e9bdc2f1231d9b2e28d9dde9d64e2e10bc9ce6b575f89c1
+        ref: ghcr.io/go-steer/leeway:v0.1.8@sha256:78c7beee085a0b20c63a090cf32a716be5de819977394e8dc46bb51216ecf80a
     note: >-
-      v0.1.7 (8e06005e318b015a634a019993239e43606fd054): runtime placement
+      v0.1.8 (40252b4c1d6e667e097a27a853050468269838a6): runtime placement
       skew and ComputeClass priority-rank posture (leeway report,
       leeway.report/v1alpha1), with deterministic Finding.Remediation YAML
       and addon-reconciled platform_managed guards (shipmind#127,
-      shipmind#134). Pinned ahead of the scheduled posture sweeps; nothing
-      in the substrate profile renders it yet. No LeewayPolicy or
+      shipmind#134). v0.1.8 adds leeway mcp (a stdio MCP server with one
+      read-only report tool), injected Google auth and a client-go
+      CREDENTIAL_PROXY_URL path (#37), so an agent task can run it
+      without a wrapper. Pinned ahead of the scheduled posture sweeps;
+      nothing in the substrate profile renders it yet. No LeewayPolicy or
       ClusterLeewayPolicy CRDs are vendored or installed on target clusters.
 
   - name: substrate-scope
