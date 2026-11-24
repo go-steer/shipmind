@@ -18,9 +18,16 @@ release is a tested set of component versions (see "Cutting a release" in
   and `leeway mcp` (live placement skew, `ComputeClass` priority-rank
   occupancy, and deterministic remediation) directly, with Substrate's
   injected Google auth and `*.<location>.gke.goog` egress for the
-  environment's clusters. Added a chat scenario kind so a candidate agent
-  image can be exercised as one throwaway task in a running environment
-  before its pin moves (#127).
+  environment's clusters (#127).
+- Added canary runs (#127): a chat scenario kind (`chat:` in
+  `scenario.yaml`, `e2e/scenarios/posture-audit`) and `shipmind scenario
+  canary -image <ref> <environment> <scenario>`, which runs a candidate
+  agent image as one throwaway task in a running environment, from a
+  one-off Job, and changes nothing the environment deploys. A chat run
+  fails when a tool errors and never succeeds, or when a successful
+  result matches a pattern the scenario rules out (`expect.results`: a
+  report that reached no cluster), so it shows whether the agent's tools
+  reach the cluster before the image's pin moves.
 - Bumped `k8s-lookout` from `v0.44.0` to `v0.45.0` and `leeway` from
   `v0.1.7` to `v0.1.8`. lookout `v0.45.0` removes its in-tree leeway
   sources, flags, CRDs and signal kinds (the vendored watcher ClusterRole

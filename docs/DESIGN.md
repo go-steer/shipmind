@@ -367,6 +367,7 @@ Config Studio (`shipmind.yaml`).
 | Unit | every PR | CI | shipmind's own Go code: pin rules, rendering, scenario scoring. |
 | Wiring | every PR (from M2) | kind, standalone profile | The components connect: a lookout event opens a session, switchboard posts (to a fake Slack), mast-web sees the session. Asserts plumbing, not diagnosis quality. |
 | Scenarios | nightly (from M1) | GKE, substrate profile, real model | Each scenario breaks a workload, waits for the platform's answer and scores it: the right diagnosis, the cost, idle suspend afterwards, wake without a restart. |
+| Canary | on demand, before an agent image's pin moves | GKE, a running environment, real model | A candidate agent image answers a chat scenario as a throwaway task, with nothing the environment deploys changed: its tools reach the cluster through the egress gateway. |
 | Release | before a tag | the nightly result for that commit | The pinned set works together. |
 
 ### How a scenario run is graded {#SM-5}
@@ -466,6 +467,62 @@ dials the router over https, presents the pod's certificate and
 verifies the router as `atenet-router.ate-system.svc`, re-reading both
 files as the kubelet rotates them (go-steer/purser's PKI client
 profile). Without them it speaks plain HTTP, as v0.5's router expects.
+
+### Canary runs of a candidate agent image {#SM-10}
+
+A new agent image is unproven until it has run on a cluster: the image
+build boots it with no network, and the nightly scenarios run only what
+an environment has already deployed. A canary run closes that gap
+without upgrading an environment. It answers one question: does this
+image, in the task shape this checkout renders, work behind this
+environment's egress gateway and against its clusters?
+
+**Chat scenarios.** A scenario with a `chat:` block breaks nothing.
+`shipmind scenario run` is handed an ax Task (and the Workspace it
+mounts), applies both, opens a session through Substrate's router, sends
+the scenario's question about one named cluster, waits for a settled
+answer and deletes both. It grades the answer on what it must and must
+not say, on the tools called by the main agent and by the scenario's
+specialists together (core-agent records a specialist's calls apart from
+the session's), and on those calls' results. A tool that errored and
+never succeeded fails the run; one that errored and then succeeded is
+noted. A scenario can also name patterns a tool's successful results
+must not contain (`expect.results`), for a tool that reports a cluster
+it could not reach inside a result that is not an error. The
+specialists' turns are archived with the session's.
+`e2e/scenarios/posture-audit` asks `gke-chat` for a posture review and
+requires lookout's audit and leeway's report to have been called, to
+have succeeded, and leeway's report to have reached the cluster (#127).
+
+**Launching one.** `shipmind scenario canary -image <ref> <environment>
+<scenario>` renders the environment's chat task and Workspace from the
+checkout it is run in, with the candidate image and under a name of
+their own, puts them in a Secret, and starts a one-off Job in
+`shipmind-e2e` that runs the scenario against them. The Job is cut from
+the nightly CronJob in the same checkout, so it has the nightly's service
+account and router identity and needs no permissions of its own. Once
+the Job exists it owns the Secret, and both go when the Job's TTL
+expires; a Job the cluster refuses takes its Secret with it.
+
+What a canary does not touch is the point: switchboard's task template,
+the Workspace its threads mount, lookout's incident template and the
+nightly CronJobs are as the environment deployed them. An agent image
+reaches an environment's threads only by its `agent.chatImage` moving,
+as before; the canary is the check to run first.
+
+It has limits. The run needs the nightly e2e component deployed (its
+namespace and service account), an `e2e-runner` image built from a commit
+that has the scenario, and the candidate agent image already published
+(CI publishes one for every main commit that touches its inputs). The
+Job is the base nightly pod, without an environment's own patches to
+that CronJob. A run whose pod is killed before it cleans up leaves its
+task and Workspace in the atespace, and nothing sweeps them; the command
+prints how to delete them. Result checks read what core-agent recorded,
+which is the tool's output as the model saw it: whole when small, pruned
+when large (long arrays keep their first and last ten entries), and a
+result summarized by a model can't be checked, so it fails the run. And
+a chat scenario plants no findings, so it proves the path to the
+cluster, not the quality of the answer.
 
 ## Milestones
 
