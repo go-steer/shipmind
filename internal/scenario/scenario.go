@@ -303,8 +303,18 @@ func (s *Scenario) checkChat(fail func(format string, args ...any)) {
 			}
 		}
 	}
-	if s.Namespace != "" || s.Workload != "" || s.Drain != nil {
-		fail("chat: a chat scenario breaks no workload: omit namespace, workload and drain")
+	if s.Drain != nil || (s.Namespace != "") != (s.Workload != "") {
+		fail("chat: a chat scenario breaks no workload: omit namespace, workload and drain (or set both namespace and workload for a seeded posture fixture)")
+	}
+	if s.Workload != "" {
+		if !nameRE.MatchString(s.Namespace) {
+			fail("namespace %q: want a namespace name", s.Namespace)
+		}
+		if filepath.IsAbs(s.Workload) || strings.Contains(s.Workload, "..") {
+			fail("workload %q: want a file in the scenario directory", s.Workload)
+		} else if _, err := os.Stat(filepath.Join(s.Dir, s.Workload)); err != nil {
+			fail("workload: %v", err)
+		}
 	}
 	if strings.TrimSpace(s.Chat.Ask) == "" {
 		fail("chat.ask: want the question to send")

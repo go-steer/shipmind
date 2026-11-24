@@ -1,0 +1,68 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A seeded posture scenario (#127 §4): plants a running multi-replica
+# Deployment in triage-lab that starts cleanly (so lookout watch opens no
+# reactive incident) while lacking a PodDisruptionBudget, readiness/liveness
+# probes, memory limits, and non-root container securityContext hardening.
+# Asks gke-chat's posture-audit specialist to audit the workload with
+# lookout's static posture tools and return declarative GitOps remediation
+# YAML without mutating the cluster.
+namespace: triage-lab
+workload: workload.yaml
+chat:
+  ask: |
+    Run a static Kubernetes workload and container hardening posture audit
+    of Deployment `{{.Name}}` in namespace `{{.Namespace}}` on cluster
+    `{{.Cluster}}` using lookout's audit tools, and provide declarative
+    GitOps remediation YAML snippets for every posture gap you find.
+    If any audit tool fails or cannot authenticate to the cluster, begin
+    your answer with the line "TOOL FAILURE" and name the tool.
+  specialists:
+    - posture-audit
+expect:
+  mentions:
+    - "{{.Name}}"
+    - "PodDisruptionBudget|minAvailable|maxUnavailable"
+    - "readinessProbe|livenessProbe"
+    - "limits|runAsNonRoot|allowPrivilegeEscalation"
+  absent:
+    - '(?m)^\W*(?-i:TOOL FAILURE)\b'
+  trajectory:
+    must_call:
+      - k8s_audit_all|k8s_audit_workloads|k8s_audit_hardening
+    never_call:
+      - patch_k8s_resource
+      - apply_k8s_manifest
+      - delete_k8s_resource
+      - create_cluster
+      - update_cluster
+      - create_node_pool
+      - update_node_pool
+      - cancel_operation
+    max_tool_calls: 15
+    max_model_calls: 15
+  diagnosis: |
+    Deployment {{.Name}} in namespace {{.Namespace}} on cluster {{.Cluster}}
+    runs 2 replicas cleanly without crashing, so reactive watch opens no
+    incident, but lookout's static posture audit reports workload and
+    container hardening gaps: no PodDisruptionBudget covering its selector,
+    no readinessProbe or livenessProbe, no memory/CPU limits, and no
+    non-root / privilege-escalation securityContext hardening. A good answer
+    cites those findings on {{.Name}} and gives declarative GitOps YAML
+    (a PodDisruptionBudget plus Deployment spec patches) rather than live
+    kubectl mutations.
+limits:
+  start: 5m
+  diagnose: 10m

@@ -244,3 +244,131 @@ func TestParseVCS(t *testing.T) {
 		t.Errorf("incidentAutoPR with idleSuspendAfter=5m: err = %v", err)
 	}
 }
+
+func TestParseAudits(t *testing.T) {
+	var nilAudits *Audits
+	if nilAudits.CronSchedule() != DefaultAuditSchedule || nilAudits.RefreshString() != DefaultAuditRefreshWindow ||
+		nilAudits.Refresh().Hours() != 168 || nilAudits.MinConsecutiveRuns() != DefaultAuditMinConsecutive ||
+		nilAudits.DomainKeys() != DefaultAuditDomainUnavailableKeys {
+		t.Fatal("nil Audits defaults mismatch")
+	}
+
+	e, err := Parse(strings.NewReader(strings.Replace(good, "expect:", "audits: {}\n"+slackOK+"  alertChannel: C0123456789\nexpect:", 1)))
+	if err != nil || e.Audits == nil {
+		t.Fatalf("Parse default audits: %+v, %v", e, err)
+	}
+	if e.Audits.CronSchedule() != DefaultAuditSchedule || e.Audits.RefreshString() != DefaultAuditRefreshWindow ||
+		e.Audits.Refresh().Hours() != 168 || e.Audits.MinConsecutiveRuns() != 1 || e.Audits.DomainKeys() != "" {
+		t.Errorf("default audits = %+v", e.Audits)
+	}
+
+	fullDoc := strings.Replace(good, "  clusters:\n", "  chatImage: registry.example.com/agent-core@"+digest+"\n  idleSuspendAfter: 6m\n  clusters:\n", 1)
+	fullDoc = strings.Replace(fullDoc, "expect:", `  vcs:
+    secret: gh-token
+    repositories:
+      - repository: org/gitops
+audits:
+  schedule: "*/30 1-5/2 * 1,6 0-5"
+  suspend: true
+  refreshWindow: 24h
+  minConsecutive: 2
+  exemptions: audits/exemptions.yaml
+  domainUnavailableKeys: topology.kubernetes.io/zone,node-role
+  autoPR: true
+  runnerImage: registry.example.com/runner@`+digest+`
+expect:`, 1)
+	full, err := Parse(strings.NewReader(fullDoc))
+	if err != nil || full.Audits == nil || !full.Audits.Suspend || !full.Audits.AutoPR {
+		t.Fatalf("Parse full audits: %+v, %v", full, err)
+	}
+	if full.Audits.CronSchedule() != "*/30 1-5/2 * 1,6 0-5" || full.Audits.RefreshString() != "24h" ||
+		full.Audits.Refresh().Hours() != 24 || full.Audits.MinConsecutiveRuns() != 2 ||
+		full.Audits.DomainKeys() != "topology.kubernetes.io/zone,node-role" {
+		t.Errorf("full audits = %+v", full.Audits)
+	}
+
+	// Explicit empty domainUnavailableKeys disables domain_unavailable.
+	emptyKeys := strings.Replace(good, "expect:", "audits:\n  domainUnavailableKeys: \"\"\nexpect:", 1)
+	if ek, err := Parse(strings.NewReader(emptyKeys)); err != nil || ek.Audits.DomainKeys() != "" {
+		t.Fatalf("empty domainUnavailableKeys: %+v, %v", ek, err)
+	}
+
+	// audits.autoPR with agent.vcs + incidentImage alone (no chatImage) is valid.
+	incAutoPR := strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent-core@"+digest+"\n  clusters:\n", 1)
+	incAutoPR = strings.Replace(incAutoPR, "expect:", "  vcs:\n    secret: gh-token\n    repositories:\n      - repository: org/gitops\naudits:\n  autoPR: true\nexpect:", 1)
+	if _, err := Parse(strings.NewReader(incAutoPR)); err != nil {
+		t.Errorf("audits.autoPR with incidentImage: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name, auditsYAML, extraAgent, want string
+	}{
+		{"bad cron field count", "  schedule: '0 5 * *'\n", "", "audits.schedule"},
+		{"bad cron leading space", "  schedule: ' 0 5 * * *'\n", "", "audits.schedule"},
+		{"bad cron syntax", "  schedule: 'abc 5 * * *'\n", "", "audits.schedule"},
+		{"bad cron out of range", "  schedule: '60 5 * * *'\n", "", "audits.schedule"},
+		{"bad cron reversed range", "  schedule: '10-5 5 * * *'\n", "", "audits.schedule"},
+		{"bad cron high range", "  schedule: '5-70 5 * * *'\n", "", "audits.schedule"},
+		{"refresh not duration", "  refreshWindow: 7d\n", "", "audits.refreshWindow"},
+		{"refresh too short", "  refreshWindow: 30m\n", "", "audits.refreshWindow"},
+		{"refresh too long", "  refreshWindow: 9000h\n", "", "audits.refreshWindow"},
+		{"minConsecutive zero", "  minConsecutive: 0\n", "", "audits.minConsecutive"},
+		{"minConsecutive high", "  minConsecutive: 11\n", "", "audits.minConsecutive"},
+		{"exemptions abs", "  exemptions: /etc/exemptions.yaml\n", "", "audits.exemptions"},
+		{"exemptions traversal", "  exemptions: ../exemptions.yaml\n", "", "audits.exemptions"},
+		{"exemptions uncleaned", "  exemptions: ./exemptions.yaml\n", "", "audits.exemptions"},
+		{"exemptions ext", "  exemptions: exemptions.json\n", "", "audits.exemptions"},
+		{"domain keys bad label", "  domainUnavailableKeys: 'bad key'\n", "", "audits.domainUnavailableKeys"},
+		{"domain keys bad prefix", "  domainUnavailableKeys: 'BAD_PREFIX/zone'\n", "", "audits.domainUnavailableKeys"},
+		{"domain keys duplicate", "  domainUnavailableKeys: 'zone,zone'\n", "", "audits.domainUnavailableKeys"},
+		{"runner image tag only", "  runnerImage: registry.example.com/runner:latest\n", "", "audits.runnerImage"},
+		{"autoPR without vcs", "  autoPR: true\n", "  chatImage: registry.example.com/agent-core@" + digest + "\n", "audits.autoPR: needs agent.vcs"},
+		{"autoPR without core-agent image", "  autoPR: true\n", "", "audits.autoPR: needs agent.chatImage or agent.incidentImage"},
+		{"autoPR short idle", "  autoPR: true\n", "  chatImage: registry.example.com/agent-core@" + digest + "\n  idleSuspendAfter: 3m\n", "want at least 5m when audits.autoPR is true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := good
+			if tc.extraAgent != "" {
+				doc = strings.Replace(doc, "  clusters:\n", tc.extraAgent+"  clusters:\n", 1)
+			}
+			if tc.name == "autoPR without core-agent image" || tc.name == "autoPR short idle" {
+				doc = strings.Replace(doc, "expect:", "  vcs:\n    secret: gh-token\n    repositories:\n      - repository: org/gitops\naudits:\n"+tc.auditsYAML+"expect:", 1)
+			} else {
+				doc = strings.Replace(doc, "expect:", "audits:\n"+tc.auditsYAML+"expect:", 1)
+			}
+			if _, err := Parse(strings.NewReader(doc)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadAuditExemptionsFile(t *testing.T) {
+	dir := t.TempDir()
+	doc := strings.Replace(good, "expect:", "audits:\n  exemptions: exemptions.yaml\nexpect:", 1)
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Missing exemptions file fails Load.
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), "audits.exemptions") {
+		t.Fatalf("Load missing exemptions = %v", err)
+	}
+	// Directory in place of exemptions file fails Load.
+	exPath := filepath.Join(dir, "exemptions.yaml")
+	if err := os.Mkdir(exPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("Load dir exemptions = %v", err)
+	}
+	if err := os.Remove(exPath); err != nil {
+		t.Fatal(err)
+	}
+	// Regular file succeeds.
+	if err := os.WriteFile(exPath, []byte("exemptions: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err != nil {
+		t.Fatalf("Load valid exemptions = %v", err)
+	}
+}

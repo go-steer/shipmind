@@ -1,0 +1,163 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Scheduled deterministic posture sweeps on the substrate profile (#127):
+# `lookout audit` and `leeway report` run on a CronJob, persisting their
+# deduplication ledger on a ReadWriteOnce volume so clean or already-reported
+# sweeps exit 0 with zero LLM tokens and zero awake ax actors. `shipmind up`
+# renders Secret shipmind-audits/posture-audit and stamps the schedule and
+# suspend fields from shipmind.yaml's `audits` block.
+#
+# When `audits.autoPR: true` on Substrate v1.0+, the CronJob wakes a short-lived
+# ax audit task via `atenet-router:8080` using its podidentity mTLS bundle, so
+# Substrate's `ATE_INGRESS_ALLOWED_SPIFFE_IDS` must include
+# `spiffe://cluster.local/ns/shipmind-audits/sa/shipmind-audits` (re-run
+# `ate-setup` / `substrate-install.sh` to add it).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shipmind-audits
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shipmind-audits
+  namespace: shipmind-audits
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shipmind-audits-google-token
+  namespace: ate-credentials
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["google-token"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shipmind-audits-google-token
+  namespace: ate-credentials
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: shipmind-audits-google-token
+subjects:
+  - kind: ServiceAccount
+    name: shipmind-audits
+    namespace: shipmind-audits
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: posture-ledger
+  namespace: shipmind-audits
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: posture-audit
+  namespace: shipmind-audits
+  labels:
+    app.kubernetes.io/name: shipmind-audits
+    shipmind.dev/audit: posture
+spec:
+  schedule: "17 5 * * *"
+  suspend: false
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: shipmind-audits
+        spec:
+          serviceAccountName: shipmind-audits
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 120
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: audit
+              image: ghcr.io/go-steer/shipmind/e2e-runner:6139d97067c82b3dc9b02fb686f76f3588d1c4fb@sha256:95109eebf507b1e97651e136c660c42bdb6c63185a118751452a7b2132968bf2
+              args:
+                - audit
+                - run
+                - -in-cluster
+                - -config=/etc/shipmind-audits/config.json
+                - -ledger=/var/lib/shipmind-audits/ledger.json
+                - -router-cert=/run/podidentity/credential-bundle.pem
+                - -router-trust=/run/servicedns-ca/trust-bundle.pem
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+              volumeMounts:
+                - name: ledger
+                  mountPath: /var/lib/shipmind-audits
+                - name: config
+                  mountPath: /etc/shipmind-audits
+                  readOnly: true
+                - name: podidentity
+                  mountPath: /run/podidentity
+                  readOnly: true
+                - name: servicedns-ca
+                  mountPath: /run/servicedns-ca
+                  readOnly: true
+          volumes:
+            - name: ledger
+              persistentVolumeClaim:
+                claimName: posture-ledger
+            - name: config
+              secret:
+                secretName: posture-audit
+            - name: podidentity
+              projected:
+                sources:
+                  - podCertificate:
+                      signerName: podidentity.podcert.ate.dev/identity
+                      keyType: ECDSAP256
+                      credentialBundlePath: credential-bundle.pem
+            - name: servicedns-ca
+              projected:
+                sources:
+                  - clusterTrustBundle:
+                      signerName: servicedns.podcert.ate.dev/identity
+                      labelSelector:
+                        matchLabels:
+                          podcert.ate.dev/canarying: live
+                      path: trust-bundle.pem

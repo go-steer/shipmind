@@ -423,6 +423,13 @@ const cleanupTimeout = 3 * time.Minute
 // cancelled) or couldn't start. Cleanup (the workload first, so lookout
 // stops sending, then the task) runs on every path, on a context that
 // survives ctx's cancellation.
+func incidentManifest(s *Scenario, name string) ([]byte, error) {
+	if s.Chat != nil {
+		return nil, fmt.Errorf("%s is a chat scenario; use RunChat", s.Name)
+	}
+	return s.Manifest(name)
+}
+
 func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o Options) (r *Result, err error) {
 	o.defaults()
 	start := o.Now()
@@ -502,7 +509,7 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		o.Log("archived %d files under %s", len(files), dir)
 	}()
 
-	manifest, err := s.Manifest(name)
+	manifest, err := incidentManifest(s, name)
 	if err != nil {
 		return nil, err
 	}

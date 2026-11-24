@@ -10,6 +10,23 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- Added scheduled posture audits for the `substrate` profile (#127):
+  declarative `audits` configuration in `shipmind.yaml` (`schedule`
+  defaulting to daily `17 5 * * *`, `refreshWindow` defaulting to `168h`,
+  optional `minConsecutive` dwell threshold, `exemptions`,
+  `domainUnavailableKeys` defaulting to disabled for scale-to-zero zones,
+  and `autoPR`), `deploy/audits/substrate` CronJob + PVC + RBAC + Secret
+  reconciliation across `shipmind status`, `up`, and `down`, static
+  `lookout` and `leeway` binaries in `images/e2e-runner`, and `shipmind
+  audit run` (`internal/audit`) with a persistent dedup ledger, zero-LLM-token
+  clean/muted sweeps, digest-only Slack delivery via `switchboard` `:8080`
+  `/v1/messages` (seeding `@shipmind` thread context), optional `autoPR`
+  GitOps pull requests via `propose-change` (`vcs_proposal_list` dedup;
+  enabling `audits.autoPR: true` on Substrate v1.0+ requires admitting
+  `spiffe://cluster.local/ns/shipmind-audits/sa/shipmind-audits` in
+  `ATE_INGRESS_ALLOWED_SPIFFE_IDS`),
+  and seeded posture scenarios (`e2e/scenarios/posture-workloads` and
+  `e2e/scenarios/posture-placement`).
 - Built static `lookout` (`-tags allproviders`) and `leeway` binaries from
   their pins into `images/agent`, and equipped `gke-chat` with a read-only
   `posture-audit` specialist that runs `lookout mcp --profile=audit`

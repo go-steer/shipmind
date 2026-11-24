@@ -70,3 +70,7 @@ github.com/go-steer/shipmind/internal/judge     83.0  # 84.1
 github.com/go-steer/shipmind/internal/slackapp  94.0  # 95.4
 
 github.com/go-steer/shipmind/internal/secrets  89.0  # 90.0
+
+# Scheduled posture audit runner, loopback credential broker, dedup ledger,
+# and switchboard/autoPR delivery against httptest and fake actors.
+github.com/go-steer/shipmind/internal/audit    86.0  # 87.1

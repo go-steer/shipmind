@@ -55,6 +55,9 @@ type Env struct {
 	// Slack, when set, names the environment's Slack app, which
 	// `shipmind slack-app` prints switchboard's app manifest for.
 	Slack *Slack `yaml:"slack,omitempty"`
+	// Audits, when set, configures scheduled `lookout audit` and
+	// `leeway report` posture sweeps on the substrate profile (#127).
+	Audits *Audits `yaml:"audits,omitempty"`
 	// Secrets are Kubernetes Secrets whose values live in Secret Manager:
 	// `shipmind up` copies them in, and `status` compares them, never
 	// printing a value.
@@ -288,6 +291,9 @@ func Load(dir string) (*Env, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", p, err)
 	}
+	if err := checkAuditFiles(dir, e); err != nil {
+		return nil, fmt.Errorf("%s: %w", p, err)
+	}
 	e.Dir = dir
 	return e, nil
 }
@@ -363,39 +369,8 @@ func (e *Env) check() error {
 			fail("agent.clusters[%d].path %q: want projects/<project>/locations/<location>/clusters/%s", i, c.Path, c.Name)
 		}
 	}
-	if vcs := a.VCS; vcs != nil {
-		if vcs.ChatAutoApprove && a.ChatImage == "" {
-			fail("agent.vcs.chatAutoApprove: needs agent.chatImage (the core-agent image)")
-		} else if !vcs.IncidentAutoPR && a.ChatImage == "" {
-			fail("agent.vcs: needs agent.chatImage (the core-agent image)")
-		}
-		if vcs.IncidentAutoPR && a.IncidentImage == "" {
-			fail("agent.vcs.incidentAutoPR: needs agent.incidentImage (the core-agent image)")
-		}
-		if vcs.IncidentAutoPR && idleSuspend < 5*time.Minute {
-			fail("agent.idleSuspendAfter %q: want at least 5m when agent.vcs.incidentAutoPR is true (incident turns run up to 240s)", a.IdleSuspendAfter)
-		}
-		if !dnsLabel.MatchString(vcs.Secret) {
-			fail("agent.vcs.secret %q: want a Secret name in ate-credentials", vcs.Secret)
-		}
-		if len(vcs.Repositories) == 0 {
-			fail("agent.vcs.repositories: want at least one repository")
-		}
-		seenRepos := map[string]bool{}
-		for i, r := range vcs.Repositories {
-			if !validGitHubRepo(r.Repository) {
-				fail("agent.vcs.repositories[%d].repository %q: want <owner>/<repo> (no host prefix, traversal or .git suffix)", i, r.Repository)
-			}
-			key := strings.ToLower(r.Repository)
-			if seenRepos[key] {
-				fail("agent.vcs.repositories: %q listed twice", r.Repository)
-			}
-			seenRepos[key] = true
-			if r.BaseBranch != "" && !validBranch(r.BaseBranch) {
-				fail("agent.vcs.repositories[%d].baseBranch %q: want a valid git branch name", i, r.BaseBranch)
-			}
-		}
-	}
+	e.checkVCS(idleSuspend, fail)
+	e.checkAudits(idleSuspend, fail)
 	if sub := e.Substrate; sub != nil {
 		last := sub.Images[strings.LastIndex(sub.Images, "/")+1:]
 		if sub.Images == "" || !strings.Contains(sub.Images, "/") || strings.ContainsAny(sub.Images, "@ \t") || strings.Contains(last, ":") {
@@ -445,8 +420,8 @@ func (e *Env) check() error {
 			if !slackChanRE.MatchString(sl.AlertChannel) {
 				fail("slack.alertChannel %q: want a Slack channel ID (C... or G...)", sl.AlertChannel)
 			}
-			if a.IncidentImage == "" {
-				fail("slack.alertChannel: needs agent.incidentImage (the core-agent image)")
+			if a.IncidentImage == "" && e.Audits == nil {
+				fail("slack.alertChannel: needs agent.incidentImage (the core-agent image) or audits")
 			}
 		}
 	}

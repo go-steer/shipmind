@@ -138,6 +138,22 @@ func ChatTask(root string, e *env.Env, t Tokens) ([]byte, error) {
 	return task(root, e, t, ChatBundle)
 }
 
+// AuditTask renders the ax task template the scheduled posture runner
+// stamps a short-lived remediation task from when e.Audits.AutoPR is set.
+func AuditTask(root string, e *env.Env, t Tokens) ([]byte, error) {
+	if e.Audits == nil || !e.Audits.AutoPR || e.Agent.VCS == nil {
+		return nil, nil
+	}
+	image := e.Agent.ChatImage
+	if image == "" {
+		image = e.Agent.IncidentImage
+	}
+	if image == "" {
+		return nil, fmt.Errorf("audits.autoPR: needs agent.chatImage or agent.incidentImage")
+	}
+	return coreAgentTask(root, e, t, ChatBundle, image, "/workspace/repo/audit-config.json", e.Agent.VCS.Secret, false)
+}
+
 // coreAgentTask renders core-agent's task template for bundle from image.
 func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image, cfgPath, vcsSecret string, switchboardIngress bool) ([]byte, error) {
 	if err := t.Check(); err != nil {
@@ -430,6 +446,43 @@ func IncidentConfig(root string, e *env.Env) ([]byte, error) {
 	return json.MarshalIndent(doc, "", "  ")
 }
 
+func ensureSubmap(doc map[string]any, key string) map[string]any {
+	m, _ := doc[key].(map[string]any)
+	if m == nil {
+		m = map[string]any{}
+		doc[key] = m
+	}
+	return m
+}
+
+// AuditConfig renders the core-agent config JSON written to the Workspace's
+// audit-config.json when e.Audits.AutoPR is enabled: headless permissions
+// allowlisted for propose-change (with vcs_proposal_list open-PR dedup).
+func AuditConfig(root string, e *env.Env) ([]byte, error) {
+	if e.Audits == nil || !e.Audits.AutoPR || e.Agent.VCS == nil || (e.Agent.ChatImage == "" && e.Agent.IncidentImage == "") {
+		return nil, nil
+	}
+	doc, err := loadBaseConfig(root, ChatBundle)
+	if err != nil {
+		return nil, err
+	}
+	agentCfg := ensureSubmap(doc, "agent")
+	agentCfg["max_steps"] = 15
+	agentCfg["max_wallclock_seconds"] = 240
+	ensureSubmap(doc, "permissions")["approval_timeout"] = "30s"
+	doc["vcs"] = buildVCSBlock(e.Agent.VCS)
+	doc["subagents"] = []any{proposeChangeSpec()}
+	appendPermissionsAllow(doc,
+		"spawn_agent:propose-change",
+		"edit_file:/workspace/repos/*",
+		"write_file:/workspace/repos/*",
+		"vcs_commit:*",
+		"vcs_publish:*",
+		"vcs_propose:*",
+	)
+	return json.MarshalIndent(doc, "", "  ")
+}
+
 func alertChannel(e *env.Env) string {
 	if e.Slack == nil {
 		return ""
@@ -486,12 +539,17 @@ func Workspace(root string, e *env.Env) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	audCfg, err := AuditConfig(root, e)
+	if err != nil {
+		return nil, err
+	}
 	return render(root, "workspace.yaml.tmpl", map[string]string{
 		"Atespace":       e.Agent.Atespace,
 		"Workspace":      e.Agent.Workspace,
 		"AgentsMD":       string(md),
 		"ChatConfig":     string(chatCfg),
 		"IncidentConfig": string(incCfg),
+		"AuditConfig":    string(audCfg),
 	})
 }
 

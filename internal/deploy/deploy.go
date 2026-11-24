@@ -187,6 +187,9 @@ func templateTokens(ctx context.Context, c cluster.Cluster) (t agent.Tokens, fou
 
 // Status compares the environment with the cluster, read only.
 func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
+	if err := Prepare(p); err != nil {
+		return nil, err
+	}
 	r := &Report{Rendered: len(p.Objects)}
 	add := func(what, detail string) {
 		reason, _ := p.Env.Expected(what)
@@ -273,6 +276,11 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		if sw != nil {
 			add(sw.what(), sw.Why)
 		}
+	}
+	if aud, err := auditSecret(ctx, p, c, t, found, ingTok); err != nil {
+		return nil, err
+	} else if aud != nil {
+		add(aud.what(), aud.Why)
 	}
 	for _, sr := range readers(p) {
 		stale, err := sr.stale(ctx, c)
@@ -671,6 +679,9 @@ type UpOptions struct {
 // restarts lookout if its task template changed (lookout reads it only
 // at startup); and waits for every rendered Deployment to roll out.
 func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
+	if err := Prepare(p); err != nil {
+		return err
+	}
 	log := opts.Log
 	if log == nil {
 		log = func(string, ...any) {}
@@ -773,6 +784,11 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 	}
 	if sw != nil {
 		secretWrites = append(secretWrites, *sw)
+	}
+	if aud, err := auditSecret(ctx, p, c, t, true, ingTok); err != nil {
+		return err
+	} else if aud != nil {
+		secretWrites = append(secretWrites, *aud)
 	}
 	// The Workspace is reconciled last, through ax, which on a fresh
 	// cluster only exists once the objects below have rolled out. When ax
@@ -958,6 +974,9 @@ var kept = []string{"Namespace", "PersistentVolumeClaim"}
 // and every existing task carries them), and does not touch the agent's
 // Secrets, the ax Workspace or tasks, or Substrate.
 func Down(ctx context.Context, p *Plan, c cluster.Cluster, all bool) (string, error) {
+	if err := Prepare(p); err != nil {
+		return "", err
+	}
 	var doomed render.Objects
 	for _, o := range p.Objects {
 		if o.Kind() == "Namespace" && o.Name() == Namespace {

@@ -1187,3 +1187,65 @@ func TestChatTaskPostureScope(t *testing.T) {
 		t.Errorf("incident task sets a posture scope (#131):\n%s", inc)
 	}
 }
+
+func TestAuditConfigAndTask(t *testing.T) {
+	e := testEnv()
+	if cfg, err := AuditConfig(root, e); err != nil || cfg != nil {
+		t.Fatalf("AuditConfig without audits: %s, %v", cfg, err)
+	}
+	if task, err := AuditTask(root, e, tok); err != nil || task != nil {
+		t.Fatalf("AuditTask without audits: %s, %v", task, err)
+	}
+
+	e.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
+	e.Agent.VCS = &env.VCS{
+		Secret:       "gh-token",
+		Repositories: []env.Repository{{Repository: "org/gitops"}},
+	}
+	e.Audits = &env.Audits{AutoPR: true}
+
+	cfg, err := AuditConfig(root, e)
+	if err != nil || len(cfg) == 0 {
+		t.Fatalf("AuditConfig: %v", err)
+	}
+	for _, want := range []string{`"vcs_publish:*"`, `"vcs_propose:*"`, `"spawn_agent:propose-change"`, `"max_wallclock_seconds": 240`} {
+		if !strings.Contains(string(cfg), want) {
+			t.Errorf("AuditConfig lacks %s:\n%s", want, cfg)
+		}
+	}
+
+	task, err := AuditTask(root, e, tok)
+	if err != nil || !strings.Contains(string(task), "/workspace/repo/audit-config.json") || !strings.Contains(string(task), "ate-credentials/gh-token/bearer") {
+		t.Fatalf("AuditTask: %v\n%s", err, task)
+	}
+
+	ws, err := Workspace(root, e)
+	if err != nil || !strings.Contains(string(ws), "path: audit-config.json") {
+		t.Fatalf("Workspace lacks audit-config.json: %v\n%s", err, ws)
+	}
+
+	// IncidentImage fallback when ChatImage is unset, missing-image error, bad-root error, and ensureSubmap nil init.
+	e.Agent.ChatImage = ""
+	e.Agent.IncidentImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("2", 64)
+	if task2, err := AuditTask(root, e, tok); err != nil || !strings.Contains(string(task2), e.Agent.IncidentImage) {
+		t.Fatalf("AuditTask IncidentImage fallback: %v", err)
+	}
+	if _, err := AuditConfig(t.TempDir(), e); err == nil {
+		t.Error("AuditConfig on empty root succeeded")
+	}
+	if _, err := Workspace(t.TempDir(), e); err == nil {
+		t.Error("Workspace on empty root succeeded")
+	}
+	e.Agent.IncidentImage = ""
+	if cfgNil, err := AuditConfig(root, e); err != nil || cfgNil != nil {
+		t.Errorf("AuditConfig without images = %s, %v", cfgNil, err)
+	}
+	if _, err := AuditTask(root, e, tok); err == nil {
+		t.Error("AuditTask without images succeeded")
+	}
+	emptyDoc := map[string]any{}
+	ensureSubmap(emptyDoc, "agent")["x"] = 1
+	if ensureSubmap(emptyDoc, "agent")["x"] != 1 {
+		t.Error("ensureSubmap did not persist submap")
+	}
+}

@@ -35,3 +35,7 @@ spec:
     - path: incident-config.json
       content: {{ printf "%q" .IncidentConfig }}
 {{- end }}
+{{- if .AuditConfig }}
+    - path: audit-config.json
+      content: {{ printf "%q" .AuditConfig }}
+{{- end }}

@@ -44,6 +44,13 @@ type ChatAgent interface {
 	SubagentEvents(ctx context.Context, task, session, name string) (t *Transcript, known bool, err error)
 }
 
+// FixtureReadier is an optional Kube capability (cluster.Kube satisfies it)
+// used by seeded chat scenarios to wait until the planted Deployment's pods
+// are Running before waking the agent (leeway scores Running pods only).
+type FixtureReadier interface {
+	PodStarts(ctx context.Context, namespace, deployment string) ([]time.Time, error)
+}
+
 // ChatRun is what a chat run is handed: the agent to start and the
 // cluster to ask it about. The manifests are rendered by whoever
 // launches the run (`shipmind scenario canary`), from an environment and
@@ -59,6 +66,9 @@ type ChatRun struct {
 	// Cluster is the cluster's full path,
 	// projects/<project>/locations/<location>/clusters/<name>.
 	Cluster string
+	// Kube, when s.Workload is set, plants the scenario's seeded fixture
+	// before asking and removes it during cleanup.
+	Kube Kube
 }
 
 var chatCluster = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/clusters/[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
@@ -104,6 +114,9 @@ type chat struct {
 	// applied is also in r.Task.
 	name, task, workspace string
 	workspaceApplied      bool
+	kube                  Kube
+	fixture               []byte
+	fixtureApplied        bool
 	start                 time.Time
 	// collected is the session's record, read before cleanup deletes the
 	// task, for the archive.
@@ -115,6 +128,50 @@ type chat struct {
 
 func (c *chat) failf(format string, args ...any) {
 	c.r.Failures = append(c.r.Failures, fmt.Sprintf(format, args...))
+}
+
+func fixtureDesiredReplicas(manifest []byte) int {
+	dec := yaml.NewDecoder(bytes.NewReader(manifest))
+	for {
+		var doc struct {
+			Kind string `yaml:"kind"`
+			Spec struct {
+				Replicas *int `yaml:"replicas"`
+			} `yaml:"spec"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			return 1
+		}
+		if doc.Kind == "Deployment" && doc.Spec.Replicas != nil && *doc.Spec.Replicas > 0 {
+			return *doc.Spec.Replicas
+		}
+	}
+}
+
+func (c *chat) waitFixtureReady(ctx context.Context) (bool, error) {
+	fr, ok := c.kube.(FixtureReadier)
+	if !ok {
+		return true, nil
+	}
+	want := fixtureDesiredReplicas(c.fixture)
+	var last int
+	werr := until(ctx, c.o, c.s.Limits.Start, func(ctx context.Context) (bool, error) {
+		starts, err := fr.PodStarts(ctx, c.s.Namespace, c.name)
+		if err != nil {
+			return false, nil
+		}
+		last = len(starts)
+		return last >= want, nil
+	})
+	if errors.Is(werr, errTimeout) {
+		c.failf("seeded fixture %s/%s reached %d/%d running pods within %s", c.s.Namespace, c.name, last, want, c.s.Limits.Start)
+		return false, nil
+	}
+	if werr != nil {
+		return false, werr
+	}
+	c.o.Log("fixture %s/%s running (%d/%d pods)", c.s.Namespace, c.name, last, want)
+	return true, nil
 }
 
 // RunChat runs chat scenario s once: it applies the run's Workspace and
@@ -148,6 +205,15 @@ func RunChat(ctx context.Context, s *Scenario, tasks ChatTasks, agent ChatAgent,
 		}
 	}
 	c.name = RunName(s.Name, c.start)
+	if c.s.Workload != "" {
+		if run.Kube == nil {
+			return nil, fmt.Errorf("%s plants workload %s: ChatRun.Kube is required", s.Name, c.s.Workload)
+		}
+		c.kube = run.Kube
+		if c.fixture, err = c.s.Manifest(c.name); err != nil {
+			return nil, err
+		}
+	}
 	ask, err := c.s.Ask(c.name)
 	if err != nil {
 		return nil, err
@@ -166,6 +232,17 @@ func RunChat(ctx context.Context, s *Scenario, tasks ChatTasks, agent ChatAgent,
 	// Cleanup is registered before anything is applied: an apply that
 	// fails may still have created its object.
 	defer c.cleanup(ctx)
+	if len(c.fixture) > 0 {
+		if _, err := c.kube.Apply(ctx, c.fixture, false); err != nil {
+			c.failf("applying seeded fixture %s/%s: %v", c.s.Namespace, c.name, err)
+			return r, nil
+		}
+		c.fixtureApplied = true
+		o.Log("planted fixture %s/%s", c.s.Namespace, c.name)
+		if ok, err := c.waitFixtureReady(ctx); !ok || err != nil {
+			return r, err
+		}
+	}
 	if c.workspace != "" {
 		if err := tasks.Apply(ctx, run.Workspace); err != nil {
 			c.failf("applying workspace %s: %v", c.workspace, err)
@@ -407,6 +484,12 @@ func (c *chat) cleanup(ctx context.Context) {
 	}
 	remove("task", c.task, c.r.Task != "", c.tasks.DeleteTask)
 	remove("workspace", c.workspace, c.workspaceApplied, c.tasks.DeleteWorkspace)
+	if len(c.fixture) > 0 && c.kube != nil {
+		remove("fixture", c.s.Namespace+"/"+c.name, c.fixtureApplied, func(cctx context.Context, _ string) error {
+			_, err := c.kube.Delete(cctx, c.fixture)
+			return err
+		})
+	}
 }
 
 // archive stores the decided run, as Run does.

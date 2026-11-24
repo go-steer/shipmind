@@ -22,6 +22,7 @@ package render
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"sigs.k8s.io/kustomize/api/krusty"
@@ -162,4 +163,44 @@ func str(n *yaml.RNode, name string) string {
 		return ""
 	}
 	return yaml.GetValue(f.Value)
+}
+
+// AuditNamespace and AuditCronJob name the scheduled posture CronJob in
+// deploy/audits/substrate.
+const (
+	AuditNamespace = "shipmind-audits"
+	AuditCronJob   = "posture-audit"
+)
+
+// ConfigureAuditCronJob stamps schedule, suspend, and an optional runnerImage
+// override onto CronJob shipmind-audits/posture-audit inside objs.
+func ConfigureAuditCronJob(objs Objects, schedule string, suspend bool, runnerImage string) error {
+	cj, ok := objs.Find("CronJob", AuditNamespace, AuditCronJob)
+	if !ok {
+		return fmt.Errorf("no CronJob %s/%s in rendered objects", AuditNamespace, AuditCronJob)
+	}
+	spec, err := cj.Pipe(yaml.Lookup("spec"))
+	if err != nil || spec == nil {
+		return fmt.Errorf("CronJob %s/%s: no spec", AuditNamespace, AuditCronJob)
+	}
+	schedNode := yaml.NewScalarRNode(schedule)
+	schedNode.YNode().Style = yaml.DoubleQuotedStyle
+	if err := spec.PipeE(yaml.SetField("schedule", schedNode)); err != nil {
+		return err
+	}
+	suspendNode := yaml.NewScalarRNode(strconv.FormatBool(suspend))
+	suspendNode.YNode().Tag = yaml.NodeTagBool
+	if err := spec.PipeE(yaml.SetField("suspend", suspendNode)); err != nil {
+		return err
+	}
+	if runnerImage != "" {
+		c, err := spec.Pipe(yaml.Lookup("jobTemplate", "spec", "template", "spec", "containers", "[name=audit]"))
+		if err != nil || c == nil {
+			return fmt.Errorf("CronJob %s/%s: no audit container", AuditNamespace, AuditCronJob)
+		}
+		if err := c.PipeE(yaml.SetField("image", yaml.NewScalarRNode(runnerImage))); err != nil {
+			return err
+		}
+	}
+	return nil
 }
