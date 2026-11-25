@@ -65,6 +65,7 @@ func runCanary(args []string, stdout, stderr io.Writer) int {
 	image := fs.String("image", "", "the candidate agent image (images/agent), pinned by digest")
 	runner := fs.String("runner-image", "", "the e2e-runner image to run the scenario with, pinned by digest (default: versions.yaml's e2e-runner pin, which must be built from a commit that has the scenario)")
 	clusterName := fs.String("cluster", "", "which of the environment's agent.clusters to ask about (default: the first)")
+	archiveTo := fs.String("archive", "", "store the run's record (transcript.sse, usage.json, result.json, meta.json) under gs://bucket/prefix (default: the environment overlay's nightly CronJob -archive target, if set)")
 	dryRun := fs.Bool("dry-run", false, "render the Job and print it; apply nothing")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -109,7 +110,7 @@ func runCanary(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	run, err := deploy.Canary(context.Background(), *root, e, newCluster(e.Context), deploy.CanaryOptions{
-		Image: *image, RunnerImage: *runner, Scenario: name, Cluster: *clusterName, DryRun: *dryRun,
+		Image: *image, RunnerImage: *runner, Scenario: name, Cluster: *clusterName, Archive: *archiveTo, DryRun: *dryRun,
 	})
 	if run == nil {
 		fmt.Fprintf(stderr, "shipmind scenario canary: %v\n", err)
@@ -121,6 +122,9 @@ func runCanary(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fmt.Fprintf(stdout, "%s: started in context %s, asking about %s\n", run.Name, e.Context, run.Cluster)
+	if run.Archive != "" {
+		fmt.Fprintf(stdout, "  archive: %s/%s/\n", strings.TrimRight(run.Archive, "/"), name)
+	}
 	fmt.Fprintf(stdout, "  follow:  kubectl --context %s -n %s logs -f job/%s\n", e.Context, deploy.E2ENamespace, run.Name)
 	fmt.Fprintf(stdout, "  result:  kubectl --context %s -n %s get job/%s   (the log's last lines are the result, as JSON)\n", e.Context, deploy.E2ENamespace, run.Name)
 	fmt.Fprintf(stdout, "  remove:  kubectl --context %s -n %s delete job,secret -l %s=%s\n", e.Context, deploy.E2ENamespace, deploy.CanaryLabel, run.Name)

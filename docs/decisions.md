@@ -4,6 +4,85 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-25: gke-chat is a native flat core-agent recipe with a trimmed posture surface and -tags no_tui (#144)
+
+Amends 2026-11-05 ("Two agent profiles, autonomous and interactive, one
+image"), 2026-11-17 ("One general-purpose chat agent plus autonomous incident
+PRs and Slack alerts"), and 2026-11-24 ("gke-chat runs lookout and leeway as
+their own MCP servers, and a canary proves an agent image before its pin
+moves (#127)").
+
+1. **Native flat `gke-chat` recipe.** The 2026-11-06 precondition is met: all
+   three overlays in `go-steer/shipmind-deploy` (`substrate`,
+   `shipmind-stage`, `shipmind-prod`) set both `agent.chatImage` and
+   `agent.incidentImage`. `gke-chat` is now authored directly in
+   `core-agent`'s native layout under `agents/sre-triage/gke-chat/.agents/`
+   (`AGENTS.md`, `config.json`, `mcp.json`) and copied straight into
+   `/opt/core-agent/recipes/gke-chat/.agents` by `images/agent`. Its legacy
+   `mast` bundle (`workload.yaml`, `specialists/_fallback.specialist.md`,
+   `specialists/posture-audit.specialist.md`, `schemas/finding.json`,
+   `agents/sre-triage/ax/core-agent-gke-chat.*`) is deleted, and `gke-chat`
+   is dropped from `images/agent-mast` (which has carried no `lookout` or
+   `leeway` binary since #137). `gke-triage-f` and `gke-triage` keep their
+   `_fallback` specialist unchanged because `mast` reserves `FallbackName =
+   "_fallback"`.
+2. **Trimmed posture surface directly on the main agent.** The `gke-chat`
+   main agent holds 9 read-only MCP tools across 3 servers: 6 hosted GKE
+   reads (`list_clusters`, `get_cluster`, `get_k8s_resource`,
+   `describe_k8s_resource`, `get_k8s_logs`, `list_k8s_events`), 2 `lookout`
+   tools (`lookout mcp --tools=k8s_audit_all --clusters-from=auto
+   --max-concurrency-per-cluster=8`, advertising only `k8s_list_clusters`
+   and `k8s_audit_all`), and 1 `leeway` tool (`leeway mcp --timeout=20s
+   --parallelism=32` with `agentic_never: true`, advertising `report`).
+   `core-agent` digesting stays enabled on `lookout` because the main agent
+   carries `retrieve_raw`; `agentic_never: true` on `leeway` keeps
+   deterministic remediation YAML and status fields intact. The trimmed
+   posture surface costs 20,946 bytes of schema (~5.7k tokens at lookout's
+   3.64 bytes/token) instead of ~109 KB (~30k tokens) for all 14
+   `--profile=audit` tools, directly answering 2026-11-05's schema-cost
+   objection without needing subagent indirection.
+3. **`propose-change` remains the sole subagent.** When `agent.vcs` is set,
+   `shipmind up` layers `propose-change` (`mode: chat`,
+   `capability: change_executor`, `mcp: []`) onto
+   `agents/sre-triage/gke-chat/.agents/config.json` in `chat-config.json`
+   (and `audit-config.json` for `audits.autoPR`), keeping repository clones,
+   file edits, and pull request creation isolated from cluster reads and
+   behind the VCS approval policy.
+4. **Build `core-agent` with `-tags no_tui` in `images/agent`.** The default
+   build installed the bubble-tea TUI elicitor even under `--no-repl`,
+   advertising MCP elicitation capability with no UI loop draining it and
+   parking any server elicitation ask until the turn's wall-clock deadline.
+   Building with `-tags no_tui` compiles `tui_disabled.go`, where
+   `makeMCPElicitor()` returns `nil` (immediately declining elicitation),
+   and trims ~5 MB of unused terminal UI dependencies from the distroless
+   image.
+5. **Canary archiving.** `shipmind scenario canary` inherits the environment
+   overlay's `-archive` target (overridable via `-archive`) into the canary
+   Job so canary runs write `transcript.sse`, `usage.json`, `result.json`,
+   and `meta.json` to Cloud Storage (`docs/DESIGN.md`, `#SM-10`).
+
+**Why:** Canary runs of the imported `posture-audit` specialist timed out
+and misbehaved for three structural reasons: ADK injected `posture-audit`'s
+router-facing description as its own identity (causing the subagent to call
+itself), rooted subagents with `tools: []` lacked `retrieve_raw` for
+digested MCP payloads, and the default `core-agent` build hung indefinitely
+on headless MCP elicitation. Flattening read-only cluster and posture tools
+onto `gke-chat`'s main agent removes the delegation hop, eliminates
+`finding.json` / `finish_task` mast baggage, gives `lookout` digests native
+access to `retrieve_raw`, and keeps schema overhead bounded via
+`--tools=k8s_audit_all` (`k8s_scan` alone was 34,944 B and the 11
+single-check tools duplicated `k8s_audit_all`'s `only`, `skip`, and
+`min_severity` arguments).
+
+**Rejected:** Exposing all 14 `--profile=audit` tools on the main agent
+(~30k tokens of tool schema on every chat model call, reversing 2026-11-05's
+cost discipline); keeping `gke-chat` behind `core-agent config
+import-workload` with `_fallback` and `posture-audit` specialists (preserves
+self-calling subagents, missing `retrieve_raw`, and mast schema overhead);
+renaming `_fallback` in `gke-triage-f` or `gke-triage` (`mast` reserves
+`FallbackName = "_fallback"`); and blocking these flag-and-recipe fixes on
+upstream releases for `k8s-lookout#867`, `core-agent#1604`, and `leeway#41`.
+
 ## 2026-11-24: gke-chat runs lookout and leeway as their own MCP servers, and a canary proves an agent image before its pin moves (#127)
 
 `gke-chat`'s `posture-audit` specialist gets lookout's audit and leeway's

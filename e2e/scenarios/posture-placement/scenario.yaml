@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# A seeded placement-posture scenario (#127 §4) for multi-zone clusters:
-# plants a running 4-replica Deployment in triage-lab whose preferred
-# hostname podAffinity packs all replicas into a single zone with no
-# topologySpreadConstraints, waits for the pods to reach Running, then
-# asks gke-chat's posture-audit specialist to run leeway's live placement
-# report and quote leeway's deterministic GitOps remediation YAML patch.
+# A seeded placement-posture scenario (#127 §4, #144) for multi-zone
+# clusters: plants a running 4-replica Deployment in triage-lab whose
+# preferred hostname podAffinity packs all replicas into a single zone with
+# no topologySpreadConstraints, waits for the pods to reach Running, then
+# asks gke-chat to run leeway's live placement report and quote leeway's
+# deterministic GitOps remediation YAML patch.
 namespace: triage-lab
 workload: workload.yaml
 chat:
@@ -28,8 +28,6 @@ chat:
     `topologySpreadConstraints` GitOps remediation YAML patch.
     If leeway fails or cannot authenticate to the cluster, begin your
     answer with the line "TOOL FAILURE" and name the tool.
-  specialists:
-    - posture-audit
 expect:
   mentions:
     - "{{.Name}}"

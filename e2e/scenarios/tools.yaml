@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The tools a scenario's expect.trajectory may name: the GKE MCP server's
-# tools as the agent bundles' tool_catalog lists them (agents/sre-triage/
-# */workload.yaml; a test keeps the two equal). A name not here is a typo,
-# and Load refuses it rather than let a never_call guard quietly match
-# nothing.
+# The tools a scenario's expect.trajectory may name: the union of the tools
+# declared by gke-triage-f (agents/sre-triage/gke-triage-f/workload.yaml)
+# and gke-chat (agents/sre-triage/gke-chat/.agents/config.json); a test
+# keeps the two equal. A name not here is a typo, and Load refuses it
+# rather than let a never_call guard quietly match nothing.
 tools:
   - triage-classifier
   - get_k8s_resource
@@ -36,18 +36,6 @@ tools:
   - get_operation
   - k8s_list_clusters
   - k8s_audit_all
-  - k8s_audit_workloads
-  - k8s_audit_hardening
-  - k8s_audit_rbac
-  - k8s_audit_netpol
-  - k8s_audit_namespaces
-  - k8s_audit_cluster
-  - k8s_audit_upgrades
-  - k8s_audit_computeclass
-  - k8s_audit_ai
-  - k8s_audit_policy
-  - k8s_audit_exemptions
-  - k8s_scan
   - report
   - patch_k8s_resource
   - apply_k8s_manifest

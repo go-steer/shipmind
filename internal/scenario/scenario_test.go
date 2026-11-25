@@ -15,6 +15,7 @@
 package scenario
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -304,44 +305,93 @@ func TestToolMatches(t *testing.T) {
 	}
 }
 
-// The scenarios' tool catalog is the union of the bundles' tool_catalogs, so
-// a trajectory can't name a tool that doesn't exist; a typo is refused.
+// The scenarios' tool catalog is the union of the tools declared by
+// gke-triage-f (workload.yaml) and native gke-chat (.agents/config.json),
+// so a trajectory can't name a tool that doesn't exist; a typo is refused.
 func TestToolCatalog(t *testing.T) {
 	known, err := loadTools("../../e2e/scenarios/tools.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	inBundles := map[string]bool{}
-	for _, bundle := range []string{"gke-triage-f", "gke-chat"} {
-		b, err := os.ReadFile("../../agents/sre-triage/" + bundle + "/workload.yaml")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var w struct {
-			Catalog struct {
-				Tools []struct {
-					Name string `yaml:"name"`
-				} `yaml:"tools"`
-			} `yaml:"tool_catalog"`
-		}
-		if err := yaml.Unmarshal(b, &w); err != nil {
-			t.Fatal(err)
-		}
-		if len(w.Catalog.Tools) == 0 {
-			t.Errorf("%s: tool_catalog has no tools", bundle)
+	recordTools := func(source string, names []string) {
+		t.Helper()
+		if len(names) == 0 {
+			t.Errorf("%s: declares no tools", source)
 		}
 		seen := map[string]bool{}
-		for _, tl := range w.Catalog.Tools {
-			if seen[tl.Name] {
-				t.Errorf("%s: tool %q listed twice in tool_catalog", bundle, tl.Name)
+		for _, name := range names {
+			if seen[name] {
+				t.Errorf("%s: tool %q listed twice", source, name)
 			}
-			seen[tl.Name] = true
-			inBundles[tl.Name] = true
-			if !known[tl.Name] {
-				t.Errorf("%s: tool %q isn't in e2e/scenarios/tools.yaml", bundle, tl.Name)
+			seen[name] = true
+			inBundles[name] = true
+			if !known[name] {
+				t.Errorf("%s: tool %q isn't in e2e/scenarios/tools.yaml", source, name)
 			}
 		}
 	}
+
+	b, err := os.ReadFile("../../agents/sre-triage/gke-triage-f/workload.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w struct {
+		Catalog struct {
+			Tools []struct {
+				Name string `yaml:"name"`
+			} `yaml:"tools"`
+		} `yaml:"tool_catalog"`
+	}
+	if err := yaml.Unmarshal(b, &w); err != nil {
+		t.Fatal(err)
+	}
+	triageTools := make([]string, 0, len(w.Catalog.Tools))
+	for _, tl := range w.Catalog.Tools {
+		triageTools = append(triageTools, tl.Name)
+	}
+	recordTools("gke-triage-f/workload.yaml", triageTools)
+
+	cb, err := os.ReadFile("../../agents/sre-triage/gke-chat/.agents/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Tools struct {
+			Policies []struct {
+				Name string `json:"name"`
+			} `json:"policies"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(cb, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	chatTools := make([]string, 0, len(cfg.Tools.Policies))
+	for _, p := range cfg.Tools.Policies {
+		chatTools = append(chatTools, p.Name)
+	}
+	recordTools("gke-chat/.agents/config.json", chatTools)
+
+	mb, err := os.ReadFile("../../agents/sre-triage/gke-chat/.agents/mcp.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mcpCfg struct {
+		Servers map[string]struct {
+			Tools []string `json:"tools"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(mb, &mcpCfg); err != nil {
+		t.Fatal(err)
+	}
+	for srv, spec := range mcpCfg.Servers {
+		for _, tl := range spec.Tools {
+			if !known[tl] {
+				t.Errorf("gke-chat/.agents/mcp.json server %s tool %q isn't in e2e/scenarios/tools.yaml", srv, tl)
+			}
+		}
+	}
+
 	for n := range known {
 		if !inBundles[n] {
 			t.Errorf("e2e/scenarios/tools.yaml lists %q, which no bundle declares", n)

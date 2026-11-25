@@ -35,7 +35,7 @@
 # switchboard both present it, while Google, GitHub and switchboard
 # outbound-ingress tokens stay outside the actor and are injected at
 # Substrate's egress gateway. For gke-chat, auth.token_identity in
-# agents/sre-triage/ax/core-agent-gke-chat.json names its holder
+# agents/sre-triage/gke-chat/.agents/config.json names its holder
 # "switchboard", which owns every thread's session. Asserting the Slack
 # user instead (switchboard's assert_caller, plus proxy_identities there)
 # waits: core-agent's sessions belong to their creator, and switchboard
@@ -68,7 +68,7 @@ spec:
     - {{ .ConfigPath }}
     - --agents-dir=/opt/core-agent/recipes/{{ .Bundle }}/.agents
 {{- else }}
-    # The bundle, converted from agents/sre-triage/{{ .Bundle }} when the
+    # The recipe baked from agents/sre-triage/{{ .Bundle }} when the
     # image was built (images/agent).
     - -c
     - /opt/core-agent/recipes/{{ .Bundle }}/.agents/config.json

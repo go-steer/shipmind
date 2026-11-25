@@ -494,13 +494,16 @@ specialists' turns are archived with the session's.
 requires lookout's audit and leeway's report to have been called, to
 have succeeded, and leeway's report to have reached the cluster (#127).
 
-**Launching one.** `shipmind scenario canary -image <ref> <environment>
+**Launching one.** `shipmind scenario canary -image <ref> [-archive gs://bucket/prefix] <environment>
 <scenario>` renders the environment's chat task and Workspace from the
 checkout it is run in, with the candidate image and under a name of
 their own, puts them in a Secret, and starts a one-off Job in
 `shipmind-e2e` that runs the scenario against them. The Job is cut from
 the nightly CronJob in the same checkout, so it has the nightly's service
-account and router identity and needs no permissions of its own. Once
+account and router identity and needs no permissions of its own, and it
+inherits the environment overlay's `-archive` target (overridable via
+`-archive`) so canary runs archive `transcript.sse`, `usage.json`,
+`result.json`, and `meta.json` (plus any specialist event logs). Once
 the Job exists it owns the Secret, and both go when the Job's TTL
 expires; a Job the cluster refuses takes its Secret with it.
 
@@ -514,15 +517,16 @@ It has limits. The run needs the nightly e2e component deployed (its
 namespace and service account), an `e2e-runner` image built from a commit
 that has the scenario, and the candidate agent image already published
 (CI publishes one for every main commit that touches its inputs). The
-Job is the base nightly pod, without an environment's own patches to
-that CronJob. A run whose pod is killed before it cleans up leaves its
-task and Workspace in the atespace, and nothing sweeps them; the command
-prints how to delete them. Result checks read what core-agent recorded,
-which is the tool's output as the model saw it: whole when small, pruned
-when large (long arrays keep their first and last ten entries), and a
-result summarized by a model can't be checked, so it fails the run. And
-a chat scenario plants no findings, so it proves the path to the
-cluster, not the quality of the answer.
+Job is the base nightly pod, carrying over only the overlay's `-archive`
+target rather than arbitrary patches to that CronJob. A run whose pod is
+killed before it cleans up leaves its task and Workspace in the
+atespace, and nothing sweeps them; the command prints how to delete
+them. Result checks read what core-agent recorded, which is the tool's
+output as the model saw it: whole when small, pruned when large (long
+arrays keep their first and last ten entries), and a result summarized
+by a model can't be checked, so it fails the run. And a chat scenario
+plants no findings, so it proves the path to the cluster, not the
+quality of the answer.
 
 ## Milestones
 

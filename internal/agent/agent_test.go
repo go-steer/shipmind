@@ -391,35 +391,37 @@ func TestSwitchboardConfigErrors(t *testing.T) {
 	}
 }
 
-// lookout's tasks run the incident bundle and switchboard's the chat
-// bundle; both are in the repository and baked into the agent image, so a
-// template can't name a bundle the image lacks.
+// lookout's mast tasks run the incident bundle (carried in images/agent-mast),
+// while switchboard's chat tasks run native gke-chat on core-agent only (#144),
+// so no template can name a bundle its image lacks.
 func TestBundles(t *testing.T) {
 	inc, err := Task(root, testEnv(), tok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	chat, err := ChatTask(root, testEnv(), tok)
-	if err != nil {
-		t.Fatal(err)
+	if !strings.Contains(string(inc), "--workload=/opt/mast/workloads/"+IncidentBundle+"\n") {
+		t.Errorf("incident template:\n%s", inc)
 	}
-	if !strings.Contains(string(inc), "--workload=/opt/mast/workloads/"+IncidentBundle+"\n") ||
-		!strings.Contains(string(chat), "--workload=/opt/mast/workloads/"+ChatBundle+"\n") {
-		t.Errorf("incident template:\n%s\nchat template:\n%s", inc, chat)
-	}
-	if strings.Replace(string(chat), "workloads/"+ChatBundle+"\n", "workloads/"+IncidentBundle+"\n", 1) != string(inc) {
-		t.Error("the two templates differ in more than the bundle")
+	if _, err := ChatTask(root, testEnv(), tok); err == nil || !strings.Contains(err.Error(), "agent.chatImage is required") {
+		t.Errorf("ChatTask without agent.chatImage = %v, want agent.chatImage required error", err)
 	}
 	dockerfile, err := os.ReadFile(filepath.Join(root, "images/agent-mast/Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, b := range []string{IncidentBundle, ChatBundle} {
-		if _, err := os.Stat(filepath.Join(root, "agents/sre-triage", b, "workload.yaml")); err != nil {
-			t.Errorf("bundle %s: %v", b, err)
-		}
-		if !strings.Contains(string(dockerfile), "COPY agents/sre-triage/"+b+" /opt/mast/workloads/"+b+"\n") {
-			t.Errorf("the agent image doesn't carry bundle %s", b)
+	if _, err := os.Stat(filepath.Join(root, "agents/sre-triage", IncidentBundle, "workload.yaml")); err != nil {
+		t.Errorf("bundle %s: %v", IncidentBundle, err)
+	}
+	if !strings.Contains(string(dockerfile), "COPY agents/sre-triage/"+IncidentBundle+" /opt/mast/workloads/"+IncidentBundle+"\n") {
+		t.Errorf("the mast agent image doesn't carry bundle %s", IncidentBundle)
+	}
+	// gke-chat is a native flat core-agent recipe and has left images/agent-mast (#144).
+	if strings.Contains(string(dockerfile), ChatBundle) {
+		t.Errorf("images/agent-mast/Dockerfile still carries %s", ChatBundle)
+	}
+	for _, f := range []string{"AGENTS.md", "config.json", "mcp.json"} {
+		if _, err := os.Stat(filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", f)); err != nil {
+			t.Errorf("native %s recipe missing .agents/%s: %v", ChatBundle, f, err)
 		}
 	}
 }
@@ -458,7 +460,7 @@ func TestChatTaskCoreAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	atespace, got := parse(b)
-	mastB, err := ChatTask(root, testEnv(), tok)
+	mastB, err := Task(root, testEnv(), tok)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,18 +563,28 @@ func TestChatTaskCoreAgent(t *testing.T) {
 	}
 }
 
-// images/agent converts the bundles the tasks name, and the chat bundle's
-// attach overlay names the attach token's holder without letting it
-// assert anyone: switchboard's assert_caller is off (docs/decisions.md).
+// images/agent converts gke-triage-f, copies native gke-chat/.agents directly,
+// builds core-agent with -tags no_tui (declining headless MCP elicitation and
+// dropping the unused TUI), and checks both recipes at build time.
 func TestCoreAgentImage(t *testing.T) {
 	dockerfile, err := os.ReadFile(filepath.Join(root, "images/agent/Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(dockerfile), "for b in "+IncidentBundle+" "+ChatBundle+"; do") {
-		t.Errorf("images/agent doesn't convert %s and %s", IncidentBundle, ChatBundle)
+	d := string(dockerfile)
+	if strings.Count(d, "go build -tags no_tui ") != 2 {
+		t.Errorf("images/agent/Dockerfile must build both core-agent binaries with -tags no_tui (found %d)", strings.Count(d, "go build -tags no_tui "))
 	}
-	b, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-"+ChatBundle+".json"))
+	if !strings.Contains(d, "for b in "+IncidentBundle+"; do") {
+		t.Errorf("images/agent doesn't convert %s", IncidentBundle)
+	}
+	if !strings.Contains(d, "cp -a /in/"+ChatBundle+"/.agents/. /out/"+ChatBundle+"/.agents/") {
+		t.Errorf("images/agent doesn't copy native %s/.agents", ChatBundle)
+	}
+	if !strings.Contains(d, "for b in "+IncidentBundle+" "+ChatBundle+"; do") {
+		t.Errorf("images/agent doesn't boot-check both %s and %s", IncidentBundle, ChatBundle)
+	}
+	b, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", "config.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +604,7 @@ func TestCoreAgentImage(t *testing.T) {
 	}
 	ms := o.Attach.MultiSession
 	if !ms.Enabled || ms.Auth.TokenIdentity == "" || len(ms.ProxyIdentities) != 0 {
-		t.Errorf("attach overlay %+v: want multi-session on the token's identity, and no proxies", ms)
+		t.Errorf("chat config attach %+v: want multi-session on the token's identity, and no proxies", ms)
 	}
 	// No one approves an incident's tool calls: they're bounded.
 	b, err = os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".json"))
@@ -618,11 +630,14 @@ func TestCoreAgentImage(t *testing.T) {
 	// Requests reach core-agent's loopback listener from Substrate's
 	// router, Host and all (ax-task-runner's pass-through keeps it);
 	// core-agent answers any Host it doesn't know 421 (#1358), so both
-	// overlays allow the router's names, and the build checks as the
+	// recipes allow the router's names, and the build checks as the
 	// router asks.
 	routerHosts := []string{"atenet-router.ate-system.svc.cluster.local", "atenet-router.ate-system.svc", "atenet-router.ate-system"}
-	for _, bundle := range []string{IncidentBundle, ChatBundle} {
-		b, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-"+bundle+".json"))
+	for label, cfgPath := range map[string]string{
+		IncidentBundle: filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".json"),
+		ChatBundle:     filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", "config.json"),
+	} {
+		b, err := os.ReadFile(cfgPath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -635,23 +650,22 @@ func TestCoreAgentImage(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !slices.Equal(o.Attach.AllowedHosts, routerHosts) {
-			t.Errorf("%s overlay: attach.allowed_hosts %q, want the router's names %q", bundle, o.Attach.AllowedHosts, routerHosts)
+			t.Errorf("%s config: attach.allowed_hosts %q, want the router's names %q", label, o.Attach.AllowedHosts, routerHosts)
 		}
 	}
-	if !strings.Contains(string(dockerfile), "ARG ROUTER_HOST="+routerHosts[0]+"\n") || !strings.Contains(string(dockerfile), `-H "Host: $ROUTER_HOST"`) || !strings.Contains(string(dockerfile), `if [ "$code" != 200 ]; then`) {
+	if !strings.Contains(d, "ARG ROUTER_HOST="+routerHosts[0]+"\n") || !strings.Contains(d, `-H "Host: $ROUTER_HOST"`) || !strings.Contains(d, `if [ "$code" != 200 ]; then`) {
 		t.Error("images/agent's boot check doesn't ask as the router does")
 	}
-	// Where mast had the MCP tools: each specialist's own content root,
-	// and the main agent only what main-tools names (incidents: none,
-	// as mast's coordinator; chat: cluster-level reads for quick answers).
+	// Where mast had the MCP tools: each specialist's own content root for
+	// imported gke-triage-f, folded into the main agent before main-tools
+	// narrows them.
 	for _, step := range []string{`grep -qx "root: roots/$n" "$sa"`, `the importer gave the main agent MCP servers`, `/in/ax/core-agent-$b.main-tools.json`, `rm -f "$mcp"`} {
-		if !strings.Contains(string(dockerfile), step) {
+		if !strings.Contains(d, step) {
 			t.Errorf("images/agent lacks %q (the MCP layout checks)", step)
 		}
 	}
 	// The folded specialist's root becomes the main agent's servers
 	// before main-tools narrows them, and only then is the root removed.
-	d := string(dockerfile)
 	take, drop, narrow := strings.Index(d, `cp "/in/$b/mcp.json" "$mcp"`), strings.Index(d, `rm -rf "/out/$b/.agents/roots/$n"`), strings.Index(d, `/in/ax/core-agent-$b.main-tools.json`)
 	if take < 0 || take > drop || drop > narrow {
 		t.Error("images/agent's fold doesn't take the specialist's servers, then remove its root, before narrowing")
@@ -705,24 +719,28 @@ func TestCoreAgentImage(t *testing.T) {
 	if err := json.Unmarshal(b, &incCfg); err != nil || incCfg.Agent.MaxSteps < 5 || incCfg.Agent.MaxSteps*15 > incCfg.Agent.MaxWallclockSeconds {
 		t.Errorf("incident agent %+v: want a step cap that fires within the wall-clock bound (about 15s a call)", incCfg.Agent)
 	}
-	if _, err := os.Stat(filepath.Join(root, Dir, "core-agent-"+ChatBundle+".fold-specialist")); !os.IsNotExist(err) {
-		t.Errorf("the chat profile folds its specialist (%v); it delegates", err)
+	// Legacy mast-import glue for gke-chat must stay deleted (#144).
+	for _, obsolete := range []string{
+		filepath.Join(root, "agents/sre-triage", ChatBundle, "workload.yaml"),
+		filepath.Join(root, "agents/sre-triage", ChatBundle, "mcp.json"),
+		filepath.Join(root, "agents/sre-triage", ChatBundle, "specialists"),
+		filepath.Join(root, "agents/sre-triage", ChatBundle, "schemas"),
+		filepath.Join(root, Dir, "core-agent-"+ChatBundle+".base.json"),
+		filepath.Join(root, Dir, "core-agent-"+ChatBundle+".json"),
+		filepath.Join(root, Dir, "core-agent-"+ChatBundle+".main-tools.json"),
+		filepath.Join(root, Dir, "core-agent-"+ChatBundle+".fold-specialist"),
+	} {
+		if _, err := os.Stat(obsolete); !os.IsNotExist(err) {
+			t.Errorf("obsolete gke-chat mast-import artifact still exists: %s (%v)", obsolete, err)
+		}
 	}
 	for _, step := range []string{`fold="/in/ax/core-agent-$b.fold-specialist"`, `/^## Subagent Roster/`, `/^Return your finding by calling ` + "`finish_task`" + `/ { exit }`, `cat "/in/ax/core-agent-$b.report.md"`, `[ -f "$sa" ] || continue`} {
-		if !strings.Contains(string(dockerfile), step) {
+		if !strings.Contains(d, step) {
 			t.Errorf("images/agent lacks %q (the fold)", step)
 		}
 	}
-	b, err = os.ReadFile(filepath.Join(root, Dir, "core-agent-"+ChatBundle+".main-tools.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var chatMain []string
-	if err := json.Unmarshal(b, &chatMain); err != nil || !slices.Equal(chatMain, []string{"list_clusters", "get_cluster"}) {
-		t.Errorf("chat main agent's tools %q, %v", chatMain, err)
-	}
 	for _, step := range []string{`jq -s '.[0] * .[1]'`, "/in/ax/core-agent-$b.json", "--attach-token=SMOKE_TOKEN", "core-agent-$b.base.json", "builtin:propose-change"} {
-		if !strings.Contains(string(dockerfile), step) {
+		if !strings.Contains(d, step) {
 			t.Errorf("images/agent lacks %q (the overlay merge or the boot check)", step)
 		}
 	}
@@ -997,10 +1015,10 @@ func TestTaskCoreAgent(t *testing.T) {
 	if !reflect.DeepEqual(gotDoc, chatDoc) {
 		t.Error("the core-agent incident and chat tasks differ beyond bundle, trusted dirs, and GKE DNS egress")
 	}
-	// Switchboard's threads don't follow incidentImage.
+	// Switchboard's threads don't follow incidentImage (and refuse to render without chatImage).
 	e.Agent.ChatImage = ""
-	if chat, _ := ChatTask(root, e, tok); strings.Contains(string(chat), e.Agent.IncidentImage) {
-		t.Error("incidentImage moved the chat task")
+	if chat, err := ChatTask(root, e, tok); err == nil || strings.Contains(string(chat), e.Agent.IncidentImage) {
+		t.Errorf("ChatTask without chatImage = %s, %v; want error", chat, err)
 	}
 	if _, err := Task(root, e, Tokens{Inject: tok.Inject, Attach: "x"}); err == nil {
 		t.Error("Task with a bad token succeeded")
@@ -1023,9 +1041,12 @@ func TestTaskIdleSuspend(t *testing.T) {
 		{"mast, 3m", func() *env.Env { e := testEnv(); e.Agent.IdleSuspendAfter = "3m"; return e }(), "suspendAfter: 3m\n"},
 		{"core-agent, 3m", func() *env.Env { e := core(testEnv()); e.Agent.IdleSuspendAfter = "3m"; return e }(), "suspendAfter: 3m\n"},
 	} {
-		// The chat task (switchboard) and the incident task (lookout).
+		// The chat task (core-agent only) and the incident task (mast or core-agent).
 		for kind, render := range map[string]func(string, *env.Env, Tokens) ([]byte, error){"chat": ChatTask, "incident": Task} {
 			e := *tc.e
+			if kind == "chat" && e.Agent.ChatImage == "" {
+				continue
+			}
 			if kind == "incident" && e.Agent.ChatImage != "" {
 				e.Agent.IncidentImage, e.Agent.ChatImage = e.Agent.ChatImage, ""
 			}
@@ -1054,12 +1075,16 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 		"AS leeway",
 		"/usr/local/bin/leeway version",
 		"COPY --from=leeway /out/leeway /usr/local/bin/leeway",
-		"lookout $(jq -r '.servers.lookout.args | join(\" \")' /in/gke-chat/mcp.json) --list-tools",
+		"lookout $(jq -r '.servers.lookout.args | join(\" \")' /in/gke-chat/.agents/mcp.json) --list-tools",
 		"grep -q '^k8s_list_clusters ' /tmp/lookout-tools",
-		"leeway $(jq -r '.servers.leeway.args | join(\" \")' /in/gke-chat/mcp.json)",
+		"grep -q '^k8s_audit_all ' /tmp/lookout-tools",
+		"grep -q '^2 tools ' /tmp/lookout-tools",
+		"leeway $(jq -r '.servers.leeway.args | join(\" \")' /in/gke-chat/.agents/mcp.json)",
 		"gcr.io/distroless/static-debian12:nonroot@",
 		"tools allowlist names |has no tool matching ",
 		"mcp: [0-9]+ server\\(s\\), [1-9][0-9]* down",
+		"mcp: [0-9]+ server\\(s\\) loaded .*\\[[1-9][0-9]* failed",
+		`instruction: loaded [1-9][0-9]* file\(s\): .*/out/gke-chat/\.agents/AGENTS\.md`,
 	} {
 		if !strings.Contains(dockerfile, want) {
 			t.Errorf("images/agent/Dockerfile lacks %q", want)
@@ -1082,27 +1107,39 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 		}
 	}
 
-	chatMCPBytes, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, "mcp.json"))
+	chatMCPBytes, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", "mcp.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var chatMCP struct {
+		Version int `json:"version"`
 		Servers map[string]struct {
-			Transport string   `json:"transport"`
-			Command   string   `json:"command"`
-			Args      []string `json:"args"`
+			Transport    string   `json:"transport"`
+			URL          string   `json:"url"`
+			Command      string   `json:"command"`
+			Args         []string `json:"args"`
+			Tools        []string `json:"tools"`
+			AgenticNever bool     `json:"agentic_never"`
 		} `json:"servers"`
 	}
 	if err := json.Unmarshal(chatMCPBytes, &chatMCP); err != nil {
 		t.Fatal(err)
 	}
-	// lookout runs with an explicit --clusters-from=auto: without it the
-	// cluster-choice tool and the cluster argument exist only when the
-	// task's environment happens to select injected auth.
-	if got := chatMCP.Servers["lookout"]; got.Transport != "stdio" || got.Command != "/usr/local/bin/lookout" || !slices.Equal(got.Args, []string{"mcp", "--profile=audit", "--clusters-from=auto"}) {
+	if chatMCP.Version != 1 || len(chatMCP.Servers) != 3 {
+		t.Fatalf("gke-chat mcp.json unexpected version/servers: %+v", chatMCP)
+	}
+	wantGKETools := []string{"list_clusters", "get_cluster", "get_k8s_resource", "describe_k8s_resource", "get_k8s_logs", "list_k8s_events"}
+	if got := chatMCP.Servers["gke"]; got.Transport != "http" || got.URL != "https://container.googleapis.com/mcp/read-only" || !slices.Equal(got.Tools, wantGKETools) || got.AgenticNever {
+		t.Errorf("gke-chat gke MCP server = %+v", got)
+	}
+	// lookout runs --tools=k8s_audit_all (only k8s_list_clusters + k8s_audit_all)
+	// with digesting kept enabled (main agent holds retrieve_raw).
+	if got := chatMCP.Servers["lookout"]; got.Transport != "stdio" || got.Command != "/usr/local/bin/lookout" ||
+		!slices.Equal(got.Args, []string{"mcp", "--tools=k8s_audit_all", "--clusters-from=auto", "--max-concurrency-per-cluster=8"}) || got.AgenticNever {
 		t.Errorf("gke-chat lookout MCP server = %+v", got)
 	}
-	if got := chatMCP.Servers["leeway"]; got.Transport != "stdio" || got.Command != "/usr/local/bin/leeway" || !slices.Equal(got.Args, []string{"mcp"}) {
+	if got := chatMCP.Servers["leeway"]; got.Transport != "stdio" || got.Command != "/usr/local/bin/leeway" ||
+		!slices.Equal(got.Args, []string{"mcp", "--timeout=20s", "--parallelism=32"}) || !got.AgenticNever {
 		t.Errorf("gke-chat leeway MCP server = %+v", got)
 	}
 
@@ -1115,42 +1152,71 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 		t.Errorf("gke-triage-f/mcp.json must stay untouched until #131:\n%s", incMCPBytes)
 	}
 
-	postureSpec, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, "specialists/posture-audit.specialist.md"))
+	chatAgentsMD, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", "AGENTS.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Neither server reads the Workspace's cluster table, so the specialist
-	// must be told to use full paths (a short name resolves only in the
-	// agent's own project).
+	md := string(chatAgentsMD)
 	for _, want := range []string{
-		"- report",
-		"k8s_audit_all",
-		"k8s_audit_computeclass",
-		"k8s_audit_ai",
+		"gke_get_k8s_resource",
+		"lookout_k8s_list_clusters",
+		"lookout_k8s_audit_all",
 		"leeway_report",
 		"platform_managed",
 		"projects/<project>/locations/<location>/clusters/<cluster>",
-		"Do\n  not shorten it to a bare name",
 		"all_namespaces: true",
-		"reject `all_namespaces`",
 		"Always pass `clusters` to `leeway_report`",
 		"never `cluster`",
 	} {
-		if !strings.Contains(string(postureSpec), want) {
-			t.Errorf("posture-audit.specialist.md lacks %q", want)
+		if !strings.Contains(md, want) {
+			t.Errorf("gke-chat/.agents/AGENTS.md lacks %q", want)
 		}
 	}
-	if strings.Contains(string(postureSpec), "v0.44.0") {
-		t.Error("posture-audit.specialist.md still carries the v0.44.0 audit-all workaround")
+	for _, unwanted := range []string{"finish_task", "finding.json", "_fallback", "posture-audit", "v0.44.0"} {
+		if strings.Contains(md, unwanted) {
+			t.Errorf("gke-chat/.agents/AGENTS.md must not reference %q", unwanted)
+		}
 	}
 
-	baseCfg, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-"+ChatBundle+".base.json"))
+	chatCfgBytes, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", "config.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"spawn_agent:posture-audit"`, `"mcp:lookout_k8s_audit_all*"`, `"mcp:leeway_report*"`, `"name": "report"`} {
-		if !strings.Contains(string(baseCfg), want) {
-			t.Errorf("core-agent-gke-chat.base.json lacks %q", want)
+	var chatCfg struct {
+		Agent struct {
+			MaxSteps            int     `json:"max_steps"`
+			MaxWallclockSeconds int     `json:"max_wallclock_seconds"`
+			MaxSessionCostUSD   float64 `json:"max_session_cost_usd"`
+			FinalReport         bool    `json:"final_report"`
+		} `json:"agent"`
+		Permissions struct {
+			Mode  string   `json:"mode"`
+			Allow []string `json:"allow"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(chatCfgBytes, &chatCfg); err != nil {
+		t.Fatal(err)
+	}
+	if chatCfg.Agent.MaxSteps != 50 || chatCfg.Agent.MaxWallclockSeconds != 600 || chatCfg.Agent.MaxSessionCostUSD != 10 || !chatCfg.Agent.FinalReport {
+		t.Errorf("gke-chat agent budgets = %+v", chatCfg.Agent)
+	}
+	wantAllow := []string{
+		"mcp:gke_list_clusters*",
+		"mcp:gke_get_cluster*",
+		"mcp:gke_get_k8s_resource*",
+		"mcp:gke_describe_k8s_resource*",
+		"mcp:gke_get_k8s_logs*",
+		"mcp:gke_list_k8s_events*",
+		"mcp:lookout_k8s_list_clusters*",
+		"mcp:lookout_k8s_audit_all*",
+		"mcp:leeway_report*",
+	}
+	if chatCfg.Permissions.Mode != "ask" || !slices.Equal(chatCfg.Permissions.Allow, wantAllow) {
+		t.Errorf("gke-chat permissions = %+v, want ask with %q", chatCfg.Permissions, wantAllow)
+	}
+	for _, unwanted := range []string{"spawn_agent:posture-audit", "spawn_agent:_fallback", "triage-classifier"} {
+		if strings.Contains(string(chatCfgBytes), unwanted) {
+			t.Errorf("gke-chat/.agents/config.json must not contain %q", unwanted)
 		}
 	}
 }

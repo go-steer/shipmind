@@ -90,7 +90,7 @@ var (
 )
 
 const scenarioUsage = `usage: shipmind scenario run -atespace A (-context C -router URL | -in-cluster) [-router-cert F -router-trust F] [-keep] [-json FILE] [-archive gs://bucket/prefix] [-judge MODEL -judge-project P] [-task FILE -cluster PATH [-workspace FILE]] <scenario-dir>
-       shipmind scenario canary -image REF [-runner-image REF] [-root DIR] [-cluster NAME] [-dry-run] <environment-dir> <scenario>
+       shipmind scenario canary -image REF [-runner-image REF] [-root DIR] [-cluster NAME] [-archive gs://bucket/prefix] [-dry-run] <environment-dir> <scenario>
        shipmind scenario judge -model MODEL -project P [-region R] [-effort E] [-scenarios DIR] <result.json>...`
 
 // judgeFlags are the judge model's flags, shared by run and judge.
