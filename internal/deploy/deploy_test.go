@@ -1162,6 +1162,7 @@ func (f fakeSource) Access(_ context.Context, project, name string) ([]byte, err
 func slackPlan(t *testing.T) *Plan {
 	t.Helper()
 	p := plan(t)
+	p.Env.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
 	p.Env.Secrets = []env.ManagedSecret{{
 		Secret:  "switchboard/switchboard-slack",
 		Keys:    map[string]string{"app-token": "stage-app", "bot-token": "stage-bot"},
@@ -1281,6 +1282,11 @@ func TestSwitchboardSecret(t *testing.T) {
 	}
 	p.Objects = objs
 	c := inSync(t)
+	// Switchboard requires agent.chatImage now that gke-chat is core-agent only (#144).
+	if _, err := Status(ctx, p, c); err == nil || !strings.Contains(err.Error(), "agent.chatImage is required") {
+		t.Fatalf("Status without agent.chatImage = %v, want agent.chatImage required error", err)
+	}
+	p.Env.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
 	r, err := Status(ctx, p, c)
 	if err != nil {
 		t.Fatal(err)
@@ -1306,22 +1312,14 @@ func TestSwitchboardSecret(t *testing.T) {
 			t.Errorf("switchboard-agent lacks %q:\n%s", key, written)
 		}
 	}
-	// Up to date: nothing; the template changing (a new agent image) shows.
-	cfg, _ := agent.SwitchboardConfig(root, testEnv())
-	task, _ := agent.ChatTask(root, testEnv(), tok)
+	// Up to date: nothing; moving agent.chatImage shows as drift on triage.yaml.
+	cfg, _ := agent.SwitchboardConfig(root, p.Env)
+	task, _ := agent.ChatTask(root, p.Env, tok)
 	c = inSync(t)
 	c.secrets["switchboard/switchboard-agent"] = map[string][]byte{"config.json": cfg, "triage.yaml": task, "token": []byte(tok.Attach)}
 	if r, err := Status(ctx, p, c); err != nil || len(r.Changes) != 0 {
 		t.Errorf("in sync: %+v, %v", r, err)
 	}
-	p.Env.Agent.Image = "registry.example.com/agent@sha256:" + strings.Repeat("1", 64)
-	r, err = Status(ctx, p, c)
-	if err != nil || len(r.Changes) == 0 || !strings.Contains(fmt.Sprint(r.Changes), "differs (keys triage.yaml) against the render") {
-		t.Errorf("new image: %+v, %v", r, err)
-	}
-	// agent.chatImage moves the threads to core-agent (#48): the template
-	// changes, and up writes the core-agent one.
-	p.Env.Agent.Image = testEnv().Agent.Image
 	p.Env.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("2", 64)
 	r, err = Status(ctx, p, c)
 	if err != nil || !strings.Contains(fmt.Sprint(r.Changes), "differs (keys triage.yaml) against the render") {

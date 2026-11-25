@@ -25,8 +25,7 @@ spec:
   image: {{ printf "%q" .Image }}
   command:
     - mast
-    # The bundle: gke-triage-f for lookout's incidents, gke-chat for
-    # switchboard's threads (internal/agent).
+    # The bundle: gke-triage-f for lookout's incidents (mast).
     - --workload=/opt/mast/workloads/{{ .Bundle }}
     - --provider=vertex
     - --model=gemini-3.8-flash

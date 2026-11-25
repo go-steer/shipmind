@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# A chat scenario (#127): a person asks gke-chat for a posture review of
-# one cluster, and the posture-audit specialist must answer from lookout's
-# audit and leeway's report, both run inside the agent task with the
-# egress gateway's injected Google credentials.
+# A chat scenario (#127, #144): a person asks gke-chat for a posture review
+# of one cluster, and the main agent answers directly from lookout's audit
+# and leeway's report, both run inside the agent task with the egress
+# gateway's injected Google credentials.
 #
 # It breaks nothing and plants nothing, so what it proves is the path, not
 # the findings: both tools were called, neither call came back an error,
@@ -28,10 +28,6 @@ chat:
     and the live placement report. Summarize the findings by severity.
     If either tool fails, or cannot reach or authenticate to the cluster,
     begin your answer with the line "TOOL FAILURE" and name the tool.
-  # The main agent delegates; the audit and report calls are the
-  # specialist's.
-  specialists:
-    - posture-audit
 expect:
   mentions:
     - "{{.ClusterName}}"
@@ -65,7 +61,7 @@ expect:
       - create_node_pool
       - update_node_pool
       - cancel_operation
-    # One delegation, then a handful of reads; the bounds catch a runaway.
+    # Main-agent audit + report plus a handful of reads; bounds catch a runaway.
     max_tool_calls: 15
     max_model_calls: 15
   # Reported, not gated (#90).

@@ -170,16 +170,12 @@ func newChatWorld(t *testing.T) (*chatWorld, *Scenario, ChatRun, Options) {
 	}
 	w := &chatWorld{
 		now: t0, readyAt: time.Minute, answerAt: 3 * time.Minute,
-		answer:      "Cluster demo: the audit found 2 warnings; leeway found no placement skew.",
-		mainCalls:   []string{"posture-audit"},
-		mainResults: []ToolResult{{Tool: "posture-audit", Output: `{"title":"posture"}`}},
-		specialists: map[string]*Transcript{"posture-audit": {Events: []Event{
-			{Seq: 1, Author: "posture-audit", Role: "model", Calls: []string{"lookout_k8s_audit_all", "leeway_report"}},
-			{Seq: 2, Author: "posture-audit", Role: "user", Results: []ToolResult{
-				{Tool: "lookout_k8s_audit_all", Output: "scanned=40 findings=2"},
-				{Tool: "leeway_report", Output: leewayOK},
-			}},
-		}}},
+		answer:    "Cluster demo: the audit found 2 warnings; leeway found no placement skew.",
+		mainCalls: []string{"lookout_k8s_audit_all", "leeway_report"},
+		mainResults: []ToolResult{
+			{Tool: "lookout_k8s_audit_all", Output: "scanned=40 findings=2"},
+			{Tool: "leeway_report", Output: leewayOK},
+		},
 	}
 	o := Options{
 		Poll:  30 * time.Second,
@@ -212,9 +208,8 @@ func TestRunChatPasses(t *testing.T) {
 	if !strings.Contains(w.question, chatClusterPath) {
 		t.Errorf("the question doesn't name the cluster: %q", w.question)
 	}
-	// The specialist's calls count, after the main agent's.
 	tj := r.Trajectory
-	if tj == nil || !slices.Equal(tj.ToolCalls, []string{"posture-audit", "lookout_k8s_audit_all", "leeway_report"}) || len(tj.Failures) != 0 || len(tj.ToolErrors) != 0 || tj.ModelCalls != 3 {
+	if tj == nil || !slices.Equal(tj.ToolCalls, []string{"lookout_k8s_audit_all", "leeway_report"}) || len(tj.Failures) != 0 || len(tj.ToolErrors) != 0 || tj.ModelCalls != 3 {
 		t.Errorf("trajectory %+v", tj)
 	}
 	if r.IncidentAfter != "1m0s" || r.AnswerAfter == "" || r.Usage == nil || r.Usage.Agent != "core-agent/test" {
@@ -227,7 +222,7 @@ func TestRunChatPasses(t *testing.T) {
 		!strings.Contains(string(arch.files["meta.json"]), `"kind": "chat"`) || !strings.Contains(string(arch.files["result.json"]), `"pass": true`) {
 		t.Errorf("archive %q: %d files", arch.dir, len(arch.files))
 	}
-	if !slices.ContainsFunc(logs, func(l string) bool { return strings.HasPrefix(l, "trajectory: 3 tool calls") }) {
+	if !slices.ContainsFunc(logs, func(l string) bool { return strings.HasPrefix(l, "trajectory: 2 tool calls") }) {
 		t.Errorf("logs %v", logs)
 	}
 }
@@ -244,30 +239,28 @@ func TestRunChatFailures(t *testing.T) {
 		{"unsettled answer", func(w *chatWorld) { w.neverIdle = true }, "no settled answer within"},
 		{"another cluster", func(w *chatWorld) { w.answer = "Cluster prod looks healthy." }, "the answer lacks demo"},
 		{"says a tool failed", func(w *chatWorld) { w.answer = "TOOL FAILURE: leeway_report\nFor demo, the audit found 2 warnings." }, "TOOL FAILURE)"},
-		// The specialist never ran, so neither tool was called.
-		{"no delegation", func(w *chatWorld) { w.specialists = nil }, "trajectory: never called k8s_audit_all"},
+		{"no tools called", func(w *chatWorld) { w.mainCalls, w.mainResults = nil, nil }, "trajectory: never called k8s_audit_all"},
 		{"one tool skipped", func(w *chatWorld) {
-			w.specialists["posture-audit"].Events[0].Calls = []string{"lookout_k8s_audit_all"}
+			w.mainCalls = []string{"lookout_k8s_audit_all"}
 		}, "trajectory: never called report"},
 		// The call failed and never succeeded, and the model wrote a
 		// plausible answer anyway: the error result fails the run.
 		{"tool error", func(w *chatWorld) {
-			w.specialists["posture-audit"].Events[1] = Event{Seq: 2, Author: "posture-audit", Role: "user",
-				Results: []ToolResult{{Tool: "lookout_k8s_audit_all", Output: "scanned=40"}},
-				Failed:  []string{"leeway_report: Tool execution failed. Details: leeway report: no clusters resolved"}}
+			w.mainResults = []ToolResult{{Tool: "lookout_k8s_audit_all", Output: "scanned=40"}}
+			w.mainFailed = []string{"leeway_report: Tool execution failed. Details: leeway report: no clusters resolved"}
 		}, "trajectory: a tool call failed: leeway_report: Tool execution failed. Details: leeway report: no clusters resolved"},
 		// The call succeeded, and what it returned says it reached
 		// nothing. This is how leeway reports a cluster it could not
 		// authenticate to.
 		{"leeway reached nothing", func(w *chatWorld) {
-			w.specialists["posture-audit"].Events[1].Results[1].Output = leewayUnreached
+			w.mainResults[1].Output = leewayUnreached
 		}, `trajectory: leeway_report returned a result matching "status":\s*"error"`},
 		{"no leeway result", func(w *chatWorld) {
-			w.specialists["posture-audit"].Events[1].Results = w.specialists["posture-audit"].Events[1].Results[:1]
+			w.mainResults = w.mainResults[:1]
 		}, "trajectory: report returned no result to check"},
 		{"main agent tool error", func(w *chatWorld) {
-			w.mainFailed, w.mainResults = []string{"posture-audit: permission denied"}, nil
-		}, "a tool call failed: posture-audit: permission denied"},
+			w.mainFailed, w.mainResults = []string{"lookout_k8s_audit_all: permission denied"}, []ToolResult{{Tool: "leeway_report", Output: leewayOK}}
+		}, "a tool call failed: lookout_k8s_audit_all: permission denied"},
 		{"workspace not applied", func(w *chatWorld) { w.failApply = "Workspace" }, "applying workspace canary-1: ax apply: refused"},
 		{"task not deleted", func(w *chatWorld) { w.failDelete = "Task" }, "deleting task canary-1: ax delete: refused"},
 		{"workspace not deleted", func(w *chatWorld) { w.failDelete = "Workspace" }, "deleting workspace canary-1: ax delete: refused"},
@@ -321,8 +314,7 @@ func TestRunChatTaskNotApplied(t *testing.T) {
 // finding: noted, and the run passes.
 func TestRunChatRetriedTool(t *testing.T) {
 	w, s, run, o := newChatWorld(t)
-	sp := w.specialists["posture-audit"]
-	sp.Events = append([]Event{{Seq: 0, Author: "posture-audit", Role: "user", Failed: []string{"leeway_report: invalid arguments: unknown field"}}}, sp.Events...)
+	w.mainFailed = []string{"leeway_report: invalid arguments: unknown field"}
 	r, err := RunChat(context.Background(), s, w, w, run, o)
 	if err != nil || !r.Pass {
 		t.Fatalf("result %+v, err %v", r, err)
@@ -333,21 +325,37 @@ func TestRunChatRetriedTool(t *testing.T) {
 }
 
 // A specialist the agent doesn't have, and one whose history was cut,
-// are said so.
+// are said so, and specialist turns are archived with the session's.
 func TestRunChatSpecialistNotes(t *testing.T) {
-	w, s, run, o := newChatWorld(t)
+	withSpecialist := func(t *testing.T) (*chatWorld, *Scenario, ChatRun, Options) {
+		t.Helper()
+		w, s, run, o := newChatWorld(t)
+		s.Chat.Specialists = []string{"posture-audit"}
+		w.mainCalls = []string{"posture-audit"}
+		w.mainResults = []ToolResult{{Tool: "posture-audit", Output: `{"title":"posture"}`}}
+		w.specialists = map[string]*Transcript{"posture-audit": {Events: []Event{
+			{Seq: 1, Author: "posture-audit", Role: "model", Calls: []string{"lookout_k8s_audit_all", "leeway_report"}},
+			{Seq: 2, Author: "posture-audit", Role: "user", Results: []ToolResult{
+				{Tool: "lookout_k8s_audit_all", Output: "scanned=40 findings=2"},
+				{Tool: "leeway_report", Output: leewayOK},
+			}},
+		}}}
+		return w, s, run, o
+	}
+
+	w, s, run, o := withSpecialist(t)
 	w.unknown = []string{"posture-audit"}
 	r, err := RunChat(context.Background(), s, w, w, run, o)
 	if err != nil || r.Pass || !slices.Contains(r.Trajectory.Notes, "the agent has no specialist posture-audit") {
 		t.Errorf("unknown: %+v, %v", r.Trajectory, err)
 	}
-	w, s, run, o = newChatWorld(t)
+	w, s, run, o = withSpecialist(t)
 	w.specialists = nil
 	r, _ = RunChat(context.Background(), s, w, w, run, o)
 	if r.Pass || !slices.Contains(r.Trajectory.Notes, "specialist posture-audit did not run") {
 		t.Errorf("did not run: %+v", r.Trajectory)
 	}
-	w, s, run, o = newChatWorld(t)
+	w, s, run, o = withSpecialist(t)
 	w.specialists["posture-audit"].Truncated = true
 	arch := &fakeArchive{}
 	o.Archive = arch
@@ -434,6 +442,7 @@ func TestRunChatKeepAndCancel(t *testing.T) {
 // What can't be read is noted, not fatal: usage, and a specialist's calls.
 func TestRunChatUnreadable(t *testing.T) {
 	w, s, run, o := newChatWorld(t)
+	s.Chat.Specialists = []string{"posture-audit"}
 	w.failUsage, w.failSubagent = true, true
 	w.mainCalls = []string{"posture-audit", "lookout_k8s_audit_all", "leeway_report"}
 	w.mainResults = append(w.mainResults, ToolResult{Tool: "leeway_report", Output: leewayOK})
@@ -648,7 +657,7 @@ func TestLoadChat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Chat == nil || !slices.Equal(s.Chat.Specialists, []string{"posture-audit"}) || s.Limits.Start != 5*time.Minute {
+	if s.Chat == nil || len(s.Chat.Specialists) != 0 || s.Limits.Start != 5*time.Minute {
 		t.Fatalf("scenario %+v", s)
 	}
 	c := s.ForCluster(chatClusterPath)
@@ -765,13 +774,8 @@ func TestRunChatSeededPostureScenarios(t *testing.T) {
 		"Deployment `%s` in `triage-lab` is missing a `PodDisruptionBudget` (`minAvailable: 1`), `readinessProbe`, memory `limits`, and `runAsNonRoot: true`.",
 		runName,
 	)
-	w1.specialists = map[string]*Transcript{"posture-audit": {Events: []Event{
-		{Seq: 1, Author: "posture-audit", Calls: []string{"lookout_k8s_audit_workloads", "lookout_k8s_audit_hardening"}},
-		{Seq: 2, Author: "user", Results: []ToolResult{
-			{Tool: "lookout_k8s_audit_workloads", Output: `{"findings":2}`},
-			{Tool: "lookout_k8s_audit_hardening", Output: `{"findings":2}`},
-		}},
-	}}}
+	w1.mainCalls = []string{"lookout_k8s_audit_all"}
+	w1.mainResults = []ToolResult{{Tool: "lookout_k8s_audit_all", Output: `{"findings":4}`}}
 	kube1 := &fakeSeededKube{ops: &w1.ops, readyAfter: 2, readyCount: 2}
 	run1.Kube = kube1
 	r1, err := RunChat(ctx, sWork, w1, w1, run1, o1)
@@ -796,10 +800,8 @@ func TestRunChatSeededPostureScenarios(t *testing.T) {
 		"Deployment `%s` has live zone placement drift. Add `topologySpreadConstraints` on `topology.kubernetes.io/zone`:\n```yaml\ntopologySpreadConstraints:\n  - maxSkew: 1\n    topologyKey: topology.kubernetes.io/zone\n```",
 		placeName,
 	)
-	w2.specialists = map[string]*Transcript{"posture-audit": {Events: []Event{
-		{Seq: 1, Author: "posture-audit", Calls: []string{"leeway_report"}},
-		{Seq: 2, Author: "user", Results: []ToolResult{{Tool: "leeway_report", Output: leewayOK}}},
-	}}}
+	w2.mainCalls = []string{"leeway_report"}
+	w2.mainResults = []ToolResult{{Tool: "leeway_report", Output: leewayOK}}
 	kube2 := &fakeSeededKube{ops: &w2.ops, readyAfter: 2, readyCount: 4}
 	run2.Kube = kube2
 	r2, err := RunChat(ctx, sPlace, w2, w2, run2, o2)

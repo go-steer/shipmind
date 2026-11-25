@@ -109,6 +109,10 @@ func TestScenarioCanaryCommand(t *testing.T) {
 		{"no versions.yaml", []string{"scenario", "canary", "-root", t.TempDir(), "-image", image, envDir, "posture-audit"}, nil, 1, "", "scenario.yaml"},
 		{"dry run", append(base[:len(base):len(base)], "-runner-image", runner, "-dry-run", envDir, "posture-audit"), nil, 0,
 			"kind: Job", "dry run: canary-posture-audit-"},
+		{"dry run archive", append(base[:len(base):len(base)], "-runner-image", runner, "-archive", "gs://runs/stage", "-dry-run", envDir, "posture-audit"), nil, 0,
+			"-archive=gs://runs/stage", "dry run: canary-posture-audit-"},
+		{"bad archive", append(base[:len(base):len(base)], "-runner-image", runner, "-archive", "runs/stage", "-dry-run", envDir, "posture-audit"), nil, 1,
+			"", "want gs://bucket/prefix"},
 		// With no -runner-image, versions.yaml's e2e-runner pin runs it.
 		{"pinned runner", append(base[:len(base):len(base)], "-dry-run", envDir, "posture-audit"), nil, 0,
 			"ghcr.io/go-steer/shipmind/e2e-runner:", "nothing applied"},
@@ -116,6 +120,8 @@ func TestScenarioCanaryCommand(t *testing.T) {
 		{"no tokens", append(base[:len(base):len(base)], "-runner-image", runner, envDir, "posture-audit"), func(f *canaryFake) { f.noTokens = true }, 1, "", "the cluster holds no agent tokens"},
 		{"starts", append(base[:len(base):len(base)], "-runner-image", runner, envDir, "posture-audit"), nil, 0,
 			"-a agents delete task canary-posture-audit-", ""},
+		{"starts with archive", append(base[:len(base):len(base)], "-runner-image", runner, "-archive", "gs://runs/stage", envDir, "posture-audit"), nil, 0,
+			"archive: gs://runs/stage/posture-audit/", ""},
 		// Started, but its Secret isn't owned by the Job: say how to
 		// follow it and how to remove it, and exit non-zero.
 		{"starts unowned", append(base[:len(base):len(base)], "-runner-image", runner, envDir, "posture-audit"), func(f *canaryFake) { f.noUID = true }, 1,

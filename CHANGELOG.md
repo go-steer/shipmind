@@ -10,6 +10,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- `shipmind scenario canary` now passes `-archive` to the canary Job,
+  inheriting the environment overlay's nightly CronJob `-archive` target by
+  default (overridable via `-archive gs://bucket/prefix`), so canary runs
+  archive `transcript.sse`, `usage.json`, `result.json`, and `meta.json`
+  (#144).
 - Added scheduled posture audits for the `substrate` profile (#127):
   declarative `audits` configuration in `shipmind.yaml` (`schedule`
   defaulting to daily `17 5 * * *`, `refreshWindow` defaulting to `168h`,
@@ -246,6 +251,21 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Converted `gke-chat` to a native, flat `core-agent` recipe under
+  `agents/sre-triage/gke-chat/.agents/` (`AGENTS.md`, `config.json`,
+  `mcp.json`), removing its legacy `mast` bundle, `_fallback` and
+  `posture-audit` subagents, `finding.json` / `finish_task` plumbing, and
+  dropping `gke-chat` from `images/agent-mast` (#144). The main agent now
+  holds the 6 GKE read tools, `lookout mcp --tools=k8s_audit_all
+  --clusters-from=auto --max-concurrency-per-cluster=8` (`k8s_list_clusters`
+  and `k8s_audit_all`, ~5.7k posture schema tokens vs ~30k for
+  `--profile=audit`), and `leeway mcp --timeout=20s --parallelism=32`
+  (`agentic_never: true`) directly, while `propose-change` (`mcp: []`)
+  remains layered at deploy time via `chat-config.json`.
+- Built `core-agent` in `images/agent` with `-tags no_tui`, declining
+  headless MCP elicitation requests immediately instead of blocking on an
+  unattached TUI elicitor and trimming ~5 MB from the distroless image
+  (#144).
 - Pinned reactive `--sources` on `lookout-ax` in `deploy/profiles/substrate/lookout`
   (`k8s-events,object-state,rollout,workload,autoscaling,saturation,degradation,expiry,capacity,ingress,gateway`,
   excluding `topology-drift` and `compute-class` in favor of scheduled `leeway report`

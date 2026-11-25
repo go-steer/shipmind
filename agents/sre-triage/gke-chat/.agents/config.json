@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "agent": {
+    "description": "Answers questions about GKE clusters, investigates live workloads, and reviews cluster posture in a conversation.",
+    "display_name": "gke-chat",
+    "final_report": true,
+    "max_session_cost_usd": 10,
+    "max_steps": 50,
+    "max_wallclock_seconds": 600
+  },
+  "attach": {
+    "allowed_hosts": [
+      "atenet-router.ate-system.svc.cluster.local",
+      "atenet-router.ate-system.svc",
+      "atenet-router.ate-system"
+    ],
+    "multi_session": {
+      "auth": {
+        "token_identity": "switchboard"
+      },
+      "enabled": true
+    }
+  },
+  "model": {
+    "builtin_tools": {
+      "code_execution": false,
+      "url_context": false,
+      "web_search": false
+    },
+    "name": "gemini-3.8-flash"
+  },
+  "permissions": {
+    "allow": [
+      "mcp:gke_list_clusters*",
+      "mcp:gke_get_cluster*",
+      "mcp:gke_get_k8s_resource*",
+      "mcp:gke_describe_k8s_resource*",
+      "mcp:gke_get_k8s_logs*",
+      "mcp:gke_list_k8s_events*",
+      "mcp:lookout_k8s_list_clusters*",
+      "mcp:lookout_k8s_audit_all*",
+      "mcp:leeway_report*"
+    ],
+    "mode": "ask"
+  },
+  "tools": {
+    "policies": [
+      {
+        "mutating": false,
+        "name": "list_clusters"
+      },
+      {
+        "mutating": false,
+        "name": "get_cluster"
+      },
+      {
+        "mutating": false,
+        "name": "get_k8s_resource"
+      },
+      {
+        "mutating": false,
+        "name": "describe_k8s_resource"
+      },
+      {
+        "mutating": false,
+        "name": "get_k8s_logs"
+      },
+      {
+        "mutating": false,
+        "name": "list_k8s_events"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_list_clusters"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_audit_all"
+      },
+      {
+        "mutating": false,
+        "name": "report"
+      },
+      {
+        "mutating": true,
+        "name": "patch_k8s_resource"
+      },
+      {
+        "mutating": true,
+        "name": "apply_k8s_manifest"
+      },
+      {
+        "mutating": true,
+        "name": "delete_k8s_resource"
+      },
+      {
+        "mutating": true,
+        "name": "create_cluster"
+      },
+      {
+        "mutating": true,
+        "name": "update_cluster"
+      },
+      {
+        "mutating": true,
+        "name": "create_node_pool"
+      },
+      {
+        "mutating": true,
+        "name": "update_node_pool"
+      },
+      {
+        "mutating": true,
+        "name": "cancel_operation"
+      }
+    ]
+  }
+}

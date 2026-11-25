@@ -31,8 +31,10 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/go-steer/shipmind/internal/agent"
+	"github.com/go-steer/shipmind/internal/archive"
 	"github.com/go-steer/shipmind/internal/cluster"
 	"github.com/go-steer/shipmind/internal/env"
+	"github.com/go-steer/shipmind/internal/overlay"
 )
 
 // A canary run (#127) exercises a candidate agent image in a running
@@ -75,6 +77,10 @@ type CanaryOptions struct {
 	// Cluster names one of the environment's agent.clusters to ask
 	// about; empty takes the first.
 	Cluster string
+	// Archive, when set, is the gs://bucket/prefix target passed to the
+	// canary runner's -archive flag. Empty inherits the -archive target
+	// from the environment overlay's nightly scenario CronJob, if any.
+	Archive string
 	// DryRun renders and returns without applying.
 	DryRun bool
 	// Now defaults to the real clock.
@@ -87,6 +93,9 @@ type CanaryRun struct {
 	Name string
 	// Cluster is the path of the cluster the run asks about.
 	Cluster string
+	// Archive is the effective gs://bucket/prefix archive target rendered
+	// into the Job, or empty if archiving is disabled.
+	Archive string
 	// Job is the Job's manifest. The Secret's is not kept: it holds the
 	// task, which carries the agent's attach token.
 	Job []byte
@@ -118,7 +127,15 @@ func Canary(ctx context.Context, root string, e *env.Env, c cluster.Cluster, o C
 			return nil, errors.New("the cluster holds no agent tokens: a canary runs in a deployed environment")
 		}
 	}
-	run := &CanaryRun{Name: "canary-" + o.Scenario + "-" + o.Now().UTC().Format("0102-150405"), Cluster: path}
+	archiveTarget := o.Archive
+	if archiveTarget == "" {
+		archiveTarget = overlayArchive(e.Dir, root)
+	}
+	run := &CanaryRun{
+		Name:    "canary-" + o.Scenario + "-" + o.Now().UTC().Format("0102-150405"),
+		Cluster: path,
+		Archive: archiveTarget,
+	}
 
 	// The environment as it would be with the candidate image, its
 	// Workspace under the run's name so the live one is left alone.
@@ -181,6 +198,11 @@ func (o CanaryOptions) check(e *env.Env) (string, error) {
 	case len(e.Agent.Clusters) == 0:
 		return "", errors.New("the environment lists no agent.clusters to ask about")
 	}
+	if o.Archive != "" {
+		if _, err := archive.Parse(o.Archive); err != nil {
+			return "", err
+		}
+	}
 	if o.Cluster == "" {
 		return e.Agent.Clusters[0].Path, nil
 	}
@@ -235,11 +257,25 @@ func canaryJob(root string, run *CanaryRun, atespace string, o CanaryOptions) ([
 	// The nightly's own flags (in-cluster, the router's mTLS files, the
 	// judge) carry over; its atespace placeholder and its scenario don't.
 	var runArgs []any
-	for _, a := range args[:len(args)-1] {
-		if s, _ := a.(string); strings.HasPrefix(s, "-atespace=") {
-			a = "-atespace=" + atespace
+	for i := 0; i < len(args)-1; i++ {
+		s, _ := args[i].(string)
+		if strings.HasPrefix(s, "-atespace=") {
+			runArgs = append(runArgs, "-atespace="+atespace)
+			continue
 		}
-		runArgs = append(runArgs, a)
+		if run.Archive != "" {
+			if strings.HasPrefix(s, "-archive=") || strings.HasPrefix(s, "--archive=") {
+				continue
+			}
+			if (s == "-archive" || s == "--archive") && i+1 < len(args)-1 {
+				i++
+				continue
+			}
+		}
+		runArgs = append(runArgs, args[i])
+	}
+	if run.Archive != "" {
+		runArgs = append(runArgs, "-archive="+run.Archive)
 	}
 	container["args"] = append(runArgs,
 		"-task=/canary/task.yaml", "-workspace=/canary/workspace.yaml", "-cluster="+run.Cluster, "/scenarios/"+o.Scenario)
@@ -343,3 +379,69 @@ func ownSecret(ctx context.Context, c cluster.Cluster, name string) error {
 // canaryPatchType is a patch type cluster.Kube.Patch takes; a strategic
 // merge keys ownerReferences by uid.
 const canaryPatchType = "strategic"
+
+// overlayArchive reads the -archive target from the environment overlay's
+// nightly scenario CronJob when envDir holds a kustomization that renders
+// one. Missing or unrenderable overlays return "" so a candidate checkout
+// that changed an unrelated profile manifest still launches a canary.
+func overlayArchive(envDir, root string) string {
+	if envDir == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(envDir, "kustomization.yaml")); err != nil {
+		return ""
+	}
+	res, err := overlay.Render(envDir, root, overlay.Options{AnyRef: true})
+	if err != nil {
+		return ""
+	}
+	for _, o := range res.Objects {
+		if o.Kind() != "CronJob" || o.Namespace() != E2ENamespace || o.GetLabels()["shipmind.dev/nightly"] != "scenario" {
+			continue
+		}
+		raw, err := o.String()
+		if err != nil {
+			continue
+		}
+		if target := cronJobArchiveArg([]byte(raw)); target != "" {
+			if _, err := archive.Parse(target); err == nil {
+				return target
+			}
+		}
+	}
+	return ""
+}
+
+func cronJobArchiveArg(raw []byte) string {
+	var cj struct {
+		Spec struct {
+			JobTemplate struct {
+				Spec struct {
+					Template struct {
+						Spec struct {
+							Containers []struct {
+								Args []string `yaml:"args"`
+							} `yaml:"containers"`
+						} `yaml:"spec"`
+					} `yaml:"template"`
+				} `yaml:"spec"`
+			} `yaml:"jobTemplate"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(raw, &cj); err != nil || len(cj.Spec.JobTemplate.Spec.Template.Spec.Containers) == 0 {
+		return ""
+	}
+	args := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Args
+	for i := 0; i < len(args); i++ {
+		if v, ok := strings.CutPrefix(args[i], "-archive="); ok {
+			return v
+		}
+		if v, ok := strings.CutPrefix(args[i], "--archive="); ok {
+			return v
+		}
+		if (args[i] == "-archive" || args[i] == "--archive") && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}

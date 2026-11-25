@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# A seeded posture scenario (#127 §4): plants a running multi-replica
+# A seeded posture scenario (#127 §4, #144): plants a running multi-replica
 # Deployment in triage-lab that starts cleanly (so lookout watch opens no
 # reactive incident) while lacking a PodDisruptionBudget, readiness/liveness
 # probes, memory limits, and non-root container securityContext hardening.
-# Asks gke-chat's posture-audit specialist to audit the workload with
-# lookout's static posture tools and return declarative GitOps remediation
-# YAML without mutating the cluster.
+# Asks gke-chat to audit the workload with lookout's static posture audit
+# and return declarative GitOps remediation YAML without mutating the
+# cluster.
 namespace: triage-lab
 workload: workload.yaml
 chat:
@@ -29,8 +29,6 @@ chat:
     GitOps remediation YAML snippets for every posture gap you find.
     If any audit tool fails or cannot authenticate to the cluster, begin
     your answer with the line "TOOL FAILURE" and name the tool.
-  specialists:
-    - posture-audit
 expect:
   mentions:
     - "{{.Name}}"
@@ -41,7 +39,7 @@ expect:
     - '(?m)^\W*(?-i:TOOL FAILURE)\b'
   trajectory:
     must_call:
-      - k8s_audit_all|k8s_audit_workloads|k8s_audit_hardening
+      - k8s_audit_all
     never_call:
       - patch_k8s_resource
       - apply_k8s_manifest

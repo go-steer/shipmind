@@ -242,6 +242,7 @@ func TestCanaryRefuses(t *testing.T) {
 		{"scenario path", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.Scenario = "../x" }, "want a scenario's name"},
 		{"no clusters", func(e *env.Env, _ *CanaryOptions, _ *fakeCluster) { e.Agent.Clusters = nil }, "lists no agent.clusters"},
 		{"unknown cluster", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.Cluster = "staging" }, `cluster "staging" is not in the environment's agent.clusters (demo, prod)`},
+		{"bad archive", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.Archive = "runs/stage" }, "want gs://bucket/prefix"},
 		{"no tokens", func(_ *env.Env, _ *CanaryOptions, c *fakeCluster) { c.secrets = nil }, "the cluster holds no agent tokens"},
 		{"unreadable tokens", func(_ *env.Env, _ *CanaryOptions, c *fakeCluster) { c.failOn = "secret" }, "secret failed"},
 		{"secret refused", func(_ *env.Env, _ *CanaryOptions, c *fakeCluster) { c.failOn = "applysecret" }, "is the environment's nightly e2e component deployed?"},
@@ -381,5 +382,129 @@ func TestNamed(t *testing.T) {
 	}
 	if _, err := named([]byte("kind: ["), "run-1"); err == nil {
 		t.Error("a manifest that isn't YAML was named")
+	}
+}
+
+func TestCanaryArchive(t *testing.T) {
+	// 1. Explicit Archive sets -archive=<target> on the canary Job.
+	o := canaryOptions()
+	o.DryRun = true
+	o.Archive = "gs://shipmind-scenario-runs/stage"
+	run, err := Canary(context.Background(), root, canaryEnv(), &fakeCluster{failOn: "secret"}, o)
+	if err != nil {
+		t.Fatalf("Canary explicit archive: %v", err)
+	}
+	if run.Archive != o.Archive {
+		t.Fatalf("run.Archive = %q, want %q", run.Archive, o.Archive)
+	}
+	var j job
+	if err := yaml.Unmarshal(run.Job, &j); err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := []string{"scenario", "run", "-in-cluster", "-atespace=agents",
+		"-router-cert=/run/podidentity/credential-bundle.pem", "-router-trust=/run/servicedns-ca/trust-bundle.pem", "-judge=claude-sonnet-5-5",
+		"-archive=gs://shipmind-scenario-runs/stage",
+		"-task=/canary/task.yaml", "-workspace=/canary/workspace.yaml",
+		"-cluster=projects/example-project/locations/us-central1/clusters/demo", "/scenarios/posture-audit"}
+	if got := j.Spec.Template.Spec.Containers[0].Args; !slices.Equal(got, wantArgs) {
+		t.Errorf("args\n got %q\nwant %q", got, wantArgs)
+	}
+
+	// 2. Overlay auto-detection inherits the nightly CronJob's -archive patch.
+	ovDir := t.TempDir()
+	ref := strings.Repeat("a", 40)
+	kust := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - https://github.com/go-steer/shipmind//deploy/e2e/substrate?ref=" + ref + "\npatches:\n  - path: e2e.yaml\n    target:\n      kind: CronJob\n      labelSelector: shipmind.dev/nightly=scenario\n"
+	patch := "- op: add\n  path: /spec/jobTemplate/spec/template/spec/containers/0/args/4\n  value: -archive=gs://shipmind-scenario-runs/dev\n"
+	if err := os.WriteFile(filepath.Join(ovDir, "kustomization.yaml"), []byte(kust), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ovDir, "e2e.yaml"), []byte(patch), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := canaryEnv()
+	e.Dir = ovDir
+	oAuto := canaryOptions()
+	oAuto.DryRun = true
+	runAuto, err := Canary(context.Background(), root, e, &fakeCluster{failOn: "secret"}, oAuto)
+	if err != nil {
+		t.Fatalf("Canary overlay archive: %v", err)
+	}
+	if runAuto.Archive != "gs://shipmind-scenario-runs/dev" || !strings.Contains(string(runAuto.Job), "-archive=gs://shipmind-scenario-runs/dev") {
+		t.Errorf("overlay archive = %q\n%s", runAuto.Archive, runAuto.Job)
+	}
+
+	// 3. Explicit -archive overrides the overlay's target.
+	oOver := canaryOptions()
+	oOver.DryRun = true
+	oOver.Archive = "gs://shipmind-scenario-runs/custom"
+	runOver, err := Canary(context.Background(), root, e, &fakeCluster{failOn: "secret"}, oOver)
+	if err != nil {
+		t.Fatalf("Canary override archive: %v", err)
+	}
+	if runOver.Archive != "gs://shipmind-scenario-runs/custom" || !strings.Contains(string(runOver.Job), "-archive=gs://shipmind-scenario-runs/custom") || strings.Contains(string(runOver.Job), "/dev") {
+		t.Errorf("override archive = %q\n%s", runOver.Archive, runOver.Job)
+	}
+
+	// 4. Unrenderable overlay degrades gracefully to empty archive.
+	brokenDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(brokenDir, "kustomization.yaml"), []byte("kind: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := overlayArchive(brokenDir, root); got != "" {
+		t.Errorf("broken overlay archive = %q, want empty", got)
+	}
+	if got := overlayArchive(t.TempDir(), root); got != "" {
+		t.Errorf("missing kustomization archive = %q, want empty", got)
+	}
+
+	// 5. Replacing an existing -archive arg in the base nightly manifest leaves no duplicates.
+	for _, tc := range []struct {
+		name string
+		args string
+	}{
+		{"single-token", "[scenario, run, -atespace=X, -archive=gs://old/p, /scenarios/missing-env]"},
+		{"double-dash", "[scenario, run, -atespace=X, --archive=gs://old/p, /scenarios/missing-env]"},
+		{"two-token", "[scenario, run, -atespace=X, -archive, gs://old/p, /scenarios/missing-env]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, sub := range []string{"agents", "deploy/e2e/substrate"} {
+				if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(mustAbs(t, filepath.Join(root, "agents/sre-triage")), filepath.Join(dir, "agents/sre-triage")); err != nil {
+				t.Fatal(err)
+			}
+			body := "kind: CronJob\nspec:\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          containers:\n            - name: a\n              args: " + tc.args + "\n"
+			if err := os.WriteFile(filepath.Join(dir, e2eManifest), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			opts := canaryOptions()
+			opts.DryRun = true
+			opts.Archive = "gs://new/p"
+			gotRun, err := Canary(context.Background(), dir, canaryEnv(), &fakeCluster{failOn: "secret"}, opts)
+			if err != nil {
+				t.Fatalf("Canary: %v", err)
+			}
+			if strings.Contains(string(gotRun.Job), "gs://old/p") || !strings.Contains(string(gotRun.Job), "-archive=gs://new/p") {
+				t.Errorf("replaced archive:\n%s", gotRun.Job)
+			}
+		})
+	}
+
+	// 6. cronJobArchiveArg parses all flag spellings and rejects invalid YAML.
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"eq", "spec:\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          containers:\n            - args: [-archive=gs://b/p]\n", "gs://b/p"},
+		{"double-eq", "spec:\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          containers:\n            - args: [--archive=gs://b/p]\n", "gs://b/p"},
+		{"two-tok", "spec:\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          containers:\n            - args: [-archive, gs://b/p]\n", "gs://b/p"},
+		{"none", "spec:\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          containers:\n            - args: [scenario, run]\n", ""},
+		{"bad-yaml", "spec: [", ""},
+	} {
+		if got := cronJobArchiveArg([]byte(tc.body)); got != tc.want {
+			t.Errorf("cronJobArchiveArg(%s) = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

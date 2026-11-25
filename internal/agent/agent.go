@@ -90,10 +90,11 @@ func NewTokens() (Tokens, error) {
 	return Tokens{Inject: inject, Attach: attach}, nil
 }
 
-// The bundles the agent images carry (images/agent-mast, images/agent) that a task
-// runs: one incident per task for lookout, a conversation per task for
-// switchboard. Budgets differ most: mast meters a session for its life,
-// and a conversation is one long session.
+// The recipes the agent images carry that a task runs: one incident per
+// task for lookout (gke-triage-f, imported from its mast bundle in
+// images/agent and carried directly by images/agent-mast), and a
+// conversation per task for switchboard (gke-chat, a native flat
+// core-agent recipe in images/agent only).
 const (
 	IncidentBundle = "gke-triage-f"
 	ChatBundle     = "gke-chat"
@@ -120,22 +121,22 @@ func Task(root string, e *env.Env, t Tokens) ([]byte, error) {
 	return task(root, e, t, IncidentBundle)
 }
 
-// ChatTask renders the task template switchboard starts a thread's task
-// from: the same agent, image and tokens, with the conversation bundle.
-// With agent.chatImage set, it is core-agent's template and image
-// instead (#48); when agent.vcs is set, it points -c at the Workspace's
-// chat-config.json and adds GitHub egress rules so the single general-purpose
-// chat agent can also delegate GitOps pull requests to propose-change.
+// ChatTask renders the core-agent task template switchboard starts a
+// thread's task from (using the native gke-chat recipe in images/agent).
+// Requires agent.chatImage (gke-chat left images/agent-mast in #144). When
+// agent.vcs is set, it points -c at the Workspace's chat-config.json and
+// adds GitHub egress rules so the single general-purpose chat agent can
+// also delegate GitOps pull requests to propose-change.
 func ChatTask(root string, e *env.Env, t Tokens) ([]byte, error) {
-	if e.Agent.ChatImage != "" {
-		cfgPath, vcsSecret := "", ""
-		if e.Agent.VCS != nil {
-			cfgPath = "/workspace/repo/chat-config.json"
-			vcsSecret = e.Agent.VCS.Secret
-		}
-		return coreAgentTask(root, e, t, ChatBundle, e.Agent.ChatImage, cfgPath, vcsSecret, false)
+	if e.Agent.ChatImage == "" {
+		return nil, fmt.Errorf("chat task: agent.chatImage is required (gke-chat runs on core-agent only)")
 	}
-	return task(root, e, t, ChatBundle)
+	cfgPath, vcsSecret := "", ""
+	if e.Agent.VCS != nil {
+		cfgPath = "/workspace/repo/chat-config.json"
+		vcsSecret = e.Agent.VCS.Secret
+	}
+	return coreAgentTask(root, e, t, ChatBundle, e.Agent.ChatImage, cfgPath, vcsSecret, false)
 }
 
 // AuditTask renders the ax task template the scheduled posture runner
@@ -268,6 +269,9 @@ var proposeChangeTools = []string{
 
 func loadBaseConfig(root, bundle string) (map[string]any, error) {
 	p := filepath.Join(root, Dir, "core-agent-"+bundle+".base.json")
+	if bundle == ChatBundle {
+		p = filepath.Join(root, "agents/sre-triage", bundle, ".agents", "config.json")
+	}
 	base, err := os.ReadFile(p)
 	if err != nil {
 		return nil, err
@@ -357,12 +361,12 @@ func appendPermissionsAllow(doc map[string]any, patterns ...string) {
 
 // ChatConfig renders the core-agent config JSON written to the Workspace's
 // chat-config.json when e.Agent.ChatImage and e.Agent.VCS are configured:
-// core-agent-gke-chat.base.json (checked at Docker build time against
-// imported gke-chat) plus the environment's vcs block and propose-change
-// specialist. Local sandbox file edits and vcs_commit are allowlisted;
-// vcs_publish and vcs_propose remain in ask mode by default so switchboard
-// prompts in Slack before any branch push or pull request creation, unless
-// e.Agent.VCS.ChatAutoApprove opts into allowlisting them.
+// agents/sre-triage/gke-chat/.agents/config.json plus the environment's
+// vcs block and propose-change subagent. Local sandbox file edits and
+// vcs_commit are allowlisted; vcs_publish and vcs_propose remain in ask
+// mode by default so switchboard prompts in Slack before any branch push
+// or pull request creation, unless e.Agent.VCS.ChatAutoApprove opts into
+// allowlisting them.
 func ChatConfig(root string, e *env.Env) ([]byte, error) {
 	if e.Agent.ChatImage == "" || e.Agent.VCS == nil {
 		return nil, nil

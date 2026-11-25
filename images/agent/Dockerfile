@@ -17,47 +17,33 @@
 #
 #   ax-task-runner  ax's runner contract, built from the ax fork at the
 #                   ax-runner pin in versions.yaml
-#   core-agent      built from core-agent at the core-agent pin, a full
-#                   commit SHA, checked after the fetch
+#   core-agent      built (-tags no_tui) from core-agent at the core-agent
+#                   pin, a full commit SHA, checked after the fetch; no_tui
+#                   drops the unused terminal UI (~5 MB) and declines MCP
+#                   elicitation in headless mode (#144)
 #   lookout         built (-tags allproviders) from k8s-lookout at its pin
 #                   in versions.yaml; gke-chat runs lookout mcp
-#                   --profile=audit as a stdio MCP server (#127)
+#                   --tools=k8s_audit_all --clusters-from=auto as a stdio
+#                   MCP server (#127, #144)
 #   leeway          built from leeway at its pin in versions.yaml; gke-chat
-#                   runs leeway mcp as a stdio MCP server (#127)
-#   /opt/core-agent/recipes/<bundle>  agents/sre-triage's mast bundles,
-#                   converted at build time by that same core-agent
-#                   (`core-agent config import-workload`), so the image
-#                   carries what the pinned importer makes of the bundle
-#                   and the bundles keep one source while mast still runs
-#                   them too. A bundle that stops converting fails the
-#                   build. agents/sre-triage/ax/core-agent-<bundle>.json,
-#                   when present, is merged over the converted config:
-#                   the deployment's attach settings, which a mast bundle
-#                   has no place for. The importer gives each specialist
-#                   its own content root (.agents/roots/<name>/mcp.json,
-#                   core-agent#1498) and the main agent no MCP servers;
-#                   the build checks both, then gives the main agent only
-#                   the gke tools
-#                   agents/sre-triage/ax/core-agent-<bundle>.main-tools.json
-#                   names (a bundle with no such file gets none). A bundle
-#                   with core-agent-<bundle>.fold-specialist runs the
-#                   named specialist as its main agent instead of
-#                   delegating to it: its instructions, up to the
-#                   finish_task reporting a delegated specialist uses, are
-#                   appended to the recipe's AGENTS.md (whose roster
-#                   section goes), then core-agent-<bundle>.report.md, and
-#                   the specialist is removed, so the agent that receives a
-#                   signal is the one that reads the cluster, and nothing
-#                   has to be re-typed into a delegation (core-agent hands
-#                   a subagent only what the model writes). Each converted recipe is then booted
-#                   once (echo provider, no network needed) until its
-#                   attach listener answers, so a config core-agent would
-#                   refuse at task start fails the build instead. The
-#                   check asks as Substrate's router does, under the
-#                   router's Host (ax-task-runner's pass-through keeps
-#                   it), so a recipe that would answer the router 421
-#                   (core-agent#1358's guard, without attach.allowed_hosts)
-#                   fails it too.
+#                   runs leeway mcp --timeout=20s --parallelism=32 as a
+#                   stdio MCP server (#127, #144)
+#   /opt/core-agent/recipes/<bundle>
+#                   gke-chat is authored natively under
+#                   agents/sre-triage/gke-chat/.agents/ (flat main agent
+#                   holding the GKE read, lookout audit, and leeway report
+#                   MCP servers directly, with propose-change layered at
+#                   deploy time; #144). gke-triage-f is converted from its
+#                   mast bundle at build time by that same core-agent
+#                   (`core-agent config import-workload`) while mast still
+#                   carries it, merged with
+#                   agents/sre-triage/ax/core-agent-gke-triage-f.json, and
+#                   folded into the main agent via
+#                   core-agent-gke-triage-f.fold-specialist. Each recipe is
+#                   booted once (no network needed) until its attach
+#                   listener answers as Substrate's router (Host check,
+#                   core-agent#1358), verifying MCP server startup, loaded
+#                   AGENTS.md, and posture tool registration.
 #
 # The pins arrive as build arguments read from versions.yaml
 # (build-args.sh); this file has no defaults for them, so they can't
@@ -101,8 +87,8 @@ RUN go mod download
 # versions.yaml's note names the release it is.
 RUN ldflags="-s -w -X github.com/go-steer/core-agent/v3/internal/version.Version=${CORE_AGENT_COMMIT} -X github.com/go-steer/core-agent/v3/internal/version.Commit=${CORE_AGENT_COMMIT}" \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags "$ldflags" -o /out/core-agent ./cmd/core-agent \
- && CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o /usr/local/bin/core-agent ./cmd/core-agent
+    go build -tags no_tui -trimpath -ldflags "$ldflags" -o /out/core-agent ./cmd/core-agent \
+ && CGO_ENABLED=0 go build -tags no_tui -trimpath -ldflags "$ldflags" -o /usr/local/bin/core-agent ./cmd/core-agent
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS lookout
 ARG LOOKOUT_REPO
@@ -160,16 +146,18 @@ COPY --from=core-agent /usr/local/bin/core-agent /usr/local/bin/core-agent
 COPY --from=lookout /usr/local/bin/lookout /usr/local/bin/lookout
 COPY --from=leeway /usr/local/bin/leeway /usr/local/bin/leeway
 COPY agents/sre-triage /in
-# The posture servers, run exactly as gke-chat's mcp.json runs them, with no
-# network and no credentials: lookout must offer its cluster-choice tool
-# (multi-cluster mode) and the audit tools, leeway its report tool. The
-# boot below then has core-agent list both servers' tools for real.
+# The posture servers, run exactly as gke-chat/.agents/mcp.json runs them,
+# with no network and no credentials: lookout must offer only its
+# cluster-choice tool (multi-cluster mode) and k8s_audit_all (2 tools),
+# leeway its report tool. The boot below then has core-agent list both
+# servers' tools for real on the main agent.
 RUN set -e; \
-    lookout $(jq -r '.servers.lookout.args | join(" ")' /in/gke-chat/mcp.json) --list-tools > /tmp/lookout-tools; \
+    lookout $(jq -r '.servers.lookout.args | join(" ")' /in/gke-chat/.agents/mcp.json) --list-tools > /tmp/lookout-tools; \
     grep -q '^k8s_list_clusters ' /tmp/lookout-tools; \
     grep -q '^k8s_audit_all ' /tmp/lookout-tools; \
-    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | leeway $(jq -r '.servers.leeway.args | join(" ")' /in/gke-chat/mcp.json) | grep -q '"name":"report"'; \
-    for b in gke-triage-f gke-chat; do \
+    grep -q '^2 tools ' /tmp/lookout-tools; \
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | leeway $(jq -r '.servers.leeway.args | join(" ")' /in/gke-chat/.agents/mcp.json) | grep -q '"name":"report"'; \
+    for b in gke-triage-f; do \
       core-agent config import-workload -o "/out/$b" "/in/$b"; \
       over="/in/ax/core-agent-$b.json"; \
       if [ -f "$over" ]; then \
@@ -217,8 +205,12 @@ RUN set -e; \
         exit 1; \
       fi; \
     done; \
-    jq -e '(.servers | keys | sort) == ["leeway", "lookout"]' /out/gke-chat/.agents/roots/posture-audit/mcp.json >/dev/null; \
-    jq -e '(.servers | keys) == ["gke"]' /out/gke-chat/.agents/roots/_fallback/mcp.json >/dev/null
+    mkdir -p /out/gke-chat/.agents/plans; \
+    cp -a /in/gke-chat/.agents/. /out/gke-chat/.agents/; \
+    test -f /out/gke-chat/.agents/AGENTS.md; \
+    test -f /out/gke-chat/.agents/config.json; \
+    jq -e '(.servers | keys | sort) == ["gke", "leeway", "lookout"] and .servers.leeway.agentic_never == true and (.servers.lookout.agentic_never // false) == false' /out/gke-chat/.agents/mcp.json >/dev/null; \
+    test ! -d /out/gke-chat/.agents/subagents && test ! -d /out/gke-chat/.agents/roots
 # The Host Substrate's router sends (switchboard's and lookout's
 # default router URL; the nightly's too).
 ARG ROUTER_HOST=atenet-router.ate-system.svc.cluster.local
@@ -241,6 +233,18 @@ RUN set -e; mkdir -p /tmp/content; \
         [ "$code" != 000 ] && break; \
         kill -0 "$pid" 2>/dev/null || break; sleep 0.5; \
       done; \
+      if [ "$code" = 200 ] && [ "$5" = "gke-chat" ]; then \
+        sid=$(curl -sf -m 10 -X POST -H "Host: $ROUTER_HOST" -H "Authorization: Bearer smoke" -H "Content-Type: application/json" -d '{}' http://127.0.0.1:8484/sessions | jq -r '.sessionID // empty' || true); \
+        if [ -z "$sid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; echo "recipe $label: POST /sessions returned no sessionID:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+        if ! curl -sf -m 10 -H "Host: $ROUTER_HOST" -H "Authorization: Bearer smoke" "http://127.0.0.1:8484/sessions/$sid/mcp" > "/tmp/smoke-$label-mcp.json"; then \
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
+          echo "recipe $label: GET /sessions/$sid/mcp failed:"; cat "/tmp/smoke-$label.log"; exit 1; \
+        fi; \
+        if ! jq -e '(.servers[] | select(.name=="lookout") | (.tools | map(.name) | sort)) == ["lookout_k8s_audit_all","lookout_k8s_list_clusters"] and (.servers[] | select(.name=="leeway") | (.tools | map(.name))) == ["leeway_report"]' "/tmp/smoke-$label-mcp.json" >/dev/null; then \
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
+          echo "recipe $label: unexpected main-agent posture MCP tools:"; cat "/tmp/smoke-$label-mcp.json"; cat "/tmp/smoke-$label.log"; exit 1; \
+        fi; \
+      fi; \
       kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
       if [ "$code" = 000 ]; then echo "recipe $label: core-agent did not start:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
       if [ "$code" != 200 ]; then echo "recipe $label: GET /sessions as the router ($ROUTER_HOST) answered $code, not 200"; exit 1; fi; \
@@ -248,6 +252,8 @@ RUN set -e; mkdir -p /tmp/content; \
       if grep -q "is not deliverable" "/tmp/smoke-$label.log"; then echo "recipe $label: alert target was dropped:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
       if grep -Eq "tools allowlist names |has no tool matching " "/tmp/smoke-$label.log"; then echo "recipe $label: unmatched MCP tool allowlist:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
       if grep -Eq "mcp: [0-9]+ server\(s\), [1-9][0-9]* down" "/tmp/smoke-$label.log"; then echo "recipe $label: subagent MCP server failed to start:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if grep -Eq "mcp: [0-9]+ server\(s\) loaded .*\[[1-9][0-9]* failed" "/tmp/smoke-$label.log"; then echo "recipe $label: main-agent MCP server failed to start:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if [ "$5" = "gke-chat" ] && ! grep -Eq "instruction: loaded [1-9][0-9]* file\(s\): .*/out/gke-chat/\.agents/AGENTS\.md" "/tmp/smoke-$label.log"; then echo "recipe $label: native AGENTS.md was not loaded:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
       echo "recipe $label: core-agent starts and answers the router"; \
     }; \
     for b in gke-triage-f gke-chat; do \
