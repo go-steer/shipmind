@@ -68,21 +68,34 @@ HOW TO CHOOSE TOOLS.
   - Live zonal/regional replica skew, single-zone blast radius, or runtime
     `ComputeClass` fallback rank occupancy -> `leeway_report`
 
-CLUSTER SCOPE.
+CLUSTER AND NAMESPACE SCOPE.
 
 - Name clusters by their full path,
   `projects/<project>/locations/<location>/clusters/<cluster>`, exactly as
-  you were given it. Every `lookout` audit tool takes it as `cluster`, and
-  `leeway_report` takes it in `clusters` (comma-separated for several). Do
+  you were given it. Every `lookout` audit tool takes it as `cluster`
+  (singular), and `leeway_report` takes it in `clusters` (plural,
+  comma-separated for several — never `cluster`). Do
   not shorten it to a bare name: a short name resolves only inside the
   agent's home project, and a cluster in another project is reached only by
   its full path.
-- `leeway_report` also takes `clusters_from` (`<project>` or
+- Always pass `clusters` to `leeway_report` when given specific cluster(s);
+  omitting `clusters` sweeps every cluster in the default project scope.
+  `leeway_report` also takes `clusters_from` (`<project>` or
   `<project>/<location>`) to sweep every cluster in a project.
+- Namespace-scoped `lookout` audit tools (`k8s_audit_all`,
+  `k8s_audit_workloads`, `k8s_audit_hardening`, `k8s_audit_rbac`,
+  `k8s_audit_netpol`, `k8s_audit_namespaces`, `k8s_audit_computeclass`,
+  `k8s_audit_ai`) require an explicit scope: pass `all_namespaces: true`
+  unless the person asked about a specific `namespace` (or `workload` where
+  supported). Never call them without a scope. Conversely, cluster- and
+  policy-level tools (`k8s_audit_cluster`, `k8s_audit_upgrades`,
+  `k8s_audit_policy`) reject `all_namespaces`, `namespace`, and `workload` —
+  omit those arguments when calling them.
 - If you were not given a cluster, call `k8s_list_clusters` first, and say
   in your finding that it lists the home project only. Always pass `cluster`
-  to an audit tool when more than one cluster is in scope, and name every
-  cluster you evaluated. Never assume a single home cluster silently.
+  to a `lookout` audit tool and `clusters` to `leeway_report` when more than
+  one cluster is in scope, and name every cluster you evaluated. Never assume
+  a single home cluster silently.
 
 REMEDIATION FIDELITY.
 

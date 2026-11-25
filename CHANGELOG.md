@@ -384,6 +384,11 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Fixed
 
+- `gke-chat`'s `posture-audit` specialist now explicitly instructs passing
+  `all_namespaces: true` (or `namespace`) to namespace-scoped `lookout` audit
+  tools (`k8s_audit_all`, etc.) and `clusters` (never `cluster`) to
+  `leeway_report`, preventing `"no scope"` and unknown-field MCP errors seen
+  in canary runs (#127).
 - Shared `watchboard.digest` sessions in `agents/sre-triage/ax/AGENTS.md.tmpl`
   now evaluate warning entries and Slack `alert` calls per arriving digest
   `sequence` rather than once for the whole session lifetime: new actionable
