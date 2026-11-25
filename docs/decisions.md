@@ -42,6 +42,59 @@ workstation (scenarios run in CI or as Jobs); and adding the canary to
 the nightly e2e component (it would reach a cluster only by upgrading the
 environment, which is what a canary exists to precede).
 
+## 2026-11-22: Placement and ComputeClass rank are scheduled `leeway report` posture, not lookout watch signals
+
+shipmind does not run leeway in informer mode: neither lookout's in-tree
+`topology-drift` and `compute-class` watch sources nor `leeway watch`.
+Placement skew and ComputeClass rank are checked by `leeway report`, run
+on a schedule beside `lookout audit` (#127) and on demand from chat.
+
+- `go-steer/leeway` becomes a pinned component in `versions.yaml`.
+- Each profile's `lookout watch` names its `--sources` and leaves out
+  `topology-drift` and `compute-class`, ahead of
+  go-steer/k8s-lookout#842 removing them from `--sources=auto`.
+- No `LeewayPolicy` or `ClusterLeewayPolicy` CRDs are installed on target
+  clusters.
+- Findings go to Slack as a digest with the remediation attached. They
+  never open an incident task and never page. The schedule starts at
+  daily; a ledger keyed by finding identity stops a standing finding
+  from being reported again inside the refresh window.
+
+The boundary this sets: lookout is the reactive sentinel, the read path
+and the static posture audit; leeway owns runtime placement and
+ComputeClass rank; shipmind owns when either runs and where the result
+goes.
+
+**Why:** skew and rank fallback happen while every pod is Running and
+Ready. They are exposure to a later zone or capacity failure, not an
+outage, so hearing about them in seconds buys little and an incident
+task is the wrong shape. On shipmind-stage on 2026-11-20 a routine
+node auto-provisioning scale-down left one zone empty and lookout's
+in-tree source raised `leeway.domain_unavailable` into the shared
+watchboard task, where the digest carried no message and the agent did
+not alert. The in-tree copy has also fallen behind `go-steer/leeway`
+(scoring fixes, remediation output, report mode). `leeway report` holds
+no informer between runs and spends no model tokens when a cluster is
+clean.
+
+**Consequence:** report mode gives up what only a resident watcher can
+know. `leeway.baseline_breach` is produced by `leeway watch` only.
+`leeway report` has no rollout source, so it cannot rule out
+`rollout_bias` and a run taken mid-rollout can report skew that would
+have been suppressed. Dwell is bypassed, so the ledger has to absorb
+transients, including an empty zone on a cluster that is allowed to
+scale a zone to zero. A placement finding clears when the next run no
+longer reports it; nothing injects `resolved`.
+
+**Rejected:** keeping the two watch sources in lookout as thin wrappers
+over the leeway library (one informer and earlier detection, but posture
+findings stay in the incident path and lookout keeps 23 flags and a
+second copy of the wiring); running `leeway watch` beside
+`lookout watch` (a second cluster-wide Pod informer for a signal nobody
+is paged on); installing `LeewayPolicy` CRDs to promote soft-spread
+findings to critical (a workload that needs zone spread should declare
+`topologySpreadConstraints`, which the scheduler enforces).
+
 ## 2026-11-20: The admin console lives in-tree in shipmind (#128)
 
 Clarifies 2026-10-20 ("A distribution, not a monorepo"). Design:
