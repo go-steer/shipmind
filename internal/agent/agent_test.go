@@ -1122,7 +1122,20 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 	// Neither server reads the Workspace's cluster table, so the specialist
 	// must be told to use full paths (a short name resolves only in the
 	// agent's own project).
-	for _, want := range []string{"- report", "k8s_audit_all", "k8s_audit_computeclass", "k8s_audit_ai", "leeway_report", "platform_managed", "projects/<project>/locations/<location>/clusters/<cluster>", "Do\n  not shorten it to a bare name"} {
+	for _, want := range []string{
+		"- report",
+		"k8s_audit_all",
+		"k8s_audit_computeclass",
+		"k8s_audit_ai",
+		"leeway_report",
+		"platform_managed",
+		"projects/<project>/locations/<location>/clusters/<cluster>",
+		"Do\n  not shorten it to a bare name",
+		"all_namespaces: true",
+		"reject `all_namespaces`",
+		"Always pass `clusters` to `leeway_report`",
+		"never `cluster`",
+	} {
 		if !strings.Contains(string(postureSpec), want) {
 			t.Errorf("posture-audit.specialist.md lacks %q", want)
 		}
