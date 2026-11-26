@@ -251,6 +251,22 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Bumped `k8s-lookout` to `v0.46.0` (`lookout:v0.46.0-gke@sha256:d16db0ce`),
+  `leeway` to `v0.1.9` (`leeway:v0.1.9@sha256:d1dbbcb7`), and `core-agent` to
+  `1b15d237` (`v3.3.0-dev`), and removed `#142`'s temporary
+  `lookout_k8s_audit_all` explicit-scope workaround from
+  `gke-chat/.agents/AGENTS.md` (#144). `k8s-lookout` `v0.46.0` defaults
+  namespace-scoped audit tools to `all_namespaces: true` over MCP, strips
+  inapplicable scope properties, hides unconfigured server-flag tools, queues
+  excess single-caller stdio calls per cluster, sorts findings worst-first
+  before truncation, and logs `elicit=cluster` (`k8s-lookout#867`). `leeway`
+  `v0.1.9` honors `notifications/cancelled`, bounds discovery under
+  `--timeout`, guards ambient multi-cluster sweeps, accepts array `clusters`,
+  and adds unknown-field suggestions (`leeway#41`). `core-agent` `1b15d237`
+  omits MCP elicitation in headless/non-TUI runs (`#1606`), skips digest wrap
+  on subagents lacking `retrieve_raw` (`#1604`), keeps router descriptions out
+  of child ADK identity prompts (`#1607`), gates the Gemini parallelism quirk
+  on enabled tools (`#1608`), and adds `model.thinking_level` (`#1605`).
 - Converted `gke-chat` to a native, flat `core-agent` recipe under
   `agents/sre-triage/gke-chat/.agents/` (`AGENTS.md`, `config.json`,
   `mcp.json`), removing its legacy `mast` bundle, `_fallback` and

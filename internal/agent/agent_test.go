@@ -1164,7 +1164,6 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 		"leeway_report",
 		"platform_managed",
 		"projects/<project>/locations/<location>/clusters/<cluster>",
-		"all_namespaces: true",
 		"Always pass `clusters` to `leeway_report`",
 		"never `cluster`",
 	} {
@@ -1172,7 +1171,7 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 			t.Errorf("gke-chat/.agents/AGENTS.md lacks %q", want)
 		}
 	}
-	for _, unwanted := range []string{"finish_task", "finding.json", "_fallback", "posture-audit", "v0.44.0"} {
+	for _, unwanted := range []string{"finish_task", "finding.json", "_fallback", "posture-audit", "v0.44.0", "all_namespaces: true", "requires an explicit namespace scope"} {
 		if strings.Contains(md, unwanted) {
 			t.Errorf("gke-chat/.agents/AGENTS.md must not reference %q", unwanted)
 		}

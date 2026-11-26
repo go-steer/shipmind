@@ -91,7 +91,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: lookout
-          image: ghcr.io/go-steer/lookout:v0.45.0-gke@sha256:d06dcb71f966336319cc2dc947bf2f8f1bc474a314d42dd4af096c243d6a7523
+          image: ghcr.io/go-steer/lookout:v0.46.0-gke@sha256:d16db0ce086adfdff82d7a99879c9c2965f04cb5c921ac7e3d1990116a9c6d9c
           args:
             - --in-cluster
             # An environment overlay replaces these two (args 1 and 2).

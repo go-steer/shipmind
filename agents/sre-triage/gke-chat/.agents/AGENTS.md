@@ -61,14 +61,10 @@ and the exact remediation.
   full path.
 - Every `gke_*` Kubernetes read takes that full path as `parent`.
 - `lookout_k8s_audit_all` takes the full path as `cluster` (singular). It
-  requires an explicit namespace scope: pass `all_namespaces: true` unless
-  the person asked about a specific `namespace`. Never call
-  `lookout_k8s_audit_all` without `all_namespaces: true` or `namespace`, and
-  do not pass `workload` (which `lookout_k8s_audit_all` rejects).
-- Always pass `clusters` to `leeway_report` (plural, comma-separated for
-  several — never `cluster`) when specific cluster(s) are in scope; omitting
-  `clusters` sweeps every cluster in the default project scope.
-  `leeway_report` also takes `clusters_from` (`<project>` or
+  audits all namespaces by default; pass `namespace` when the person asked
+  about a single namespace.
+- Always pass `clusters` to `leeway_report` (plural — never `cluster`) when
+  specific cluster(s) are in scope, or `clusters_from` (`<project>` or
   `<project>/<location>`) to sweep every cluster in a project.
 - If no cluster was named and the Workspace cluster table has more than one,
   call `gke_list_clusters` or `lookout_k8s_list_clusters` (noting that
