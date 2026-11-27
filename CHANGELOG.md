@@ -251,6 +251,15 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Pinned `agent` (`sha256:ec2c35b2`) and `e2e-runner` (`sha256:783ce1da`)
+  images at `769a4f7` across `versions.yaml`, `deploy/e2e/substrate`, and
+  `deploy/audits/substrate`: `agent` bundles `core-agent` `1b15d237`
+  (`-tags no_tui`), `k8s-lookout` `v0.46.0`, `leeway` `v0.1.9`, `ax-runner`
+  `db1c1de`, and the native flat `gke-chat` recipe (#144, #145, #147);
+  `e2e-runner` adds `shipmind audit run` with static `lookout` `v0.46.0` and
+  `leeway` `v0.1.9`, posture chat/canary scenarios with `-archive` support,
+  and Substrate router `503` retries on slow actor resumes (#127, #143, #144,
+  #146, #148).
 - Bumped Agent Substrate to `v1.0.1` (`20778a6db`) in `versions.yaml` (all 10
   upstream `ghcr.io/agent-substrate/substrate/*` image digests) and
   `deploy/profiles/substrate/workers/workerpool.yaml` (`ateworker-gvisor`),

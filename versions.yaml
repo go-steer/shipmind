@@ -159,17 +159,19 @@ components:
 
   - name: agent
     source: github.com/go-steer/shipmind
-    version: dfac6001a144ac7b2d749e38fae800345aa8ee03
+    version: 769a4f79e88008c9c0acb336c74da88c287bbd22
     profiles: [substrate]
     images:
       - name: agent
-        ref: ghcr.io/go-steer/shipmind/agent:dfac6001a144ac7b2d749e38fae800345aa8ee03@sha256:187872c2b643812efecf4c2933f7673fbb2511367ef2695f06e01f525060e113
+        ref: ghcr.io/go-steer/shipmind/agent:769a4f79e88008c9c0acb336c74da88c287bbd22@sha256:ec2c35b259898b52e17bf457d33c201f12b985266079e4929bf42f7a58c774fa
     note: >-
       The agent image on core-agent (#48), built by this repository
-      (images/agent) at the commit in version: the core-agent, ax-runner,
-      k8s-lookout and leeway pins plus agents/sre-triage's bundles
-      (gke-triage-f and gke-chat), converted at build time on
-      distroless/static-debian12:nonroot (#127). An environment's
+      (images/agent) at the commit in version on
+      distroless/static-debian12:nonroot: core-agent (-tags no_tui, 1b15d237),
+      ax-runner (db1c1de), k8s-lookout (-tags allproviders, v0.46.0), and
+      leeway (v0.1.9) plus agents/sre-triage's native flat gke-chat recipe
+      (#127, #144, #145, #147) and build-time-converted gke-triage-f bundle
+      (with per-digest watchboard alerts, #135). An environment's
       agent.chatImage runs switchboard's threads on it, and
       agent.incidentImage lookout's incidents. CI publishes a new build from
       every main commit that touches those inputs; move this pin to one
@@ -269,23 +271,26 @@ components:
 
   - name: e2e-runner
     source: github.com/go-steer/shipmind
-    version: 6139d97067c82b3dc9b02fb686f76f3588d1c4fb
+    version: 769a4f79e88008c9c0acb336c74da88c287bbd22
     profiles: [substrate]
     images:
       - name: e2e-runner
-        ref: ghcr.io/go-steer/shipmind/e2e-runner:6139d97067c82b3dc9b02fb686f76f3588d1c4fb@sha256:95109eebf507b1e97651e136c660c42bdb6c63185a118751452a7b2132968bf2
+        ref: ghcr.io/go-steer/shipmind/e2e-runner:769a4f79e88008c9c0acb336c74da88c287bbd22@sha256:783ce1da4c767dbe6bbc88fde508b502920ab2f98cad7fc36a277637d83c88aa
     note: >-
-      The end-to-end runner (images/e2e-runner: shipmind, the ax CLI,
-      kubectl, the scenarios) at the commit in version, which the nightly
-      in deploy/e2e/substrate runs. CI publishes a build from every main
-      commit that touches its inputs; move this pin deliberately. This
-      build reads core-agent's sessions as well as mast's (#68) and
-      records each answer's model usage (#73); it carries the
-      oom-killed scenario (#79), can archive each run (#86), checks
-      each run's trajectory (#94), has a judge model grade each answer
-      (#99), and carries the worker-drain scenario (#106), which drains a
-      shared worker and checks its other tasks (#109), counting any of ax's
-      reverts as a failure (#112).
+      The end-to-end and posture audit runner (images/e2e-runner: shipmind,
+      the ax CLI at db1c1de, static lookout v0.46.0 -tags allproviders and
+      leeway v0.1.9, kubectl, and the scenarios) at the commit in version,
+      which the nightlies in deploy/e2e/substrate and the scheduled posture
+      audit CronJob in deploy/audits/substrate run. CI publishes a build
+      from every main commit that touches its inputs; move this pin
+      deliberately. This build carries missing-env, oom-killed (#79),
+      worker-drain (#106, #109, #112), and the posture chat scenarios
+      (posture-audit #137, posture-workloads and posture-placement #143),
+      reads core-agent and mast sessions (#68), records usage (#73),
+      archives runs including canaries (#86, #145), checks trajectories
+      (#94), grades answers with a judge (#99), runs `shipmind audit run`
+      with its dedup ledger (#127, #143), and retries Substrate router 503s
+      on slow actor resumes (#146, #148).
 
   - name: switchboard
     source: github.com/go-steer/switchboard
