@@ -27,42 +27,48 @@
 components:
   - name: substrate
     source: github.com/agent-substrate/substrate
-    version: v1.0.0
+    version: v1.0.1
     profiles: [substrate]
     images:
       - name: ateapi
-        ref: ghcr.io/agent-substrate/substrate/ateapi:v1.0.0@sha256:2f1ee444b126b6e3620045b61d2a87507fb0f889da0249656c474ab59dc2beaf
+        ref: ghcr.io/agent-substrate/substrate/ateapi:v1.0.1@sha256:5d9f6da2e1446766a48908764891cc3c66cc6ff657279415c0d3839d5e9476ee
       - name: atecontroller
-        ref: ghcr.io/agent-substrate/substrate/atecontroller:v1.0.0@sha256:44b3a127048e1da8c15dff35f65defe73f4e54ebb985bc020aa9bb0e6eb029b2
+        ref: ghcr.io/agent-substrate/substrate/atecontroller:v1.0.1@sha256:b63519a821f4c702a689caf5b1ff549a8d6134ac3da94def30c71f914a70d614
       - name: atelet
-        ref: ghcr.io/agent-substrate/substrate/atelet:v1.0.0@sha256:79abc69f982392adbcbc3332cd8191cf74ac3cd1f4a43c44e9c8a3ce16488b6e
+        ref: ghcr.io/agent-substrate/substrate/atelet:v1.0.1@sha256:f6707957b470d8a8529e65a4ec3eb1ad5182a607b313b6b1628c7fe6c0e5a9e6
       - name: atenet
-        ref: ghcr.io/agent-substrate/substrate/atenet:v1.0.0@sha256:04f7d93dc3fb3deda688137077226c12ce2da41cd4753adff708e3737dc59e20
+        ref: ghcr.io/agent-substrate/substrate/atenet:v1.0.1@sha256:ccfa3265be2f45d5ffa7d86ffbe32fa0976426eb1fe1bb28dffbce451c1ea5d7
       - name: ate-idp-server
-        ref: ghcr.io/agent-substrate/substrate/ate-idp-server:v1.0.0@sha256:9553c0e60a8ad8bbb1c54c59e59cf0d33a338bf4f883b6f806610dc407f49f7c
+        ref: ghcr.io/agent-substrate/substrate/ate-idp-server:v1.0.1@sha256:5d9302255998a3f376cbea8d8860488d20b6c030417c0c3ea7fba53a67f2c9f7
       - name: objectstore-plugin
-        ref: ghcr.io/agent-substrate/substrate/objectstore-plugin:v1.0.0@sha256:485cf92b31fed761c53f478d17ed69bf552a2cd8e8cf3b24b98a3e06789ee274
+        ref: ghcr.io/agent-substrate/substrate/objectstore-plugin:v1.0.1@sha256:311cc9cfb9ee8c344f3ebc3e4d5cafb88468840023b62d1c47c6338ed32b0352
       - name: kubernetes-secrets
-        ref: ghcr.io/agent-substrate/substrate/kubernetes-secrets:v1.0.0@sha256:21d494e2461d920bb03a66a0cdf574835c7d2e019b7941acef675ecff5702344
+        ref: ghcr.io/agent-substrate/substrate/kubernetes-secrets:v1.0.1@sha256:46a2872c624c6e3af98984f1097d2205f012ea6c471516ac5189ceb3adef96e5
       - name: podcertcontroller
-        ref: ghcr.io/agent-substrate/substrate/podcertcontroller:v1.0.0@sha256:1005579b2142f63412507342f095894eb435fe3736607f32dbad406d0e05c5a5
+        ref: ghcr.io/agent-substrate/substrate/podcertcontroller:v1.0.1@sha256:46aa01a624053c23080da41ea37937afc5b544cecf77088ab2196b4ffb734b4f
       - name: ateworker-gvisor
-        ref: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0@sha256:f8987236c6256f58c4b2625e543b43f4ae4bdded6ee6821c03d966effb7c0f17
+        ref: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.1@sha256:fd0c6a46d6c69d485856171e632906e774594bea9d00011a4d7038be3e084a2a
       - name: envoy-dataplane
-        ref: ghcr.io/agent-substrate/substrate/envoy-dataplane:v1.0.0@sha256:fc8e4c3ee9060a01153e4d4af571f3db294e60d536422e8a8c2996fa4a72bf8b
+        ref: ghcr.io/agent-substrate/substrate/envoy-dataplane:v1.0.1@sha256:6f59332e4e45da4b1600cf1f0c2104c595d875b661be86b4b8c5b16603ad8191
       - name: postgres
         ref: docker.io/library/postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
       - name: envoy
         ref: docker.io/envoyproxy/envoy:v1.39.5@sha256:8fc594a5d85eb76dca24155cfb9208882406873932b20cf33649a0a611194c43
     note: >-
-      Upstream Substrate v1.0.0 (b34fbee74), installed with its own
+      Upstream Substrate v1.0.1 (20778a6db), installed with its own
       ate-setup from the same tag, its images straight from upstream's
       registry by digest (ateworker-microvm is published too; the
       substrate profile runs gVisor only). postgres and envoy are the
-      third-party images its manifests pin. No fork: the two settings
-      the substrate profile still needs on top (atelet pinned to worker
-      nodes, the router's parked-request budget) are patches `shipmind
-      up` applies after the install, and `status` checks.
+      third-party images its manifests pin. v1.0.1 hardens atenet-egress
+      against loopback/link-local/metadata SSRF (#3881), upgrades Go to
+      1.27.4 (GO-2026-6859) and klauspost/compress to v1.20.4
+      (GO-2026-6865), returns a retryable 503 on slow actor resumes
+      instead of an empty 504 (#3361), and caches Secrets in the k8s
+      credential provider for --secret-cache-ttl (default 10s, #3635).
+      No fork: the two settings the substrate profile still needs on top
+      (atelet pinned to worker nodes, the router's parked-request budget)
+      are patches `shipmind up` applies after the install, and `status`
+      checks.
 
   - name: ax
     source: github.com/mastersingh24/ax

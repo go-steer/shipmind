@@ -17,12 +17,15 @@ package scenario
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -396,4 +399,97 @@ func TestAnswerCalls(t *testing.T) {
 	if got := tr.Calls(); len(got) != 2 {
 		t.Errorf("Calls = %v", got)
 	}
+}
+
+// Substrate v1.0.1's router returns 503 ("actor <ref> is still resuming,
+// retry") when a slow resume outlasts its parked-request budget. Router
+// retries 503 on both GET and POST (preserving the JSON body), gives up
+// after maxResumeAttempts, does not retry other error codes, and stops on
+// context cancellation.
+func TestRouterRetries503OnSlowResume(t *testing.T) {
+	t.Run("GET retries and succeeds", func(t *testing.T) {
+		var hits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if hits.Add(1) <= 2 {
+				http.Error(w, "actor agents/t1 is still resuming, retry", http.StatusServiceUnavailable)
+				return
+			}
+			fmt.Fprint(w, `{"sessions":[{"sessionID":"s1","status":"active"}]}`)
+		}))
+		defer srv.Close()
+		rt := &Router{Base: srv.URL, Atespace: "agents", Token: "tok", RetryDelay: time.Millisecond}
+		sessions, err := rt.Sessions(context.Background(), "t1")
+		if err != nil {
+			t.Fatalf("Sessions = %v", err)
+		}
+		if len(sessions) != 1 || sessions[0].ID != "s1" || hits.Load() != 3 {
+			t.Errorf("sessions=%+v, hits=%d", sessions, hits.Load())
+		}
+	})
+
+	t.Run("POST retries with intact body", func(t *testing.T) {
+		var hits atomic.Int32
+		var lastBody string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			if hits.Add(1) == 1 {
+				http.Error(w, "actor agents/t1 is still resuming, retry", http.StatusServiceUnavailable)
+				return
+			}
+			lastBody = string(b)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+		rt := &Router{Base: srv.URL, Atespace: "agents", Token: "tok", RetryDelay: time.Millisecond}
+		if err := rt.Inject(context.Background(), "t1", "s1", "hello"); err != nil {
+			t.Fatalf("Inject = %v", err)
+		}
+		if hits.Load() != 2 || !strings.Contains(lastBody, `"hello"`) {
+			t.Errorf("hits=%d, lastBody=%q", hits.Load(), lastBody)
+		}
+	})
+
+	t.Run("persistent 503 fails after max attempts", func(t *testing.T) {
+		var hits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			http.Error(w, "actor agents/t1 is still resuming, retry", http.StatusServiceUnavailable)
+		}))
+		defer srv.Close()
+		rt := &Router{Base: srv.URL, Atespace: "agents", Token: "tok", RetryDelay: time.Millisecond}
+		_, err := rt.Sessions(context.Background(), "t1")
+		var se *statusError
+		if !errors.As(err, &se) || se.code != http.StatusServiceUnavailable || hits.Load() != maxResumeAttempts {
+			t.Errorf("err=%v, hits=%d (want 503 after %d)", err, hits.Load(), maxResumeAttempts)
+		}
+	})
+
+	t.Run("non-503 error is not retried", func(t *testing.T) {
+		var hits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+		rt := &Router{Base: srv.URL, Atespace: "agents", Token: "tok", RetryDelay: time.Millisecond}
+		if _, err := rt.Sessions(context.Background(), "t1"); err == nil || hits.Load() != 1 {
+			t.Errorf("err=%v, hits=%d (want error after 1)", err, hits.Load())
+		}
+	})
+
+	t.Run("context cancel stops backoff", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		var hits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			http.Error(w, "still resuming", http.StatusServiceUnavailable)
+			cancel()
+		}))
+		defer srv.Close()
+		rt := &Router{Base: srv.URL, Atespace: "agents", Token: "tok", RetryDelay: 10 * time.Second}
+		_, err := rt.Sessions(ctx, "t1")
+		if !errors.Is(err, context.Canceled) || hits.Load() != 1 {
+			t.Errorf("err=%v, hits=%d (want context.Canceled after 1)", err, hits.Load())
+		}
+	})
 }
