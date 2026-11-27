@@ -251,6 +251,18 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Bumped Agent Substrate to `v1.0.1` (`20778a6db`) in `versions.yaml` (all 10
+  upstream `ghcr.io/agent-substrate/substrate/*` image digests) and
+  `deploy/profiles/substrate/workers/workerpool.yaml` (`ateworker-gvisor`),
+  and made `internal/scenario.Router` retry `503 Service Unavailable` with
+  bounded exponential backoff so the e2e runner and audit auto-PR client join
+  in-flight slow actor resumes instead of failing immediately (#146). Substrate
+  `v1.0.1` hardens `atenet-egress` against loopback/link-local/metadata SSRF,
+  upgrades Go to `1.27.4` (`GO-2026-6859`) and `klauspost/compress` to
+  `v1.20.4` (`GO-2026-6865`), returns retryable `503` instead of empty `504`
+  on slow resumes, and caches Secrets in the k8s credential provider for
+  `--secret-cache-ttl` (default `10s`; `token-refresher` rotates every `1800s`
+  on 1h tokens).
 - Bumped `k8s-lookout` to `v0.46.0` (`lookout:v0.46.0-gke@sha256:d16db0ce`),
   `leeway` to `v0.1.9` (`leeway:v0.1.9@sha256:d1dbbcb7`), and `core-agent` to
   `1b15d237` (`v3.3.0-dev`), and removed `#142`'s temporary

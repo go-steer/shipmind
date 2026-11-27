@@ -45,6 +45,10 @@ type Router struct {
 	EventsWait time.Duration
 	// MaxRaw bounds how much of the stream Replay keeps (default 64 MiB).
 	MaxRaw int64
+	// RetryDelay is the base pause between retries when the router returns
+	// 503 Service Unavailable (Substrate v1.0.1 returns 503 while an actor
+	// is still resuming). Defaults to 1s.
+	RetryDelay time.Duration
 }
 
 // Session is one row of GET /sessions.
@@ -58,6 +62,14 @@ type Session struct {
 // routerTimeout is long enough for the router to wake a suspended task.
 const routerTimeout = 120 * time.Second
 
+// maxResumeAttempts bounds how many times Router tries a request that the
+// router answers with 503 Service Unavailable (slow actor resume in
+// Substrate v1.0.1; each retry joins the in-flight resume).
+const (
+	maxResumeAttempts = 5
+	defaultRetryDelay = time.Second
+)
+
 func (r *Router) client() *http.Client {
 	if r.Client != nil {
 		return r.Client
@@ -65,14 +77,48 @@ func (r *Router) client() *http.Client {
 	return &http.Client{Timeout: routerTimeout}
 }
 
-func (r *Router) get(ctx context.Context, task, path string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(r.Base, "/")+path, nil)
-	if err != nil {
-		return nil, err
+func (r *Router) do(ctx context.Context, method, task, path string, body []byte) (*http.Response, error) {
+	target := strings.TrimSuffix(r.Base, "/") + path
+	delay := r.RetryDelay
+	if delay <= 0 {
+		delay = defaultRetryDelay
 	}
-	req.Header.Set("ate-target-actor", r.Atespace+"/"+task)
-	req.Header.Set("Authorization", "Bearer "+r.Token)
-	resp, err := r.client().Do(req)
+	client := r.client()
+	for attempt := 0; ; attempt++ {
+		var reqBody io.Reader
+		if body != nil {
+			reqBody = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, target, reqBody)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("ate-target-actor", r.Atespace+"/"+task)
+		req.Header.Set("Authorization", "Bearer "+r.Token)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusServiceUnavailable || attempt+1 >= maxResumeAttempts {
+			return resp, nil
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
+		_ = resp.Body.Close()
+		timer := time.NewTimer(delay << attempt)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (r *Router) get(ctx context.Context, task, path string) (*http.Response, error) {
+	resp, err := r.do(ctx, http.MethodGet, task, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -108,14 +154,7 @@ func (r *Router) postJSON(ctx context.Context, task, path string, body, v any) e
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(r.Base, "/")+path, bytes.NewReader(b))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("ate-target-actor", r.Atespace+"/"+task)
-	req.Header.Set("Authorization", "Bearer "+r.Token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := r.client().Do(req)
+	resp, err := r.do(ctx, http.MethodPost, task, path, b)
 	if err != nil {
 		return err
 	}

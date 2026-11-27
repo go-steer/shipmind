@@ -39,7 +39,7 @@ spec:
     - name: gvisor
   # Substrate's gVisor worker at the pinned version, from upstream's
   # registry. Changing it rolls every worker.
-  workerImage: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0@sha256:f8987236c6256f58c4b2625e543b43f4ae4bdded6ee6821c03d966effb7c0f17
+  workerImage: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.1@sha256:fd0c6a46d6c69d485856171e632906e774594bea9d00011a4d7038be3e084a2a
   template:
     nodeSelector:
       cloud.google.com/compute-class: substrate-workers
