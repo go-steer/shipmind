@@ -13,8 +13,7 @@
 # limitations under the License.
 
 # The ax Workspace mounted into every incident and chat task at
-# /workspace/repo; mast reads its AGENTS.md ahead of every prompt
-# (--instructions), and core-agent loads it via --agents-content-dir.
+# /workspace/repo; core-agent loads its AGENTS.md via --agents-content-dir.
 # When agent.vcs or slack.alertChannel is set, chat-config.json and/or
 # incident-config.json carry the augmented core-agent configs layered on
 # top of the baked bundle recipes.

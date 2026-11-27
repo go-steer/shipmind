@@ -58,9 +58,9 @@ type Audits struct {
 	// topology label keys, or "" to disable leeway.domain_unavailable on
 	// clusters that scale zones to zero). Unset defaults to "" (disabled).
 	DomainUnavailableKeys *string `yaml:"domainUnavailableKeys,omitempty"`
-	// AutoPR, when true (requiring agent.vcs, a core-agent image, and
-	// idleSuspendAfter >= 5m), wakes an ax audit task with propose-change
-	// (vcs_proposal_list open-PR deduplication) for actionable findings.
+	// AutoPR, when true (requiring agent.vcs and idleSuspendAfter >= 5m),
+	// wakes an ax audit task with propose-change (vcs_proposal_list open-PR
+	// deduplication) for actionable findings.
 	AutoPR bool `yaml:"autoPR,omitempty"`
 	// RunnerImage, when set, overrides the posture CronJob's e2e-runner
 	// image (pinned by digest).
@@ -122,12 +122,9 @@ func (e *Env) checkVCS(idleSuspend time.Duration, fail func(string, ...any)) {
 	}
 	auditOnly := e.Audits != nil && e.Audits.AutoPR
 	if vcs.ChatAutoApprove && a.ChatImage == "" {
-		fail("agent.vcs.chatAutoApprove: needs agent.chatImage (the core-agent image)")
+		fail("agent.vcs.chatAutoApprove: needs agent.chatImage")
 	} else if !vcs.IncidentAutoPR && !auditOnly && a.ChatImage == "" {
-		fail("agent.vcs: needs agent.chatImage (the core-agent image)")
-	}
-	if vcs.IncidentAutoPR && a.IncidentImage == "" {
-		fail("agent.vcs.incidentAutoPR: needs agent.incidentImage (the core-agent image)")
+		fail("agent.vcs: needs agent.chatImage")
 	}
 	if vcs.IncidentAutoPR && idleSuspend < 5*time.Minute {
 		fail("agent.idleSuspendAfter %q: want at least 5m when agent.vcs.incidentAutoPR is true (incident turns run up to 240s)", a.IdleSuspendAfter)
@@ -183,9 +180,6 @@ func (e *Env) checkAudits(idleSuspend time.Duration, fail func(string, ...any)) 
 	if aud.AutoPR {
 		if e.Agent.VCS == nil {
 			fail("audits.autoPR: needs agent.vcs")
-		}
-		if e.Agent.ChatImage == "" && e.Agent.IncidentImage == "" {
-			fail("audits.autoPR: needs agent.chatImage or agent.incidentImage (the core-agent image)")
 		}
 		if idleSuspend < 5*time.Minute {
 			fail("agent.idleSuspendAfter %q: want at least 5m when audits.autoPR is true (audit PR turns run up to 240s)", e.Agent.IdleSuspendAfter)

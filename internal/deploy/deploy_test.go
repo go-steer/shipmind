@@ -40,8 +40,8 @@ func testEnv() *env.Env {
 		Context: "demo",
 		Agent: env.Agent{
 			Atespace: "agents", Project: "example-project", Workspace: "demo-ws",
-			Image:    "registry.example.com/agent@sha256:" + strings.Repeat("0", 64),
-			Clusters: []env.Cluster{{Name: "demo", Path: "projects/example-project/locations/us-central1/clusters/demo"}},
+			IncidentImage: "registry.example.com/agent@sha256:" + strings.Repeat("0", 64),
+			Clusters:      []env.Cluster{{Name: "demo", Path: "projects/example-project/locations/us-central1/clusters/demo"}},
 		},
 		Expect: []env.Expected{{Object: "apps.v1.Deployment.ns.redis", Reason: "digest pin"}},
 	}
@@ -301,19 +301,15 @@ func TestStatusDrift(t *testing.T) {
 	}
 }
 
-func TestStatusAdoptsAndMissing(t *testing.T) {
+func TestStatusMissingTokens(t *testing.T) {
 	c := inSync(t)
 	delete(c.secrets, Namespace+"/"+TokensSecret)
-	r, err := Status(context.Background(), plan(t), c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(r.Tokens, "adopted from the live task template") || len(r.Changes) != 0 {
-		t.Errorf("adopt: %+v", r)
+	if _, err := Status(context.Background(), plan(t), c); err == nil || !strings.Contains(err.Error(), "restore it by hand") {
+		t.Errorf("live template without tokens Secret: err = %v", err)
 	}
 
 	c = &fakeCluster{secrets: map[string]map[string][]byte{}}
-	r, err = Status(context.Background(), plan(t), c)
+	r, err := Status(context.Background(), plan(t), c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,18 +462,11 @@ func TestUpInSyncKeepsTokens(t *testing.T) {
 	}
 }
 
-func TestUpAdoptsTokens(t *testing.T) {
+func TestUpRefusesMissingTokensSecretWithLiveTemplate(t *testing.T) {
 	c := inSync(t)
 	delete(c.secrets, Namespace+"/"+TokensSecret)
-	if err := Up(context.Background(), plan(t), c, UpOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(writes(c.ops), ", ") != "apply Namespace, secret agent-tokens, apply Deployment" {
-		t.Fatalf("writes %v, want the adopted tokens stored and nothing else rewritten", c.ops)
-	}
-	stored := c.applied[1]
-	if !strings.Contains(stored, "attach: "+base64.StdEncoding.EncodeToString([]byte(tok.Attach))) {
-		t.Errorf("stored tokens are not the adopted ones:\n%s", stored)
+	if err := Up(context.Background(), plan(t), c, UpOptions{}); err == nil || !strings.Contains(err.Error(), "restore it by hand") || len(writes(c.ops)) != 0 {
+		t.Errorf("err = %v, writes %v; want refusal before any write", err, c.ops)
 	}
 }
 
@@ -1286,6 +1275,9 @@ func TestSwitchboardSecret(t *testing.T) {
 	if _, err := Status(ctx, p, c); err == nil || !strings.Contains(err.Error(), "agent.chatImage is required") {
 		t.Fatalf("Status without agent.chatImage = %v, want agent.chatImage required error", err)
 	}
+	if err := Up(ctx, p, c, UpOptions{}); err == nil || !strings.Contains(err.Error(), "agent.chatImage is required") || len(writes(c.ops)) != 0 {
+		t.Fatalf("Up without agent.chatImage = %v, writes=%v, want refusal with zero writes", err, writes(c.ops))
+	}
 	p.Env.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
 	r, err := Status(ctx, p, c)
 	if err != nil {
@@ -1540,10 +1532,9 @@ func TestSwitchboardWiring(t *testing.T) {
 	}
 }
 
-// agent.incidentImage moves lookout's incidents to core-agent (#48): up
-// writes core-agent's template and restarts lookout; status is then
-// clean, and the token check still guards the live template, which now
-// carries only the attach token.
+// Moving agent.incidentImage updates lookout's task template and restarts
+// lookout; status is then clean, and the token check still guards the live
+// template's attach token.
 func TestIncidentImage(t *testing.T) {
 	ctx := context.Background()
 	p := plan(t)
@@ -1574,7 +1565,7 @@ func TestIncidentImage(t *testing.T) {
 		t.Errorf("after: %+v, %v", r, err)
 	}
 
-	// A core-agent template whose attach token isn't the stored one: refused.
+	// A template whose attach token isn't the stored one: refused.
 	other := agent.Tokens{Inject: tok.Inject, Attach: strings.Repeat("d", 32)}
 	stale, err := agent.Task(root, p.Env, other)
 	if err != nil {
@@ -1584,32 +1575,20 @@ func TestIncidentImage(t *testing.T) {
 	if _, err := Status(ctx, p, c); err == nil || !strings.Contains(err.Error(), "disagree") {
 		t.Errorf("stale attach token: err = %v, want a disagreement", err)
 	}
-	// Nothing to adopt the inject token from: refused rather than generated.
+	// Missing tokens Secret with live template: refused rather than generated.
 	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = want
 	delete(c.secrets, Namespace+"/"+TokensSecret)
-	if _, err := Status(ctx, p, c); err == nil || !strings.Contains(err.Error(), "carries no inject token") {
+	if _, err := Status(ctx, p, c); err == nil || !strings.Contains(err.Error(), "restore it by hand") {
 		t.Errorf("no tokens Secret: err = %v", err)
 	}
 }
 
-// The live template is checked against the stored tokens token by token:
-// a mast template that differs only in its inject token is refused, and
-// a template whose tokens are malformed is an error even with the tokens
-// Secret present, rather than silently overwritten.
+// The live template's attach token is checked against the stored tokens:
+// a malformed attach token is an error even with the tokens Secret present,
+// rather than silently overwritten.
 func TestTemplateTokenChecks(t *testing.T) {
 	ctx := context.Background()
 	c := inSync(t)
-	other := agent.Tokens{Inject: strings.Repeat("c", 32), Attach: tok.Attach}
-	task, err := agent.Task(root, testEnv(), other)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = task
-	if _, err := Status(ctx, plan(t), c); err == nil || !strings.Contains(err.Error(), "disagree") {
-		t.Errorf("inject token differs: err = %v", err)
-	}
-
-	c = inSync(t)
 	e := testEnv()
 	e.Agent.IncidentImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("3", 64)
 	good, err := agent.Task(root, e, tok)

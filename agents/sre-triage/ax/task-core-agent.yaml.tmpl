@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The ax task the agent runs as on core-agent, in serve mode, instead of
-# mast (#48), rendered once per use with that use's bundle:
+# The ax task the agent runs as on core-agent, in serve mode (#48),
+# rendered once per use with that use's bundle:
 #
-#   gke-chat      each switchboard thread, when the environment sets
-#                 agent.chatImage: into switchboard's Secret
-#                 (/etc/switchboard/triage.yaml)
-#   gke-triage-f  each lookout incident, when it sets agent.incidentImage:
+#   gke-chat      each switchboard thread (using agent.chatImage): into
+#                 switchboard's Secret (/etc/switchboard/triage.yaml)
+#   gke-triage-f  each lookout incident (using agent.incidentImage):
 #                 into Secret lookout-ax/lookout-ax-agent, which lookout's
 #                 ax sink stamps a task from per incident
 #
@@ -94,7 +93,7 @@ spec:
     - --disable-tools=bash,read_many_files,view_file_outline,delete_file,stat,list_dir,glob
 {{- else }}
     # No bash or file tools: the agent reads clusters through GKE's MCP
-    # server (the image has no kubectl), mast's bundles had neither, and
+    # server (the image has no kubectl), and
     # every tool's schema rides along in every model call. On a
     # multi-session daemon only an admin may approve bash (core-agent
     # #1355), so a Slack approval would be refused anyway.
@@ -135,7 +134,7 @@ spec:
 {{- end }}
     - name: GOOGLE_CLOUD_PROJECT
       value: {{ printf "%q" .Project }}
-    # core-agent has no default location (mast defaulted to global).
+    # core-agent requires an explicit Vertex AI location.
     - name: GOOGLE_CLOUD_LOCATION
       value: global
 {{- if .PostureScope }}

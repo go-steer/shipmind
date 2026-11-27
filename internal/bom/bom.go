@@ -54,7 +54,7 @@ type Component struct {
 	// Name is the component's short name, unique in the file.
 	Name string `yaml:"name"`
 	// Source is the repository the component is built from, as a
-	// module-style path ("github.com/go-steer/mast").
+	// module-style path ("github.com/go-steer/core-agent").
 	Source string `yaml:"source"`
 	// Version is a release tag (vX.Y.Z, optionally with a pre-release
 	// or build suffix) or a full 40-character commit SHA in Source.

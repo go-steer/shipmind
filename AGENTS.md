@@ -19,8 +19,8 @@ deployment manifests. It holds no component source code.
 
 ## Hard rules (violations are bugs)
 
-- **No component source here.** A fix to mast, lookout, switchboard,
-  mast-web, core-agent or substrate-scope lands in that repository; a fix
+- **No component source here.** A fix to core-agent, lookout, leeway,
+  switchboard, mast-web or substrate-scope lands in that repository; a fix
   to ax or Substrate lands in the fork. shipmind moves its pin.
 - **Pins don't move on their own.** A version is a release tag (`vX.Y.Z`)
   or a full commit SHA, never a branch or an abbreviated SHA; an image is

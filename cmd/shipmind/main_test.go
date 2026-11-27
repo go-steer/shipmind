@@ -39,8 +39,8 @@ func write(t *testing.T, doc string) string {
 }
 
 const good = `components:
-  - name: mast
-    source: github.com/go-steer/mast
+  - name: core-agent
+    source: github.com/go-steer/core-agent
     version: 922e5491ba10562ddd68285e318c3efddf074d59
     profiles: [substrate]
 `
@@ -69,7 +69,7 @@ func TestRun(t *testing.T) {
 		{name: "check good", args: []string{"check", "-f", goodPath}, code: 0, stdout: "1 components, all pinned", noStderr: true},
 		{name: "check bad", args: []string{"check", "-f", badPath}, code: 1, stderr: "pinned by digest", noStdout: true},
 		{name: "versions bad", args: []string{"versions", "-f", badPath}, code: 1, noStdout: true},
-		{name: "versions", args: []string{"versions", "-f", goodPath}, code: 0, stdout: "mast       922e5491ba10562ddd68285e318c3efddf074d59  github.com/go-steer/mast  substrate  0"},
+		{name: "versions", args: []string{"versions", "-f", goodPath}, code: 0, stdout: "core-agent  922e5491ba10562ddd68285e318c3efddf074d59  github.com/go-steer/core-agent  substrate  0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
@@ -157,7 +157,7 @@ func TestVendorAndCheck(t *testing.T) {
 	runFail(`no component "gone"`, "check", "-f", path)
 
 	runFail(`no component "nope"`, "vendor", "-f", path, "nope")
-	runFail("no manifests or files to vendor", "vendor", "-f", path, "mast")
+	runFail("no manifests or files to vendor", "vendor", "-f", path, "core-agent")
 	fetcher = fakeFetcher{err: errors.New("network down")}
 	runFail("network down", "vendor", "-f", path, "ax")
 }
@@ -212,7 +212,7 @@ func deployRoot(t *testing.T) (root, envDir string) {
 	}
 	put(filepath.Join(root, "deploy/profiles/p/kustomization.yaml"), "resources:\n  - cm.yaml\n")
 	put(filepath.Join(root, "deploy/profiles/p/cm.yaml"), "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: base\n  namespace: demo\n")
-	for _, name := range []string{"AGENTS.md.tmpl", "task.yaml.tmpl", "workspace.yaml.tmpl"} {
+	for _, name := range []string{"AGENTS.md.tmpl", "task-core-agent.yaml.tmpl", "workspace.yaml.tmpl"} {
 		b, err := os.ReadFile(filepath.Join("../../agents/sre-triage/ax", name))
 		if err != nil {
 			t.Fatal(err)
@@ -242,7 +242,7 @@ agent:
   atespace: agents
   project: example-project
   workspace: demo-ws
-  image: registry.example.com/agent@sha256:`+strings.Repeat("0", 64)+`
+  incidentImage: registry.example.com/agent@sha256:`+strings.Repeat("0", 64)+`
   clusters:
     - name: demo
       path: projects/example-project/locations/us-central1/clusters/demo

@@ -28,7 +28,7 @@ agent:
   atespace: agents
   project: example-project
   workspace: demo-ws
-  image: registry.example.com/agent@` + digest + `
+  incidentImage: registry.example.com/agent@` + digest + `
   clusters:
     - name: demo
       path: projects/example-project/locations/us-central1/clusters/demo
@@ -77,8 +77,9 @@ func TestParseErrors(t *testing.T) {
 		{"atespace", strings.Replace(good, "atespace: agents", "atespace: Agents", 1), "agent.atespace"},
 		{"project", strings.Replace(good, "project: example-project", "project: x", 1), "agent.project"},
 		{"workspace", strings.Replace(good, "workspace: demo-ws", "workspace: demo_ws", 1), "agent.workspace"},
-		{"image", strings.Replace(good, "@"+digest, ":latest", 1), "pinned by digest"},
-		{"incident image", strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent:latest\n  clusters:\n", 1), "agent.incidentImage"},
+		{"legacy agent.image", strings.Replace(good, "  clusters:\n", "  image: registry.example.com/agent-mast@"+digest+"\n  clusters:\n", 1), "field image not found"},
+		{"incident image", strings.Replace(good, "@"+digest, ":latest", 1), "agent.incidentImage"},
+		{"missing incident image", strings.Replace(good, "  incidentImage: registry.example.com/agent@"+digest+"\n", "", 1), "agent.incidentImage"},
 		{"idle not a duration", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: soon\n  clusters:\n", 1), "agent.idleSuspendAfter"},
 		{"idle too short", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: 30s\n  clusters:\n", 1), "agent.idleSuspendAfter"},
 		{"idle too long", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: 30m\n  clusters:\n", 1), "agent.idleSuspendAfter"},
@@ -107,7 +108,6 @@ func TestParseErrors(t *testing.T) {
 		{"slack command case", withSlack(strings.Replace(slackOK, "command: /shipmind-stage", "command: /Shipmind", 1)), "slack.command"},
 		{"slack description", withSlack(slackOK + "  description: " + strings.Repeat("x", 141) + "\n"), "slack.description"},
 		{"slack alertChannel format", withSlack(slackOK + "  alertChannel: '#alerts'\n"), "slack.alertChannel"},
-		{"slack alertChannel without incidentImage", withSlack(slackOK + "  alertChannel: C0123456789\n"), "needs agent.incidentImage"},
 		{"secret name", withSecrets("  - secret: switchboard\n    keys: {a: b}\n"), "secrets[0].secret"},
 		{"secret no keys", withSecrets("  - secret: switchboard/slack\n    keys: {}\n"), "want at least one key"},
 		{"secret key", withSecrets("  - secret: switchboard/slack\n    keys: {'a b': c}\n"), "key \"a b\""},
@@ -116,8 +116,7 @@ func TestParseErrors(t *testing.T) {
 		{"secret restart", withSecrets("  - secret: switchboard/slack\n    keys: {a: b}\n    restart: [Switchboard]\n"), "restart \"Switchboard\""},
 		{"secret twice", withSecrets("  - secret: switchboard/slack\n    keys: {a: b}\n  - secret: switchboard/slack\n    keys: {a: b}\n"), "listed twice"},
 		{"vcs without chatImage", strings.Replace(good, "expect:", "  vcs:\n    secret: gh-token\n    repositories:\n      - repository: org/repo\nexpect:", 1), "needs agent.chatImage"},
-		{"vcs chatAutoApprove without chatImage", strings.Replace(strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent-core@"+digest+"\n  clusters:\n", 1), "expect:", "  vcs:\n    secret: gh-token\n    incidentAutoPR: true\n    chatAutoApprove: true\n    repositories:\n      - repository: org/repo\nexpect:", 1), "agent.vcs.chatAutoApprove: needs agent.chatImage"},
-		{"vcs incidentAutoPR without incidentImage", withVCS("    secret: gh-token\n    incidentAutoPR: true\n    repositories:\n      - repository: org/repo\n"), "needs agent.incidentImage"},
+		{"vcs chatAutoApprove without chatImage", strings.Replace(good, "expect:", "  vcs:\n    secret: gh-token\n    incidentAutoPR: true\n    chatAutoApprove: true\n    repositories:\n      - repository: org/repo\nexpect:", 1), "agent.vcs.chatAutoApprove: needs agent.chatImage"},
 		{"vcs bad secret", withVCS("    secret: Bad_Secret\n    repositories:\n      - repository: org/repo\n"), "agent.vcs.secret"},
 		{"vcs no repos", withVCS("    secret: gh-token\n    repositories: []\n"), "at least one repository"},
 		{"vcs bad repo", withVCS("    secret: gh-token\n    repositories:\n      - repository: org\n"), "agent.vcs.repositories[0].repository"},
@@ -157,8 +156,7 @@ const slackOK = "slack:\n  app: shipmind-stage\n  command: /shipmind-stage\n"
 func withSlack(sl string) string { return strings.Replace(good, "expect:", sl+"expect:", 1) }
 
 func TestParseSlack(t *testing.T) {
-	doc := strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent-core@"+digest+"\n  clusters:\n", 1)
-	doc = strings.Replace(doc, "expect:", slackOK+"  description: Chat with the staging agents\n  alertChannel: C0123456789\nexpect:", 1)
+	doc := withSlack(slackOK + "  description: Chat with the staging agents\n  alertChannel: C0123456789\n")
 	e, err := Parse(strings.NewReader(doc))
 	if err != nil || e.Slack == nil || e.Slack.App != "shipmind-stage" || e.Slack.Command != "/shipmind-stage" ||
 		e.Slack.Description != "Chat with the staging agents" || e.Slack.AlertChannel != "C0123456789" {
@@ -229,8 +227,7 @@ func TestParseVCS(t *testing.T) {
 	if got := e.Agent.VCS.Repositories[1].Base(); got != "release" {
 		t.Errorf("explicit Base() = %q, want release", got)
 	}
-	incidentOnly := strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent-core@"+digest+"\n  clusters:\n", 1)
-	incidentOnly = strings.Replace(incidentOnly, "expect:", "  vcs:\n    secret: gh-token\n    incidentAutoPR: true\n    repositories:\n      - repository: org/gitops\nexpect:", 1)
+	incidentOnly := strings.Replace(good, "expect:", "  vcs:\n    secret: gh-token\n    incidentAutoPR: true\n    repositories:\n      - repository: org/gitops\nexpect:", 1)
 	e2, err := Parse(strings.NewReader(incidentOnly))
 	if err != nil || e2.Agent.VCS == nil || !e2.Agent.VCS.IncidentAutoPR {
 		t.Fatalf("incidentAutoPR without chatImage: %+v, %v", e2, err)
@@ -294,8 +291,7 @@ expect:`, 1)
 	}
 
 	// audits.autoPR with agent.vcs + incidentImage alone (no chatImage) is valid.
-	incAutoPR := strings.Replace(good, "  clusters:\n", "  incidentImage: registry.example.com/agent-core@"+digest+"\n  clusters:\n", 1)
-	incAutoPR = strings.Replace(incAutoPR, "expect:", "  vcs:\n    secret: gh-token\n    repositories:\n      - repository: org/gitops\naudits:\n  autoPR: true\nexpect:", 1)
+	incAutoPR := strings.Replace(good, "expect:", "  vcs:\n    secret: gh-token\n    repositories:\n      - repository: org/gitops\naudits:\n  autoPR: true\nexpect:", 1)
 	if _, err := Parse(strings.NewReader(incAutoPR)); err != nil {
 		t.Errorf("audits.autoPR with incidentImage: %v", err)
 	}
@@ -323,7 +319,6 @@ expect:`, 1)
 		{"domain keys duplicate", "  domainUnavailableKeys: 'zone,zone'\n", "", "audits.domainUnavailableKeys"},
 		{"runner image tag only", "  runnerImage: registry.example.com/runner:latest\n", "", "audits.runnerImage"},
 		{"autoPR without vcs", "  autoPR: true\n", "  chatImage: registry.example.com/agent-core@" + digest + "\n", "audits.autoPR: needs agent.vcs"},
-		{"autoPR without core-agent image", "  autoPR: true\n", "", "audits.autoPR: needs agent.chatImage or agent.incidentImage"},
 		{"autoPR short idle", "  autoPR: true\n", "  chatImage: registry.example.com/agent-core@" + digest + "\n  idleSuspendAfter: 3m\n", "want at least 5m when audits.autoPR is true"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -331,7 +326,7 @@ expect:`, 1)
 			if tc.extraAgent != "" {
 				doc = strings.Replace(doc, "  clusters:\n", tc.extraAgent+"  clusters:\n", 1)
 			}
-			if tc.name == "autoPR without core-agent image" || tc.name == "autoPR short idle" {
+			if tc.name == "autoPR short idle" {
 				doc = strings.Replace(doc, "expect:", "  vcs:\n    secret: gh-token\n    repositories:\n      - repository: org/gitops\naudits:\n"+tc.auditsYAML+"expect:", 1)
 			} else {
 				doc = strings.Replace(doc, "expect:", "audits:\n"+tc.auditsYAML+"expect:", 1)

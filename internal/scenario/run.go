@@ -699,11 +699,10 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	}
 
 	// 4. Wake it through the router. The agent lists a session in its
-	// memory as "active" (a restarted mast lists none until one is used;
-	// a restarted core-agent lists its stored sessions as "idle"), and
-	// this is the first request since the suspend, so an active session
-	// with its history means the task resumed from its snapshot rather
-	// than restarting.
+	// memory as "active" (a restarted core-agent lists its stored sessions
+	// as "idle"), and this is the first request since the suspend, so an
+	// active session with its history means the task resumed from its
+	// snapshot rather than restarting.
 	sessions, err := agent.Sessions(ctx, r.Task)
 	if err != nil {
 		failf("waking task %s: %v", r.Task, err)

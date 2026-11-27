@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # Builds and publishes the substrate profile's images, other than the
-# agent image (image-agent-mast.yml), to ghcr.io/go-steer/shipmind:
+# agent image (image-agent.yml), to ghcr.io/go-steer/shipmind:
 #
 #   token-refresher   images/token-refresher, tagged with the shipmind commit
 #   e2e-runner        images/e2e-runner (shipmind, the ax CLI, kubectl and

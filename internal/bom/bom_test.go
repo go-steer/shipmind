@@ -29,8 +29,8 @@ const (
 
 const good = `
 components:
-  - name: mast
-    source: github.com/go-steer/mast
+  - name: core-agent
+    source: github.com/go-steer/core-agent
     version: ` + sha + `
     profiles: [substrate]
   - name: ax
@@ -70,7 +70,7 @@ func TestGoodFile(t *testing.T) {
 }
 
 func TestParseRejectsUnknownFields(t *testing.T) {
-	_, err := Parse(strings.NewReader("components:\n  - name: mast\n    branch: main\n"))
+	_, err := Parse(strings.NewReader("components:\n  - name: core-agent\n    branch: main\n"))
 	if err == nil || !strings.Contains(err.Error(), "branch") {
 		t.Fatalf("err = %v, want unknown field branch", err)
 	}
@@ -116,13 +116,13 @@ func TestVersions(t *testing.T) {
 }
 
 func TestSources(t *testing.T) {
-	for _, src := range []string{"github.com/go-steer/mast", "gitlab.example.co.uk/a_b/c.d-e"} {
+	for _, src := range []string{"github.com/go-steer/core-agent", "gitlab.example.co.uk/a_b/c.d-e"} {
 		f := &File{Components: []Component{{Name: "a", Source: src, Version: sha, Profiles: []string{"substrate"}}}}
 		if err := f.Check(); err != nil {
 			t.Errorf("source %q: %v", src, err)
 		}
 	}
-	for _, src := range []string{"github.com/x", "github.com/../..", "github.com/a/b/c", "go-steer/mast", "https://github.com/a/b", "github.com/a/.b"} {
+	for _, src := range []string{"github.com/x", "github.com/../..", "github.com/a/b/c", "go-steer/core-agent", "https://github.com/a/b", "github.com/a/.b"} {
 		f := &File{Components: []Component{{Name: "a", Source: src, Version: sha, Profiles: []string{"substrate"}}}}
 		if err := f.Check(); err == nil || !strings.Contains(err.Error(), "is not a repository path") {
 			t.Errorf("source %q: err = %v, want rejected", src, err)
@@ -171,8 +171,8 @@ func TestCheck(t *testing.T) {
 		{"missing fields", "components:\n  - {}\n", []string{
 			"components[0]: no name", "is not a repository path", "no version", "no profiles",
 		}},
-		{"bad name", "components:\n  - {name: Mast, source: github.com/a/b, version: v1.0.0, profiles: [substrate]}\n",
-			[]string{`name "Mast"`}},
+		{"bad name", "components:\n  - {name: CoreAgent, source: github.com/a/b, version: v1.0.0, profiles: [substrate]}\n",
+			[]string{`name "CoreAgent"`}},
 		{"duplicate", "components:\n  - {name: a, source: github.com/a/b, version: v1.0.0, profiles: [substrate]}\n" +
 			"  - {name: a, source: github.com/a/b, version: v1.0.0, profiles: [substrate]}\n",
 			[]string{"a: listed twice"}},
@@ -275,5 +275,10 @@ func TestRepoVersionsFile(t *testing.T) {
 	lo, ok := f.Component("k8s-lookout")
 	if !ok || lo.Source != "github.com/go-steer/k8s-lookout" || len(lo.Images) != 1 {
 		t.Errorf("k8s-lookout component = %+v, ok=%v", lo, ok)
+	}
+	for _, retired := range []string{"mast", "agent-mast"} {
+		if _, ok := f.Component(retired); ok {
+			t.Errorf("retired component %q still in versions.yaml", retired)
+		}
 	}
 }

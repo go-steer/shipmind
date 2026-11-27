@@ -83,15 +83,13 @@ type Agent struct {
 	Project string `yaml:"project"`
 	// Workspace names the ax Workspace mounted into every task.
 	Workspace string `yaml:"workspace"`
-	// Image is the agent image, pinned by digest.
-	Image string `yaml:"image"`
-	// ChatImage, when set, is the core-agent agent image (images/agent),
-	// pinned by digest, that switchboard's threads run instead of Image
-	// (#48): the first use moved off mast. Empty keeps them on Image.
+	// IncidentImage is the core-agent image (images/agent), pinned by
+	// digest, that lookout's incidents run.
+	IncidentImage string `yaml:"incidentImage"`
+	// ChatImage, when set, is the core-agent image (images/agent),
+	// pinned by digest, that switchboard's threads run. Required when
+	// deploying switchboard, running a canary, or enabling chat VCS.
 	ChatImage string `yaml:"chatImage,omitempty"`
-	// IncidentImage is the same for lookout's incidents: set, they run
-	// core-agent from this image instead of mast from Image.
-	IncidentImage string `yaml:"incidentImage,omitempty"`
 	// IdleSuspendAfter is how long a task may go without requests before
 	// ax suspends it (its spec.idle.suspendAfter), as a Go duration from 1m
 	// to 20m; empty is DefaultIdleSuspendAfter (10m). Shorter frees worker
@@ -109,11 +107,10 @@ type Agent struct {
 	// a bare cluster.
 	Clusters []Cluster `yaml:"clusters"`
 	// VCS, when set, enables core-agent's vcs_* tools and the
-	// propose-change GitOps specialist on the chat agent (with
-	// agent.chatImage) and, when incidentAutoPR is true, on autonomous
-	// lookout incidents (with agent.incidentImage), with the GitHub
-	// credential injected at Substrate's egress gateway from
-	// ate-credentials/<Secret>.
+	// propose-change GitOps specialist on the chat agent (when
+	// agent.chatImage is set) and, when incidentAutoPR is true, on
+	// autonomous lookout incidents, with the GitHub credential injected
+	// at Substrate's egress gateway from ate-credentials/<Secret>.
 	VCS *VCS `yaml:"vcs,omitempty"`
 }
 
@@ -125,9 +122,9 @@ type VCS struct {
 	// Secret is the Secret name in ate-credentials carrying keys "bearer"
 	// (injected on api.github.com) and "basic" (injected on github.com).
 	Secret string `yaml:"secret"`
-	// IncidentAutoPR, when true (with agent.incidentImage), equips
-	// autonomous lookout incident tasks with propose-change so concrete
-	// GitOps manifest fixes open pull requests automatically.
+	// IncidentAutoPR, when true, equips autonomous lookout incident
+	// tasks with propose-change so concrete GitOps manifest fixes open
+	// pull requests automatically.
 	IncidentAutoPR bool `yaml:"incidentAutoPR,omitempty"`
 	// ChatAutoApprove, when true (with agent.chatImage), allowlists
 	// vcs_publish and vcs_propose in chat-config.json so the Slack agent
@@ -184,9 +181,9 @@ type Slack struct {
 	// Description, when set, replaces switchboard's description of the
 	// app.
 	Description string `yaml:"description,omitempty"`
-	// AlertChannel, when set (with agent.incidentImage), is the Slack
-	// channel ID ("C..." or "G...") where autonomous lookout incidents
-	// post their diagnosis (and pull request URL, when opened) through
+	// AlertChannel, when set, is the Slack channel ID ("C..." or "G...")
+	// where autonomous lookout incidents and posture audits post their
+	// diagnosis (and pull request URL, when opened) through
 	// switchboard's outbound HTTP ingress.
 	AlertChannel string `yaml:"alertChannel,omitempty"`
 }
@@ -335,14 +332,11 @@ func (e *Env) check() error {
 	if !dnsLabel.MatchString(a.Workspace) {
 		fail("agent.workspace %q: want a DNS label", a.Workspace)
 	}
-	if !digestRef.MatchString(a.Image) {
-		fail("agent.image %q: want an image pinned by digest", a.Image)
+	if !digestRef.MatchString(a.IncidentImage) {
+		fail("agent.incidentImage %q: want an image pinned by digest", a.IncidentImage)
 	}
 	if a.ChatImage != "" && !digestRef.MatchString(a.ChatImage) {
 		fail("agent.chatImage %q: want an image pinned by digest", a.ChatImage)
-	}
-	if a.IncidentImage != "" && !digestRef.MatchString(a.IncidentImage) {
-		fail("agent.incidentImage %q: want an image pinned by digest", a.IncidentImage)
 	}
 	idleSuspend := 10 * time.Minute
 	if a.IdleSuspendAfter != "" {
@@ -416,13 +410,8 @@ func (e *Env) check() error {
 		if len([]rune(sl.Description)) > 140 || strings.ContainsAny(sl.Description, "\n\r") {
 			fail("slack.description: want one line of at most 140 characters")
 		}
-		if sl.AlertChannel != "" {
-			if !slackChanRE.MatchString(sl.AlertChannel) {
-				fail("slack.alertChannel %q: want a Slack channel ID (C... or G...)", sl.AlertChannel)
-			}
-			if a.IncidentImage == "" && e.Audits == nil {
-				fail("slack.alertChannel: needs agent.incidentImage (the core-agent image) or audits")
-			}
+		if sl.AlertChannel != "" && !slackChanRE.MatchString(sl.AlertChannel) {
+			fail("slack.alertChannel %q: want a Slack channel ID (C... or G...)", sl.AlertChannel)
 		}
 	}
 	managed := map[string]bool{}
