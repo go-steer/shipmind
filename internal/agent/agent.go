@@ -93,9 +93,9 @@ func NewTokens() (Tokens, error) {
 }
 
 // The recipes the agent image carries that a task runs: one incident per
-// task for lookout (gke-triage-f, imported into images/agent at build
-// time), and a conversation per task for switchboard (gke-chat, a native
-// flat core-agent recipe in images/agent).
+// task for lookout (gke-triage-f) and a conversation per task for
+// switchboard (gke-chat), both authored as native flat core-agent recipes
+// in images/agent.
 const (
 	IncidentBundle = "gke-triage-f"
 	ChatBundle     = "gke-chat"
@@ -169,8 +169,7 @@ func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image, cfgPath, vc
 		"AttachToken":        t.Attach,
 		"IdleSuspend":        e.Agent.IdleSuspend(),
 		"ConfigPath":         cfgPath,
-		"TrustRecipe":        cfgPath != "" || bundle == ChatBundle,
-		"GoogleHosts":        googleEgressHosts(bundle, e.Agent.Clusters),
+		"GoogleHosts":        googleEgressHosts(e.Agent.Clusters),
 		"PostureScope":       postureScope(bundle, e.Agent.Project, e.Agent.Clusters),
 		"EnableFileTools":    vcsSecret != "",
 		"VCSSecret":          vcsSecret,
@@ -178,11 +177,8 @@ func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image, cfgPath, vc
 	})
 }
 
-func googleEgressHosts(bundle string, clusters []env.Cluster) string {
+func googleEgressHosts(clusters []env.Cluster) string {
 	hosts := []string{"aiplatform.googleapis.com", "container.googleapis.com"}
-	if bundle != ChatBundle {
-		return strings.Join(hosts, ", ")
-	}
 	var wildcards []string
 	for _, c := range clusters {
 		parts := strings.Split(c.Path, "/")
@@ -252,10 +248,7 @@ var proposeChangeTools = []string{
 }
 
 func loadBaseConfig(root, bundle string) (map[string]any, error) {
-	p := filepath.Join(root, Dir, "core-agent-"+bundle+".base.json")
-	if bundle == ChatBundle {
-		p = filepath.Join(root, "agents/sre-triage", bundle, ".agents", "config.json")
-	}
+	p := filepath.Join(root, "agents/sre-triage", bundle, ".agents", "config.json")
 	base, err := os.ReadFile(p)
 	if err != nil {
 		return nil, err
@@ -311,6 +304,7 @@ func proposeChangeSpec() map[string]any {
 		"capability":   "change_executor",
 		"tools":        proposeChangeTools,
 		"mcp":          []string{},
+		"skills":       []string{},
 		"budgets": map[string]any{
 			"max_turns":             15,
 			"max_wallclock_seconds": 180,
@@ -378,10 +372,9 @@ func ChatConfig(root string, e *env.Env) ([]byte, error) {
 
 // IncidentConfig renders the core-agent config JSON written to the
 // Workspace's incident-config.json when agent.vcs.incidentAutoPR or
-// slack.alertChannel is set: core-agent-gke-triage-f.base.json (checked
-// at Docker build time against imported gke-triage-f) plus optional vcs /
-// propose-change and/or switchboard alert target, with headless
-// permissions allowlisted for those declared actions.
+// slack.alertChannel is set: agents/sre-triage/gke-triage-f/.agents/config.json
+// plus optional vcs / propose-change and/or switchboard alert target, with
+// headless permissions allowlisted for those declared actions.
 func IncidentConfig(root string, e *env.Env) ([]byte, error) {
 	autoPR := e.Agent.VCS != nil && e.Agent.VCS.IncidentAutoPR
 	alert := e.Slack != nil && e.Slack.AlertChannel != ""

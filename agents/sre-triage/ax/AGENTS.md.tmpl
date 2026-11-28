@@ -2,8 +2,10 @@
 
 Incidents can come from more than one GKE cluster. Each incident
 names its own: use its `cluster`, `project` and `zone` (else
-`region`) fields to build the GKE MCP `parent`:
-`projects/<project>/locations/<zone or region>/clusters/<cluster>`.
+`region`) fields to build the full GKE cluster path:
+`projects/<project>/locations/<zone or region>/clusters/<cluster>`,
+and pass it as `cluster` on `lookout_k8s_*` tools (or `clusters` on
+`leeway_report`).
 If `cluster` is already a full `projects/.../clusters/...` path, use
 it as is.
 

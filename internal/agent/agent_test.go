@@ -119,6 +119,9 @@ func TestAgentsMD(t *testing.T) {
 	if !strings.Contains(md, want) {
 		t.Errorf("AGENTS.md lacks the cluster table:\n%s", b)
 	}
+	if strings.Contains(md, "GKE MCP") || !strings.Contains(md, "`lookout_k8s_*`") {
+		t.Errorf("AGENTS.md should reference lookout_k8s_* instead of hosted GKE MCP:\n%s", b)
+	}
 	_, repeatSection, ok := strings.Cut(md, "# Repeated and related signals\n")
 	if !strings.HasPrefix(md, "# Clusters\n") || !ok {
 		t.Fatalf("AGENTS.md lacks its sections:\n%s", b)
@@ -399,9 +402,9 @@ func TestSwitchboardConfigErrors(t *testing.T) {
 	}
 }
 
-// lookout's incident tasks run gke-triage-f and switchboard's chat tasks run
-// native gke-chat on core-agent (images/agent), so no template can name a
-// bundle the image lacks.
+// Both lookout's incident tasks (gke-triage-f) and switchboard's chat tasks
+// (gke-chat) run native flat core-agent recipes in images/agent, so no
+// template can name a recipe the image lacks.
 func TestBundles(t *testing.T) {
 	inc, err := Task(root, testEnv(), tok)
 	if err != nil {
@@ -413,12 +416,11 @@ func TestBundles(t *testing.T) {
 	if _, err := ChatTask(root, testEnv(), tok); err == nil || !strings.Contains(err.Error(), "agent.chatImage is required") {
 		t.Errorf("ChatTask without agent.chatImage = %v, want agent.chatImage required error", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "agents/sre-triage", IncidentBundle, "workload.yaml")); err != nil {
-		t.Errorf("bundle %s: %v", IncidentBundle, err)
-	}
-	for _, f := range []string{"AGENTS.md", "config.json", "mcp.json"} {
-		if _, err := os.Stat(filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", f)); err != nil {
-			t.Errorf("native %s recipe missing .agents/%s: %v", ChatBundle, f, err)
+	for _, bundle := range []string{IncidentBundle, ChatBundle} {
+		for _, f := range []string{"AGENTS.md", "config.json", "mcp.json"} {
+			if _, err := os.Stat(filepath.Join(root, "agents/sre-triage", bundle, ".agents", f)); err != nil {
+				t.Errorf("native %s recipe missing .agents/%s: %v", bundle, f, err)
+			}
 		}
 	}
 }
@@ -553,9 +555,10 @@ func TestChatTaskCoreAgent(t *testing.T) {
 	}
 }
 
-// images/agent converts gke-triage-f, copies native gke-chat/.agents directly,
-// builds core-agent with -tags no_tui (declining headless MCP elicitation and
-// dropping the unused TUI), and checks both recipes at build time.
+// images/agent copies native gke-triage-f/.agents and gke-chat/.agents
+// directly (with pinned k8s-lookout skills and zero import-workload/fold
+// machinery), builds core-agent with -tags no_tui (declining headless MCP
+// elicitation and dropping the unused TUI), and boot-checks both recipes.
 func TestCoreAgentImage(t *testing.T) {
 	dockerfile, err := os.ReadFile(filepath.Join(root, "images/agent/Dockerfile"))
 	if err != nil {
@@ -565,15 +568,36 @@ func TestCoreAgentImage(t *testing.T) {
 	if strings.Count(d, "go build -tags no_tui ") != 2 {
 		t.Errorf("images/agent/Dockerfile must build both core-agent binaries with -tags no_tui (found %d)", strings.Count(d, "go build -tags no_tui "))
 	}
-	if !strings.Contains(d, "for b in "+IncidentBundle+"; do") {
-		t.Errorf("images/agent doesn't convert %s", IncidentBundle)
+	for _, want := range []string{
+		"COPY --from=lookout /src/skills /lookout-skills",
+		"cp -a /in/" + IncidentBundle + "/.agents/. /out/" + IncidentBundle + "/.agents/",
+		"cp -a /in/" + ChatBundle + "/.agents/. /out/" + ChatBundle + "/.agents/",
+		"cp -a /lookout-skills/k8s-triage /lookout-skills/playbooks /out/" + IncidentBundle + "/.agents/skills/",
+		"cp -a /lookout-skills/k8s-triage /lookout-skills/cluster-health /lookout-skills/k8s-audit /lookout-skills/k8s-capacity /lookout-skills/gitops-drift /lookout-skills/playbooks /out/" + ChatBundle + "/.agents/skills/",
+		"/out/" + IncidentBundle + "/.agents/skills/k8s-triage/references/playbooks",
+		"/out/" + ChatBundle + "/.agents/skills/k8s-triage/references/playbooks",
+		"for b in " + IncidentBundle + " " + ChatBundle + "; do",
+		"--attach-token=SMOKE_TOKEN",
+		"builtin:propose-change",
+		"skills: 1 loaded — k8s-triage",
+		"skills: 5 loaded — cluster-health, gitops-drift, k8s-audit, k8s-capacity, k8s-triage",
+	} {
+		if !strings.Contains(d, want) {
+			t.Errorf("images/agent/Dockerfile lacks %q", want)
+		}
 	}
-	if !strings.Contains(d, "cp -a /in/"+ChatBundle+"/.agents/. /out/"+ChatBundle+"/.agents/") {
-		t.Errorf("images/agent doesn't copy native %s/.agents", ChatBundle)
+	for _, unwanted := range []string{
+		"import-workload",
+		"fold-specialist",
+		"main-tools.json",
+		"core-agent-$b.base.json",
+		"core-agent-$b.report.md",
+	} {
+		if strings.Contains(d, unwanted) {
+			t.Errorf("images/agent/Dockerfile must not contain legacy mast-import machinery %q", unwanted)
+		}
 	}
-	if !strings.Contains(d, "for b in "+IncidentBundle+" "+ChatBundle+"; do") {
-		t.Errorf("images/agent doesn't boot-check both %s and %s", IncidentBundle, ChatBundle)
-	}
+
 	b, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", "config.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -597,13 +621,20 @@ func TestCoreAgentImage(t *testing.T) {
 		t.Errorf("chat config attach %+v: want multi-session on the token's identity, and no proxies", ms)
 	}
 	// No one approves an incident's tool calls: they're bounded.
-	b, err = os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".json"))
+	b, err = os.ReadFile(filepath.Join(root, "agents/sre-triage", IncidentBundle, ".agents", "config.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var inc struct {
+		Agent struct {
+			MaxSteps            int  `json:"max_steps"`
+			MaxWallclockSeconds int  `json:"max_wallclock_seconds"`
+			FinalReport         bool `json:"final_report"`
+		} `json:"agent"`
 		Permissions struct {
-			ApprovalTimeout string `json:"approval_timeout"`
+			Mode            string   `json:"mode"`
+			ApprovalTimeout string   `json:"approval_timeout"`
+			Allow           []string `json:"allow"`
 		} `json:"permissions"`
 		Attach map[string]any `json:"attach"`
 	}
@@ -611,10 +642,32 @@ func TestCoreAgentImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if d, err := time.ParseDuration(inc.Permissions.ApprovalTimeout); err != nil || d <= 0 || d > 2*time.Minute {
-		t.Errorf("incident overlay %s: want a short approval_timeout", b)
+		t.Errorf("incident config %s: want a short approval_timeout", b)
 	}
 	if _, ok := inc.Attach["multi_session"]; ok {
-		t.Errorf("incident overlay %s: want no multi-session settings", b)
+		t.Errorf("incident config %s: want no multi-session settings", b)
+	}
+	// core-agent enforces agent.max_steps on a turn's main-agent model
+	// calls (#1500): the incident cap must fire, with final_report's
+	// partial, before the 150s bound cuts the turn off with nothing.
+	if !inc.Agent.FinalReport || inc.Agent.MaxSteps < 5 || inc.Agent.MaxSteps*15 > inc.Agent.MaxWallclockSeconds {
+		t.Errorf("incident agent %+v: want final_report and a step cap that fires within the wall-clock bound", inc.Agent)
+	}
+	wantIncAllow := []string{
+		"mcp:lookout_k8s_list_clusters*",
+		"mcp:lookout_k8s_triage_workload*",
+		"mcp:lookout_k8s_resource_spec*",
+		"mcp:lookout_k8s_triage_logs*",
+		"mcp:lookout_k8s_event_timeline*",
+		"mcp:lookout_k8s_list_resources*",
+		"mcp:lookout_k8s_state_edges*",
+		"mcp:lookout_k8s_triage_delta*",
+		"skill:list_skills*",
+		"skill:load_skill*",
+		"skill:load_skill_resource*",
+	}
+	if inc.Permissions.Mode != "ask" || !slices.Equal(inc.Permissions.Allow, wantIncAllow) {
+		t.Errorf("incident permissions = %+v, want ask with %q", inc.Permissions, wantIncAllow)
 	}
 
 	// Requests reach core-agent's loopback listener from Substrate's
@@ -623,10 +676,8 @@ func TestCoreAgentImage(t *testing.T) {
 	// recipes allow the router's names, and the build checks as the
 	// router asks.
 	routerHosts := []string{"atenet-router.ate-system.svc.cluster.local", "atenet-router.ate-system.svc", "atenet-router.ate-system"}
-	for label, cfgPath := range map[string]string{
-		IncidentBundle: filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".json"),
-		ChatBundle:     filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", "config.json"),
-	} {
+	for _, bundle := range []string{IncidentBundle, ChatBundle} {
+		cfgPath := filepath.Join(root, "agents/sre-triage", bundle, ".agents", "config.json")
 		b, err := os.ReadFile(cfgPath)
 		if err != nil {
 			t.Fatal(err)
@@ -640,76 +691,15 @@ func TestCoreAgentImage(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !slices.Equal(o.Attach.AllowedHosts, routerHosts) {
-			t.Errorf("%s config: attach.allowed_hosts %q, want the router's names %q", label, o.Attach.AllowedHosts, routerHosts)
+			t.Errorf("%s config: attach.allowed_hosts %q, want the router's names %q", bundle, o.Attach.AllowedHosts, routerHosts)
 		}
 	}
 	if !strings.Contains(d, "ARG ROUTER_HOST="+routerHosts[0]+"\n") || !strings.Contains(d, `-H "Host: $ROUTER_HOST"`) || !strings.Contains(d, `if [ "$code" != 200 ]; then`) {
 		t.Error("images/agent's boot check doesn't ask as the router does")
 	}
-	// MCP tool layout for imported gke-triage-f: each specialist gets its
-	// own content root, folded into the main agent before main-tools
-	// narrows them.
-	for _, step := range []string{`grep -qx "root: roots/$n" "$sa"`, `the importer gave the main agent MCP servers`, `/in/ax/core-agent-$b.main-tools.json`, `rm -f "$mcp"`} {
-		if !strings.Contains(d, step) {
-			t.Errorf("images/agent lacks %q (the MCP layout checks)", step)
-		}
-	}
-	// The folded specialist's root becomes the main agent's servers
-	// before main-tools narrows them, and only then is the root removed.
-	take, drop, narrow := strings.Index(d, `cp "/in/$b/mcp.json" "$mcp"`), strings.Index(d, `rm -rf "/out/$b/.agents/roots/$n"`), strings.Index(d, `/in/ax/core-agent-$b.main-tools.json`)
-	if take < 0 || take > drop || drop > narrow {
-		t.Error("images/agent's fold doesn't take the specialist's servers, then remove its root, before narrowing")
-	}
-	// The incident profile triages itself: its one specialist runs as
-	// the main agent (so lookout's signal is read where it lands, not
-	// re-typed into a delegation), with that specialist's tools and a
-	// reporting section for a main agent in place of finish_task.
-	fold, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".fold-specialist"))
-	if err != nil || strings.TrimSpace(string(fold)) != "_fallback" {
-		t.Errorf("incident fold-specialist %q, %v", fold, err)
-	}
-	spec, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", IncidentBundle, "specialists/_fallback.specialist.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tool := range []string{"get_k8s_resource", "describe_k8s_resource", "get_k8s_logs", "list_k8s_events"} {
-		if !strings.Contains(string(spec), "        - "+tool+"\n") {
-			t.Errorf("_fallback no longer holds %s; the incident main agent's tools would drift from it", tool)
-		}
-	}
-	var incMain []string
-	b, err = os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".main-tools.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(b, &incMain); err != nil || !slices.Equal(incMain, []string{"get_k8s_resource", "describe_k8s_resource", "get_k8s_logs", "list_k8s_events"}) {
-		t.Errorf("incident main agent's tools %q, %v: want _fallback's", incMain, err)
-	}
-	if !strings.Contains(string(spec), "\nReturn your finding by calling `finish_task`") {
-		t.Error("_fallback's finish_task paragraph moved; the fold cuts the instructions there")
-	}
-	report, err := os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".report.md"))
-	if err != nil || strings.Contains(string(report), "finish_task") {
-		t.Errorf("incident report section: %v, or it names finish_task", err)
-	}
-	// core-agent enforces agent.max_steps on a turn's main-agent model
-	// calls (#1500): the incident cap must fire, with final_report's
-	// partial, before the 150s bound cuts the turn off with nothing (a
-	// healthy run is 4 calls in 45-75s).
-	var incCfg struct {
-		Agent struct {
-			MaxSteps            int `json:"max_steps"`
-			MaxWallclockSeconds int `json:"max_wallclock_seconds"`
-		} `json:"agent"`
-	}
-	b, err = os.ReadFile(filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(b, &incCfg); err != nil || incCfg.Agent.MaxSteps < 5 || incCfg.Agent.MaxSteps*15 > incCfg.Agent.MaxWallclockSeconds {
-		t.Errorf("incident agent %+v: want a step cap that fires within the wall-clock bound (about 15s a call)", incCfg.Agent)
-	}
-	// Legacy mast-import glue for gke-chat must stay deleted (#144).
+
+	// Legacy mast-import glue for both gke-chat and gke-triage-f (and the
+	// retired stock gke-triage bundle) must stay deleted (#131, #144).
 	for _, obsolete := range []string{
 		filepath.Join(root, "agents/sre-triage", ChatBundle, "workload.yaml"),
 		filepath.Join(root, "agents/sre-triage", ChatBundle, "mcp.json"),
@@ -719,9 +709,19 @@ func TestCoreAgentImage(t *testing.T) {
 		filepath.Join(root, Dir, "core-agent-"+ChatBundle+".json"),
 		filepath.Join(root, Dir, "core-agent-"+ChatBundle+".main-tools.json"),
 		filepath.Join(root, Dir, "core-agent-"+ChatBundle+".fold-specialist"),
+		filepath.Join(root, "agents/sre-triage", IncidentBundle, "workload.yaml"),
+		filepath.Join(root, "agents/sre-triage", IncidentBundle, "mcp.json"),
+		filepath.Join(root, "agents/sre-triage", IncidentBundle, "specialists"),
+		filepath.Join(root, "agents/sre-triage", IncidentBundle, "schemas"),
+		filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".base.json"),
+		filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".json"),
+		filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".main-tools.json"),
+		filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".fold-specialist"),
+		filepath.Join(root, Dir, "core-agent-"+IncidentBundle+".report.md"),
+		filepath.Join(root, "agents/sre-triage/gke-triage"),
 	} {
 		if _, err := os.Stat(obsolete); !os.IsNotExist(err) {
-			t.Errorf("obsolete gke-chat mast-import artifact still exists: %s (%v)", obsolete, err)
+			t.Errorf("obsolete mast-import artifact still exists: %s (%v)", obsolete, err)
 		}
 	}
 	// Retired mast image, workflow, and task template must stay deleted (#48).
@@ -732,16 +732,6 @@ func TestCoreAgentImage(t *testing.T) {
 	} {
 		if _, err := os.Stat(obsolete); !os.IsNotExist(err) {
 			t.Errorf("retired mast artifact still exists: %s (%v)", obsolete, err)
-		}
-	}
-	for _, step := range []string{`fold="/in/ax/core-agent-$b.fold-specialist"`, `/^## Subagent Roster/`, `/^Return your finding by calling ` + "`finish_task`" + `/ { exit }`, `cat "/in/ax/core-agent-$b.report.md"`, `[ -f "$sa" ] || continue`} {
-		if !strings.Contains(d, step) {
-			t.Errorf("images/agent lacks %q (the fold)", step)
-		}
-	}
-	for _, step := range []string{`jq -s '.[0] * .[1]'`, "/in/ax/core-agent-$b.json", "--attach-token=SMOKE_TOKEN", "core-agent-$b.base.json", "builtin:propose-change"} {
-		if !strings.Contains(d, step) {
-			t.Errorf("images/agent lacks %q (the overlay merge or the boot check)", step)
 		}
 	}
 }
@@ -817,6 +807,7 @@ func TestChatAndIncidentVCSAndAlertFlows(t *testing.T) {
 	if !strings.Contains(string(multiCfg), `"name": "propose-change"`) ||
 		!strings.Contains(string(multiCfg), `"spawn_agent:propose-change"`) ||
 		!strings.Contains(string(multiCfg), `"mcp": []`) ||
+		!strings.Contains(string(multiCfg), `"skills": []`) ||
 		!strings.Contains(string(multiCfg), `"vcs_commit:*"`) ||
 		strings.Contains(string(multiCfg), `"vcs_publish:*"`) ||
 		strings.Contains(string(multiCfg), `"vcs_propose:*"`) {
@@ -905,8 +896,11 @@ func TestChatAndIncidentVCSAndAlertFlows(t *testing.T) {
 		`"max_steps": 12`,
 		`"max_wallclock_seconds": 240`,
 		`"name": "propose-change"`,
+		`"skills": []`,
 		`"spawn_agent:propose-change"`,
-		`"mcp:gke_get_k8s_resource*"`,
+		`"mcp:lookout_k8s_triage_workload*"`,
+		`"mcp:lookout_k8s_triage_logs*"`,
+		`"skill:load_skill*"`,
 		`"vcs_publish:*"`,
 		`"vcs_propose:*"`,
 		`"alert:slack"`,
@@ -916,6 +910,9 @@ func TestChatAndIncidentVCSAndAlertFlows(t *testing.T) {
 		if !strings.Contains(string(incCfg), want) {
 			t.Errorf("IncidentConfig lacks %q:\n%s", want, incCfg)
 		}
+	}
+	if strings.Contains(string(incCfg), "mcp:gke_") {
+		t.Errorf("IncidentConfig must not carry hosted GKE MCP permissions:\n%s", incCfg)
 	}
 	if _, err := IncidentConfig(t.TempDir(), e); err == nil {
 		t.Error("IncidentConfig with missing base JSON succeeded")
@@ -961,8 +958,10 @@ func TestChatAndIncidentVCSAndAlertFlows(t *testing.T) {
 	}
 }
 
-// agent.incidentImage moves lookout's incidents to core-agent (#48): the
-// same template as the chat task's, with the incident bundle.
+// agent.incidentImage runs lookout's incidents on core-agent (#48, #131): the
+// same template as the chat task's, with the incident bundle, trusted recipe
+// root (for stdio lookout mcp and bundled skills), and GKE DNS control-plane
+// egress for every configured cluster.
 func TestTaskCoreAgent(t *testing.T) {
 	e := testEnv()
 	e.Agent.IncidentImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("3", 64)
@@ -975,10 +974,15 @@ func TestTaskCoreAgent(t *testing.T) {
 			Image   string
 			Command []string
 			Env     []struct{ Name, Value string }
+			Egress  any `yaml:"egress"`
 		} `yaml:"spec"`
 	}
 	if err := yaml.Unmarshal(b, &task); err != nil {
 		t.Fatal(err)
+	}
+	envs := map[string]string{}
+	for _, ev := range task.Spec.Env {
+		envs[ev.Name] = ev.Value
 	}
 	cmd := strings.Join(task.Spec.Command, " ")
 	switch {
@@ -988,23 +992,29 @@ func TestTaskCoreAgent(t *testing.T) {
 		t.Errorf("command %q", cmd)
 	case strings.Contains(string(b), "MAST_"):
 		t.Errorf("core-agent incident task carries mast settings:\n%s", b)
-	case strings.Contains(string(b), ".gke.goog"):
-		t.Errorf("incident task should keep narrow hosted GKE MCP egress (#131):\n%s", b)
-	case strings.Contains(string(b), "name: CORE_AGENT_TRUSTED_DIRS"):
-		t.Errorf("incident task without ConfigPath needs no CORE_AGENT_TRUSTED_DIRS:\n%s", b)
+	case envs["CORE_AGENT_TRUSTED_DIRS"] != "/workspace/repo,/opt/core-agent/recipes/"+IncidentBundle+"/.agents":
+		t.Errorf("incident task CORE_AGENT_TRUSTED_DIRS = %q", envs["CORE_AGENT_TRUSTED_DIRS"])
 	}
-	// The incident and chat tasks differ only in bundle, CORE_AGENT_TRUSTED_DIRS
-	// (chat trusts its posture stdio MCP root), and GKE DNS control-plane egress
-	// for lookout audit and leeway report (#127).
+	wantIncidentEgress := []any{map[string]any{
+		"hosts": []any{"aiplatform.googleapis.com", "container.googleapis.com", "*.europe-west1.gke.goog", "*.us-central1.gke.goog"},
+		"credentials": []any{map[string]any{
+			"header":        "Authorization",
+			"prefix":        "Bearer ",
+			"credentialUri": "ate-secret://k8s.io/default/ate-credentials/google-token/token",
+		}},
+	}}
+	if !reflect.DeepEqual(task.Spec.Egress, wantIncidentEgress) {
+		t.Errorf("incident egress = %#v, want %#v", task.Spec.Egress, wantIncidentEgress)
+	}
+	// On a single-project environment, the incident and chat tasks differ only
+	// in recipe name (both trust their baked recipe root and carry the same GKE
+	// DNS control-plane egress for lookout mcp; #131).
 	e.Agent.ChatImage = e.Agent.IncidentImage
 	chat, err := ChatTask(root, e, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	normChat := string(chat)
-	normChat = strings.ReplaceAll(normChat, "recipes/"+ChatBundle+"/", "recipes/"+IncidentBundle+"/")
-	normChat = strings.Replace(normChat, "    - name: CORE_AGENT_TRUSTED_DIRS\n      value: \"/workspace/repo,/opt/core-agent/recipes/"+IncidentBundle+"/.agents\"\n", "", 1)
-	normChat = strings.Replace(normChat, `[aiplatform.googleapis.com, container.googleapis.com, "*.europe-west1.gke.goog", "*.us-central1.gke.goog"]`, `[aiplatform.googleapis.com, container.googleapis.com]`, 1)
+	normChat := strings.ReplaceAll(string(chat), "recipes/"+ChatBundle+"/", "recipes/"+IncidentBundle+"/")
 	var gotDoc, chatDoc any
 	if err := yaml.Unmarshal(b, &gotDoc); err != nil {
 		t.Fatal(err)
@@ -1013,7 +1023,7 @@ func TestTaskCoreAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(gotDoc, chatDoc) {
-		t.Error("the core-agent incident and chat tasks differ beyond bundle, trusted dirs, and GKE DNS egress")
+		t.Error("the core-agent incident and chat tasks differ beyond recipe bundle")
 	}
 	// Switchboard's threads don't follow incidentImage (and refuse to render without chatImage).
 	e.Agent.ChatImage = ""
@@ -1065,19 +1075,22 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 		"-tags allproviders",
 		"/usr/local/bin/lookout version",
 		"COPY --from=lookout /out/lookout /usr/local/bin/lookout",
+		"COPY --from=lookout /src/skills /lookout-skills",
 		"AS leeway",
 		"/usr/local/bin/leeway version",
 		"COPY --from=leeway /out/leeway /usr/local/bin/leeway",
+		"lookout $(jq -r '.servers.lookout.args | join(\" \")' /in/gke-triage-f/.agents/mcp.json) --list-tools",
+		"grep -q '^8 tools ' /tmp/lookout-triage-tools",
+		"if grep -q '^k8s_scan ' /tmp/lookout-triage-tools; then",
 		"lookout $(jq -r '.servers.lookout.args | join(\" \")' /in/gke-chat/.agents/mcp.json) --list-tools",
-		"grep -q '^k8s_list_clusters ' /tmp/lookout-tools",
-		"grep -q '^k8s_audit_all ' /tmp/lookout-tools",
-		"grep -q '^2 tools ' /tmp/lookout-tools",
+		"grep -q '^9 tools ' /tmp/lookout-chat-tools",
+		"if grep -q '^k8s_scan ' /tmp/lookout-chat-tools; then",
 		"leeway $(jq -r '.servers.leeway.args | join(\" \")' /in/gke-chat/.agents/mcp.json)",
 		"gcr.io/distroless/static-debian12:nonroot@",
 		"tools allowlist names |has no tool matching ",
 		"mcp: [0-9]+ server\\(s\\), [1-9][0-9]* down",
 		"mcp: [0-9]+ server\\(s\\) loaded .*\\[[1-9][0-9]* failed",
-		`instruction: loaded [1-9][0-9]* file\(s\): .*/out/gke-chat/\.agents/AGENTS\.md`,
+		`instruction: loaded [1-9][0-9]* file\(s\): .*/out/${recipe}/\.agents/AGENTS\.md`,
 	} {
 		if !strings.Contains(dockerfile, want) {
 			t.Errorf("images/agent/Dockerfile lacks %q", want)
@@ -1100,11 +1113,7 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 		}
 	}
 
-	chatMCPBytes, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", "mcp.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var chatMCP struct {
+	type mcpDoc struct {
 		Version int `json:"version"`
 		Servers map[string]struct {
 			Transport    string   `json:"transport"`
@@ -1115,20 +1124,61 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 			AgenticNever bool     `json:"agentic_never"`
 		} `json:"servers"`
 	}
+
+	// Both recipes drop hosted GKE MCP completely (#131, D4=B1).
+	incMCPBytes, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", IncidentBundle, ".agents", "mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(incMCPBytes), "container.googleapis.com/mcp") || strings.Contains(string(incMCPBytes), "k8s_scan") {
+		t.Errorf("gke-triage-f/.agents/mcp.json must not reference hosted GKE MCP or k8s_scan:\n%s", incMCPBytes)
+	}
+	var incMCP mcpDoc
+	if err := json.Unmarshal(incMCPBytes, &incMCP); err != nil {
+		t.Fatal(err)
+	}
+	if incMCP.Version != 1 || len(incMCP.Servers) != 1 {
+		t.Fatalf("gke-triage-f mcp.json unexpected version/servers: %+v", incMCP)
+	}
+	if _, hasGKE := incMCP.Servers["gke"]; hasGKE {
+		t.Errorf("gke-triage-f mcp.json must not define hosted gke server")
+	}
+	wantIncLookoutArgs := []string{
+		"mcp",
+		"--tools=k8s_triage_workload,k8s_resource_spec,k8s_triage_logs,k8s_event_timeline,k8s_list_resources,k8s_state_edges,k8s_triage_delta",
+		"--clusters-from=auto",
+		"--max-concurrency-per-cluster=8",
+	}
+	if got := incMCP.Servers["lookout"]; got.Transport != "stdio" || got.Command != "/usr/local/bin/lookout" ||
+		!slices.Equal(got.Args, wantIncLookoutArgs) || got.AgenticNever {
+		t.Errorf("gke-triage-f lookout MCP server = %+v", got)
+	}
+
+	chatMCPBytes, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", "mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(chatMCPBytes), "container.googleapis.com/mcp") || strings.Contains(string(chatMCPBytes), "k8s_scan") {
+		t.Errorf("gke-chat/.agents/mcp.json must not reference hosted GKE MCP or k8s_scan:\n%s", chatMCPBytes)
+	}
+	var chatMCP mcpDoc
 	if err := json.Unmarshal(chatMCPBytes, &chatMCP); err != nil {
 		t.Fatal(err)
 	}
-	if chatMCP.Version != 1 || len(chatMCP.Servers) != 3 {
+	if chatMCP.Version != 1 || len(chatMCP.Servers) != 2 {
 		t.Fatalf("gke-chat mcp.json unexpected version/servers: %+v", chatMCP)
 	}
-	wantGKETools := []string{"list_clusters", "get_cluster", "get_k8s_resource", "describe_k8s_resource", "get_k8s_logs", "list_k8s_events"}
-	if got := chatMCP.Servers["gke"]; got.Transport != "http" || got.URL != "https://container.googleapis.com/mcp/read-only" || !slices.Equal(got.Tools, wantGKETools) || got.AgenticNever {
-		t.Errorf("gke-chat gke MCP server = %+v", got)
+	if _, hasGKE := chatMCP.Servers["gke"]; hasGKE {
+		t.Errorf("gke-chat mcp.json must not define hosted gke server")
 	}
-	// lookout runs --tools=k8s_audit_all (only k8s_list_clusters + k8s_audit_all)
-	// with digesting kept enabled (main agent holds retrieve_raw).
+	wantChatLookoutArgs := []string{
+		"mcp",
+		"--tools=k8s_audit_all,k8s_triage_workload,k8s_resource_spec,k8s_triage_logs,k8s_event_timeline,k8s_list_resources,k8s_state_edges,k8s_triage_delta",
+		"--clusters-from=auto",
+		"--max-concurrency-per-cluster=8",
+	}
 	if got := chatMCP.Servers["lookout"]; got.Transport != "stdio" || got.Command != "/usr/local/bin/lookout" ||
-		!slices.Equal(got.Args, []string{"mcp", "--tools=k8s_audit_all", "--clusters-from=auto", "--max-concurrency-per-cluster=8"}) || got.AgenticNever {
+		!slices.Equal(got.Args, wantChatLookoutArgs) || got.AgenticNever {
 		t.Errorf("gke-chat lookout MCP server = %+v", got)
 	}
 	if got := chatMCP.Servers["leeway"]; got.Transport != "stdio" || got.Command != "/usr/local/bin/leeway" ||
@@ -1136,13 +1186,33 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 		t.Errorf("gke-chat leeway MCP server = %+v", got)
 	}
 
-	// Incident bundle MCP stays strictly on hosted GKE read-only (#131).
-	incMCPBytes, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", IncidentBundle, "mcp.json"))
+	incAgentsMD, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", IncidentBundle, ".agents", "AGENTS.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(incMCPBytes), "lookout") || strings.Contains(string(incMCPBytes), "leeway") {
-		t.Errorf("gke-triage-f/mcp.json must stay untouched until #131:\n%s", incMCPBytes)
+	incMD := string(incAgentsMD)
+	for _, want := range []string{
+		"lookout_k8s_triage_workload",
+		"lookout_k8s_resource_spec",
+		"lookout_k8s_triage_logs",
+		"lookout_k8s_event_timeline",
+		"lookout_k8s_list_resources",
+		"lookout_k8s_state_edges",
+		"lookout_k8s_triage_delta",
+		"overflow section=",
+		"omit `namespace`",
+		"unavailable in this runtime",
+		"references/playbooks/",
+		"projects/<project>/locations/<zone or region>/clusters/<cluster>",
+	} {
+		if !strings.Contains(incMD, want) {
+			t.Errorf("gke-triage-f/.agents/AGENTS.md lacks %q", want)
+		}
+	}
+	for _, unwanted := range []string{"gke_get_k8s_resource", "gke_describe_k8s_resource", "gke_get_k8s_logs", "gke_list_k8s_events", "finish_task` with", "finding.json", "_fallback", "lookout_k8s_audit_all"} {
+		if strings.Contains(incMD, unwanted) {
+			t.Errorf("gke-triage-f/.agents/AGENTS.md must not reference %q", unwanted)
+		}
 	}
 
 	chatAgentsMD, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", "AGENTS.md"))
@@ -1151,20 +1221,30 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 	}
 	md := string(chatAgentsMD)
 	for _, want := range []string{
-		"gke_get_k8s_resource",
 		"lookout_k8s_list_clusters",
 		"lookout_k8s_audit_all",
+		"lookout_k8s_triage_workload",
+		"lookout_k8s_resource_spec",
+		"lookout_k8s_triage_logs",
+		"lookout_k8s_event_timeline",
+		"lookout_k8s_list_resources",
+		"lookout_k8s_state_edges",
+		"lookout_k8s_triage_delta",
 		"leeway_report",
 		"platform_managed",
 		"projects/<project>/locations/<location>/clusters/<cluster>",
 		"Always pass `clusters` to `leeway_report`",
 		"never `cluster`",
+		"overflow section=",
+		"omit `namespace`",
+		"unavailable in this runtime",
+		"references/playbooks/",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("gke-chat/.agents/AGENTS.md lacks %q", want)
 		}
 	}
-	for _, unwanted := range []string{"finish_task", "finding.json", "_fallback", "posture-audit", "v0.44.0", "all_namespaces: true", "requires an explicit namespace scope"} {
+	for _, unwanted := range []string{"gke_list_clusters", "gke_get_cluster", "gke_get_k8s_resource", "gke_describe_k8s_resource", "gke_get_k8s_logs", "gke_list_k8s_events", "finish_task", "finding.json", "_fallback", "posture-audit", "v0.44.0", "all_namespaces: true", "requires an explicit namespace scope"} {
 		if strings.Contains(md, unwanted) {
 			t.Errorf("gke-chat/.agents/AGENTS.md must not reference %q", unwanted)
 		}
@@ -1193,20 +1273,24 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 		t.Errorf("gke-chat agent budgets = %+v", chatCfg.Agent)
 	}
 	wantAllow := []string{
-		"mcp:gke_list_clusters*",
-		"mcp:gke_get_cluster*",
-		"mcp:gke_get_k8s_resource*",
-		"mcp:gke_describe_k8s_resource*",
-		"mcp:gke_get_k8s_logs*",
-		"mcp:gke_list_k8s_events*",
 		"mcp:lookout_k8s_list_clusters*",
 		"mcp:lookout_k8s_audit_all*",
+		"mcp:lookout_k8s_triage_workload*",
+		"mcp:lookout_k8s_resource_spec*",
+		"mcp:lookout_k8s_triage_logs*",
+		"mcp:lookout_k8s_event_timeline*",
+		"mcp:lookout_k8s_list_resources*",
+		"mcp:lookout_k8s_state_edges*",
+		"mcp:lookout_k8s_triage_delta*",
 		"mcp:leeway_report*",
+		"skill:list_skills*",
+		"skill:load_skill*",
+		"skill:load_skill_resource*",
 	}
 	if chatCfg.Permissions.Mode != "ask" || !slices.Equal(chatCfg.Permissions.Allow, wantAllow) {
 		t.Errorf("gke-chat permissions = %+v, want ask with %q", chatCfg.Permissions, wantAllow)
 	}
-	for _, unwanted := range []string{"spawn_agent:posture-audit", "spawn_agent:_fallback", "triage-classifier"} {
+	for _, unwanted := range []string{"mcp:gke_", "spawn_agent:posture-audit", "spawn_agent:_fallback", "triage-classifier"} {
 		if strings.Contains(string(chatCfgBytes), unwanted) {
 			t.Errorf("gke-chat/.agents/config.json must not contain %q", unwanted)
 		}

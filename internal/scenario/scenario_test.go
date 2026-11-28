@@ -69,7 +69,7 @@ func TestRepoScenarios(t *testing.T) {
 // Every repo scenario states its ground truth for the judge (#90), naming
 // the run's own resources.
 func TestRepoDiagnoses(t *testing.T) {
-	for _, name := range []string{"missing-env", "oom-killed"} {
+	for _, name := range []string{"missing-env", "oom-killed", "triage-overflow"} {
 		s, err := Load("../../e2e/scenarios/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -265,12 +265,12 @@ func TestTrajectoryCheck(t *testing.T) {
 	}
 }
 
-// Both scenarios bound the path; their expectations load and accept what
-// a healthy run on staging did (core-agent 3.1.0, 2026-11-06: the pod and
-// its logs, then the Deployment, in four model calls).
+// Incident scenarios bound the path; their expectations accept both the
+// lookout MCP triage tools (#131) and historical archived GKE MCP calls (#91).
 func TestScenarioTrajectories(t *testing.T) {
-	healthy := []string{"gke_get_k8s_resource", "gke_get_k8s_logs", "gke_get_k8s_resource"}
-	for _, name := range []string{"missing-env", "oom-killed"} {
+	lookoutHealthy := []string{"lookout_k8s_triage_workload", "lookout_k8s_triage_logs"}
+	legacyHealthy := []string{"gke_get_k8s_resource", "gke_get_k8s_logs", "gke_get_k8s_resource"}
+	for _, name := range []string{"missing-env", "oom-killed", "worker-drain"} {
 		s, err := Load("../../e2e/scenarios/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -278,12 +278,48 @@ func TestScenarioTrajectories(t *testing.T) {
 		if s.Expect.Trajectory == nil {
 			t.Fatalf("%s: no trajectory", name)
 		}
-		if failures, _ := s.Expect.Trajectory.Check(healthy, 4); len(failures) != 0 {
-			t.Errorf("%s: a healthy run fails %q", name, failures)
+		if failures, _ := s.Expect.Trajectory.Check(lookoutHealthy, 4); len(failures) != 0 {
+			t.Errorf("%s: healthy lookout run fails %q", name, failures)
 		}
-		if failures, _ := s.Expect.Trajectory.Check(append(healthy, "gke_patch_k8s_resource"), 5); len(failures) == 0 {
+		if failures, _ := s.Expect.Trajectory.Check(legacyHealthy, 4); len(failures) != 0 {
+			t.Errorf("%s: archived GKE MCP run fails %q", name, failures)
+		}
+		if failures, _ := s.Expect.Trajectory.Check(append(lookoutHealthy, "gke_patch_k8s_resource"), 5); len(failures) == 0 {
 			t.Errorf("%s: a write passes", name)
 		}
+	}
+}
+
+// triage-overflow (#131): the enrichment bundle drops section=logs under the
+// default 4096-byte cap, so the scenario only passes if the agent follows the
+// overflow trailer with lookout_k8s_triage_logs and names SETTLEMENT_WEBHOOK_URL.
+func TestTriageOverflowScenario(t *testing.T) {
+	s, err := Load("../../e2e/scenarios/triage-overflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := RunName(s.Name, t0)
+	if missing, err := s.Score("SETTLEMENT_WEBHOOK_URL is missing from ConfigMap "+run+"-config.", run); err != nil || len(missing) != 0 {
+		t.Errorf("Score(correct) = %v, %v", missing, err)
+	}
+	if missing, err := s.Score("The settlement container is crash-looping with exit code 1.", run); err != nil || len(missing) != 2 {
+		t.Errorf("Score(incomplete) = %v, %v", missing, err)
+	}
+	m, err := s.Manifest(run)
+	if err != nil || !strings.Contains(string(m), "shipmind.dev/scenario: triage-overflow") || !strings.Contains(string(m), "name: "+run+"-config") {
+		t.Errorf("manifest: %v\n%s", err, m)
+	}
+	if failures, _ := s.Expect.Trajectory.Check([]string{"lookout_k8s_triage_logs"}, 3); len(failures) != 0 {
+		t.Errorf("following overflow with lookout_k8s_triage_logs failed: %q", failures)
+	}
+	if failures, _ := s.Expect.Trajectory.Check([]string{"lookout_k8s_resource_spec"}, 3); len(failures) == 0 {
+		t.Error("triage-overflow passed without calling k8s_triage_logs")
+	}
+	if failures, _ := s.Expect.Trajectory.Check([]string{"gke_get_k8s_resource", "gke_get_k8s_logs"}, 3); len(failures) == 0 {
+		t.Error("triage-overflow accepted legacy gke tools instead of lookout k8s_triage_logs")
+	}
+	if failures, _ := s.Expect.Trajectory.Check([]string{"lookout_k8s_triage_logs", "gke_patch_k8s_resource"}, 4); len(failures) == 0 {
+		t.Error("triage-overflow allowed a cluster write")
 	}
 }
 
@@ -293,6 +329,7 @@ func TestToolMatches(t *testing.T) {
 		want       bool
 	}{
 		{"gke_get_k8s_resource", "get_k8s_resource", true},
+		{"lookout_k8s_triage_logs", "k8s_triage_logs", true},
 		{"get_k8s_resource", "get_k8s_resource", true},
 		{"gke_get_k8s_resource", "resource", false},
 		{"gke_get_k8s_resource", "k8s_resource", false},
@@ -305,9 +342,10 @@ func TestToolMatches(t *testing.T) {
 	}
 }
 
-// The scenarios' tool catalog is the union of the tools declared by
-// gke-triage-f (workload.yaml) and native gke-chat (.agents/config.json),
-// so a trajectory can't name a tool that doesn't exist; a typo is refused.
+// The scenarios' tool catalog holds the union of the tools declared by native
+// gke-triage-f and native gke-chat (.agents/config.json), plus the documented
+// retired hosted GKE MCP read and write tool names kept for archived-run
+// re-grading and never_call safety guards; a typo is refused.
 func TestToolCatalog(t *testing.T) {
 	known, err := loadTools("../../e2e/scenarios/tools.yaml")
 	if err != nil {
@@ -332,69 +370,80 @@ func TestToolCatalog(t *testing.T) {
 		}
 	}
 
-	b, err := os.ReadFile("../../agents/sre-triage/gke-triage-f/workload.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var w struct {
-		Catalog struct {
-			Tools []struct {
-				Name string `yaml:"name"`
-			} `yaml:"tools"`
-		} `yaml:"tool_catalog"`
-	}
-	if err := yaml.Unmarshal(b, &w); err != nil {
-		t.Fatal(err)
-	}
-	triageTools := make([]string, 0, len(w.Catalog.Tools))
-	for _, tl := range w.Catalog.Tools {
-		triageTools = append(triageTools, tl.Name)
-	}
-	recordTools("gke-triage-f/workload.yaml", triageTools)
+	for _, bundle := range []string{"gke-triage-f", "gke-chat"} {
+		cb, err := os.ReadFile(filepath.Join("../../agents/sre-triage", bundle, ".agents/config.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg struct {
+			Tools struct {
+				Policies []struct {
+					Name string `json:"name"`
+				} `json:"policies"`
+			} `json:"tools"`
+		}
+		if err := json.Unmarshal(cb, &cfg); err != nil {
+			t.Fatal(err)
+		}
+		names := make([]string, 0, len(cfg.Tools.Policies))
+		for _, p := range cfg.Tools.Policies {
+			names = append(names, p.Name)
+		}
+		recordTools(bundle+"/.agents/config.json", names)
 
-	cb, err := os.ReadFile("../../agents/sre-triage/gke-chat/.agents/config.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cfg struct {
-		Tools struct {
-			Policies []struct {
-				Name string `json:"name"`
-			} `json:"policies"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(cb, &cfg); err != nil {
-		t.Fatal(err)
-	}
-	chatTools := make([]string, 0, len(cfg.Tools.Policies))
-	for _, p := range cfg.Tools.Policies {
-		chatTools = append(chatTools, p.Name)
-	}
-	recordTools("gke-chat/.agents/config.json", chatTools)
-
-	mb, err := os.ReadFile("../../agents/sre-triage/gke-chat/.agents/mcp.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var mcpCfg struct {
-		Servers map[string]struct {
-			Tools []string `json:"tools"`
-		} `json:"servers"`
-	}
-	if err := json.Unmarshal(mb, &mcpCfg); err != nil {
-		t.Fatal(err)
-	}
-	for srv, spec := range mcpCfg.Servers {
-		for _, tl := range spec.Tools {
-			if !known[tl] {
-				t.Errorf("gke-chat/.agents/mcp.json server %s tool %q isn't in e2e/scenarios/tools.yaml", srv, tl)
+		mb, err := os.ReadFile(filepath.Join("../../agents/sre-triage", bundle, ".agents/mcp.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var mcpCfg struct {
+			Servers map[string]struct {
+				Tools []string `json:"tools"`
+			} `json:"servers"`
+		}
+		if err := json.Unmarshal(mb, &mcpCfg); err != nil {
+			t.Fatal(err)
+		}
+		if _, hasGKE := mcpCfg.Servers["gke"]; hasGKE {
+			t.Errorf("%s/.agents/mcp.json must not define hosted gke server", bundle)
+		}
+		for srv, spec := range mcpCfg.Servers {
+			for _, tl := range spec.Tools {
+				if !known[tl] {
+					t.Errorf("%s/.agents/mcp.json server %s tool %q isn't in e2e/scenarios/tools.yaml", bundle, srv, tl)
+				}
 			}
 		}
 	}
 
+	retiredGKETools := map[string]bool{
+		"triage-classifier":      true,
+		"get_k8s_resource":       true,
+		"describe_k8s_resource":  true,
+		"list_k8s_events":        true,
+		"get_k8s_logs":           true,
+		"get_k8s_rollout_status": true,
+		"list_k8s_api_resources": true,
+		"get_k8s_cluster_info":   true,
+		"get_k8s_version":        true,
+		"check_k8s_auth":         true,
+		"list_clusters":          true,
+		"get_cluster":            true,
+		"list_node_pools":        true,
+		"get_node_pool":          true,
+		"list_operations":        true,
+		"get_operation":          true,
+		"patch_k8s_resource":     true,
+		"apply_k8s_manifest":     true,
+		"delete_k8s_resource":    true,
+		"create_cluster":         true,
+		"update_cluster":         true,
+		"create_node_pool":       true,
+		"update_node_pool":       true,
+		"cancel_operation":       true,
+	}
 	for n := range known {
-		if !inBundles[n] {
-			t.Errorf("e2e/scenarios/tools.yaml lists %q, which no bundle declares", n)
+		if !inBundles[n] && !retiredGKETools[n] {
+			t.Errorf("e2e/scenarios/tools.yaml lists %q, which no recipe declares and isn't in retiredGKETools", n)
 		}
 	}
 
