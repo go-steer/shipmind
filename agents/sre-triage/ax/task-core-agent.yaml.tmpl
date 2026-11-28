@@ -15,11 +15,17 @@
 # The ax task the agent runs as on core-agent, in serve mode (#48),
 # rendered once per use with that use's bundle:
 #
-#   gke-chat      each switchboard thread (using agent.chatImage): into
-#                 switchboard's Secret (/etc/switchboard/triage.yaml)
-#   gke-triage-f  each lookout incident (using agent.incidentImage):
-#                 into Secret lookout-ax/lookout-ax-agent, which lookout's
-#                 ax sink stamps a task from per incident
+#   gke-chat        each switchboard thread (using agent.chatImage): into
+#                   switchboard's Secret (/etc/switchboard/triage.yaml)
+#   gke-triage-f    each lookout incident (using agent.incidentImage):
+#                   into Secret lookout-ax/lookout-ax-agent (task.yaml),
+#                   which lookout's ax sink stamps a task from per incident
+#   gke-watchboard  lookout's per-cluster watchboard (using
+#                   agent.incidentImage): into Secret
+#                   lookout-ax/lookout-ax-agent (watchboard-task.yaml),
+#                   strictly read-only (no VCS/propose-change) with a short
+#                   idle timeout (2m) so it frees its worker slot between
+#                   warning digest flushes (#133)
 #
 # When an environment configures GitOps repositories (agent.vcs) or Slack
 # incident alerts (slack.alertChannel), the Workspace carries an augmented
@@ -174,8 +180,10 @@ spec:
 {{- end }}
   http:
     port: 8484
-  # Suspended after agent.idleSuspendAfter without requests (10m unless the
-  # environment sets it); the router wakes it on the next follow-up.
+  # Suspended after this idle window without requests (agent.idleSuspendAfter
+  # for incident/chat/audit tasks, defaulting to 10m; 2m for watchboard tasks
+  # to free worker slots quickly between batched flushes); the router wakes it
+  # on the next follow-up.
   idle:
     suspendAfter: {{ .IdleSuspend }}
   # Substrate books these against the worker's limits (the WorkerPool in

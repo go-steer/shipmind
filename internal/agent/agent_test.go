@@ -328,6 +328,10 @@ func TestTemplatesSurviveYAML11(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wb, err := WatchboardTask(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
 	e.Agent.VCS = &env.VCS{Secret: "no", IncidentAutoPR: true, Repositories: []env.Repository{{Repository: "on/no", BaseBranch: "on"}}}
 	e.Slack = &env.Slack{App: "shipmind", Command: "/shipmind", AlertChannel: "C0123456789"}
 	chatVCS, err := ChatTask(root, e, tok)
@@ -338,11 +342,19 @@ func TestTemplatesSurviveYAML11(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wbAlert, err := WatchboardTask(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wsVCS, err := Workspace(root, e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, b := range map[string][]byte{"task": task, "workspace": ws, "core-agent chat task": chat, "chat task with vcs": chatVCS, "incident task with vcs+alert": incFull, "workspace with vcs+alert": wsVCS} {
+	for name, b := range map[string][]byte{
+		"task": task, "workspace": ws, "core-agent chat task": chat, "watchboard task": wb,
+		"chat task with vcs": chatVCS, "incident task with vcs+alert": incFull,
+		"watchboard task with alert": wbAlert, "workspace with vcs+alert": wsVCS,
+	} {
 		var doc map[string]any
 		if err := yaml11.Unmarshal(b, &doc); err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -416,7 +428,7 @@ func TestBundles(t *testing.T) {
 	if _, err := ChatTask(root, testEnv(), tok); err == nil || !strings.Contains(err.Error(), "agent.chatImage is required") {
 		t.Errorf("ChatTask without agent.chatImage = %v, want agent.chatImage required error", err)
 	}
-	for _, bundle := range []string{IncidentBundle, ChatBundle} {
+	for _, bundle := range []string{IncidentBundle, ChatBundle, WatchboardBundle} {
 		for _, f := range []string{"AGENTS.md", "config.json", "mcp.json"} {
 			if _, err := os.Stat(filepath.Join(root, "agents/sre-triage", bundle, ".agents", f)); err != nil {
 				t.Errorf("native %s recipe missing .agents/%s: %v", bundle, f, err)
@@ -676,7 +688,7 @@ func TestCoreAgentImage(t *testing.T) {
 	// recipes allow the router's names, and the build checks as the
 	// router asks.
 	routerHosts := []string{"atenet-router.ate-system.svc.cluster.local", "atenet-router.ate-system.svc", "atenet-router.ate-system"}
-	for _, bundle := range []string{IncidentBundle, ChatBundle} {
+	for _, bundle := range []string{IncidentBundle, ChatBundle, WatchboardBundle} {
 		cfgPath := filepath.Join(root, "agents/sre-triage", bundle, ".agents", "config.json")
 		b, err := os.ReadFile(cfgPath)
 		if err != nil {
@@ -948,12 +960,16 @@ func TestChatAndIncidentVCSAndAlertFlows(t *testing.T) {
 	if err := yaml.Unmarshal(wsBytes, &ws); err != nil {
 		t.Fatalf("Workspace YAML: %v", err)
 	}
-	if len(ws.Spec.Files) != 3 ||
+	if len(ws.Spec.Files) != 4 ||
 		ws.Spec.Files[0].Path != "AGENTS.md" ||
 		ws.Spec.Files[1].Path != "chat-config.json" ||
 		ws.Spec.Files[2].Path != "incident-config.json" ||
+		ws.Spec.Files[3].Path != "watchboard-config.json" ||
 		!strings.Contains(ws.Spec.Files[0].Content, "# GitOps pull requests") ||
-		!strings.Contains(ws.Spec.Files[0].Content, "# Slack incident notifications") {
+		!strings.Contains(ws.Spec.Files[0].Content, "# Slack incident notifications") ||
+		!strings.Contains(ws.Spec.Files[3].Content, `"alert:slack"`) ||
+		strings.Contains(ws.Spec.Files[3].Content, `"propose-change"`) ||
+		strings.Contains(ws.Spec.Files[3].Content, `"vcs"`) {
 		t.Errorf("Workspace files = %+v", ws.Spec.Files)
 	}
 }
@@ -1402,5 +1418,274 @@ func TestAuditConfigAndTask(t *testing.T) {
 	ensureSubmap(emptyDoc, "agent")["x"] = 1
 	if ensureSubmap(emptyDoc, "agent")["x"] != 1 {
 		t.Error("ensureSubmap did not persist submap")
+	}
+}
+
+func TestWatchboardRecipeAndTask(t *testing.T) {
+	e := testEnv()
+	if cfg, err := WatchboardConfig(root, e); err != nil || cfg != nil {
+		t.Fatalf("WatchboardConfig without AlertChannel = %s, %v", cfg, err)
+	}
+	// Even with agent.vcs.incidentAutoPR: true, WatchboardConfig stays nil
+	// when AlertChannel is unset and never adds VCS/propose-change when set.
+	e.Agent.VCS = &env.VCS{
+		Secret:         "gh-token",
+		IncidentAutoPR: true,
+		Repositories:   []env.Repository{{Repository: "acme/gitops"}},
+	}
+	if cfg, err := WatchboardConfig(root, e); err != nil || cfg != nil {
+		t.Fatalf("WatchboardConfig with incidentAutoPR only = %s, %v", cfg, err)
+	}
+
+	// Base watchboard task (no Slack alertChannel, even with incidentAutoPR: true
+	// and a long agent.idleSuspendAfter).
+	e.Agent.IdleSuspendAfter = "10m"
+	baseTask, err := WatchboardTask(root, e, tok)
+	if err != nil {
+		t.Fatalf("WatchboardTask(base): %v", err)
+	}
+	baseStr := string(baseTask)
+	for _, want := range []string{
+		"-c\n    - /opt/core-agent/recipes/" + WatchboardBundle + "/.agents/config.json\n",
+		"--disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep",
+		`value: "/workspace/repo,/opt/core-agent/recipes/` + WatchboardBundle + `/.agents"`,
+		`[aiplatform.googleapis.com, container.googleapis.com, "*.europe-west1.gke.goog", "*.us-central1.gke.goog"]`,
+		"suspendAfter: " + WatchboardIdleSuspendAfter + "\n",
+	} {
+		if !strings.Contains(baseStr, want) {
+			t.Errorf("WatchboardTask(base) lacks %q:\n%s", want, baseStr)
+		}
+	}
+	for _, forbidden := range []string{
+		"CORE_AGENT_GITHUB_TOKEN",
+		"api.github.com",
+		"github.com",
+		"CORE_AGENT_SWITCHBOARD_TOKEN",
+		"switchboard.switchboard.svc.cluster.local",
+		"LEEWAY_CLUSTERS_FROM",
+		"watchboard-config.json",
+		"incident-config.json",
+		"MAST_",
+	} {
+		if strings.Contains(baseStr, forbidden) {
+			t.Errorf("WatchboardTask(base) must not contain %q:\n%s", forbidden, baseStr)
+		}
+	}
+
+	// Alert-enabled watchboard task + config (with incidentAutoPR still true).
+	e.Slack = &env.Slack{App: "shipmind", Command: "/shipmind", AlertChannel: "C0123456789"}
+	e.Agent.IdleSuspendAfter = "5m"
+	alertTask, err := WatchboardTask(root, e, tok)
+	if err != nil {
+		t.Fatalf("WatchboardTask(alert): %v", err)
+	}
+	alertStr := string(alertTask)
+	for _, want := range []string{
+		"-c\n    - /workspace/repo/watchboard-config.json\n",
+		"--agents-dir=/opt/core-agent/recipes/" + WatchboardBundle + "/.agents",
+		"--disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep",
+		"CORE_AGENT_SWITCHBOARD_TOKEN",
+		"http://switchboard.switchboard.svc.cluster.local",
+		"ate-secret://k8s.io/default/ate-credentials/switchboard-ingress/token",
+		"suspendAfter: " + WatchboardIdleSuspendAfter + "\n",
+	} {
+		if !strings.Contains(alertStr, want) {
+			t.Errorf("WatchboardTask(alert) lacks %q:\n%s", want, alertStr)
+		}
+	}
+	for _, forbidden := range []string{"CORE_AGENT_GITHUB_TOKEN", "api.github.com", "github.com", "LEEWAY_CLUSTERS_FROM"} {
+		if strings.Contains(alertStr, forbidden) {
+			t.Errorf("WatchboardTask(alert) must never carry VCS/leeway %q:\n%s", forbidden, alertStr)
+		}
+	}
+
+	wbCfgBytes, err := WatchboardConfig(root, e)
+	if err != nil {
+		t.Fatalf("WatchboardConfig(alert): %v", err)
+	}
+	wbCfgStr := string(wbCfgBytes)
+	for _, want := range []string{
+		`"max_steps": 6`,
+		`"max_wallclock_seconds": 90`,
+		`"approval_timeout": "30s"`,
+		`"alert:slack"`,
+		`"template": "switchboard"`,
+		`"conversation": "C0123456789"`,
+		`"mcp:lookout_k8s_triage_workload*"`,
+		`"skill:load_skill*"`,
+	} {
+		if !strings.Contains(wbCfgStr, want) {
+			t.Errorf("WatchboardConfig lacks %q:\n%s", want, wbCfgStr)
+		}
+	}
+	for _, forbidden := range []string{`"vcs"`, `"subagents"`, `"propose-change"`, `"vcs_publish:*"`, `"vcs_propose:*"`, `"edit_file:"`, `"write_file:"`} {
+		if strings.Contains(wbCfgStr, forbidden) {
+			t.Errorf("WatchboardConfig must never include %q:\n%s", forbidden, wbCfgStr)
+		}
+	}
+
+	// Error paths: missing incidentImage, bad tokens, missing recipe config.
+	noImg := testEnv()
+	noImg.Agent.IncidentImage = ""
+	if _, err := WatchboardTask(root, noImg, tok); err == nil || !strings.Contains(err.Error(), "agent.incidentImage is required") {
+		t.Errorf("WatchboardTask without incidentImage = %v", err)
+	}
+	if _, err := WatchboardTask(root, e, Tokens{Inject: tok.Inject, Attach: "x"}); err == nil {
+		t.Error("WatchboardTask with bad token succeeded")
+	}
+	if _, err := WatchboardConfig(t.TempDir(), e); err == nil {
+		t.Error("WatchboardConfig with missing base config succeeded")
+	}
+
+	// Native gke-watchboard/.agents/config.json budgets & idleSuspendAfter invariant.
+	rawCfg, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", WatchboardBundle, ".agents", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wbCfg struct {
+		Agent struct {
+			MaxSteps            int     `json:"max_steps"`
+			MaxWallclockSeconds int     `json:"max_wallclock_seconds"`
+			MaxSessionCostUSD   float64 `json:"max_session_cost_usd"`
+			FinalReport         bool    `json:"final_report"`
+		} `json:"agent"`
+		Attach      map[string]any `json:"attach"`
+		Permissions struct {
+			Mode            string   `json:"mode"`
+			ApprovalTimeout string   `json:"approval_timeout"`
+			Allow           []string `json:"allow"`
+		} `json:"permissions"`
+		Tools struct {
+			Policies []struct {
+				Name     string `json:"name"`
+				Mutating bool   `json:"mutating"`
+			} `json:"policies"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(rawCfg, &wbCfg); err != nil {
+		t.Fatal(err)
+	}
+	idleDur, err := time.ParseDuration(WatchboardIdleSuspendAfter)
+	if err != nil {
+		t.Fatalf("WatchboardIdleSuspendAfter: %v", err)
+	}
+	wallDur := time.Duration(wbCfg.Agent.MaxWallclockSeconds) * time.Second
+	if wbCfg.Agent.MaxSteps < 4 || wbCfg.Agent.MaxSteps*15 > wbCfg.Agent.MaxWallclockSeconds || !wbCfg.Agent.FinalReport || wbCfg.Agent.MaxSessionCostUSD <= 0 {
+		t.Errorf("gke-watchboard budgets unexpected: %+v", wbCfg.Agent)
+	}
+	if idleDur <= wallDur || idleDur-wallDur < 30*time.Second {
+		t.Errorf("WatchboardIdleSuspendAfter (%s) must exceed max_wallclock_seconds (%s) by at least 30s", idleDur, wallDur)
+	}
+	if _, ok := wbCfg.Attach["multi_session"]; ok {
+		t.Errorf("gke-watchboard config must not set attach.multi_session: %+v", wbCfg.Attach)
+	}
+	if d, err := time.ParseDuration(wbCfg.Permissions.ApprovalTimeout); err != nil || d <= 0 || d > 2*time.Minute || wbCfg.Permissions.Mode != "ask" {
+		t.Errorf("gke-watchboard permissions = %+v", wbCfg.Permissions)
+	}
+	wantAllow := []string{
+		"mcp:lookout_k8s_list_clusters*",
+		"mcp:lookout_k8s_triage_workload*",
+		"mcp:lookout_k8s_resource_spec*",
+		"mcp:lookout_k8s_triage_logs*",
+		"mcp:lookout_k8s_event_timeline*",
+		"mcp:lookout_k8s_list_resources*",
+		"mcp:lookout_k8s_state_edges*",
+		"mcp:lookout_k8s_triage_delta*",
+		"skill:list_skills*",
+		"skill:load_skill*",
+		"skill:load_skill_resource*",
+	}
+	if !slices.Equal(wbCfg.Permissions.Allow, wantAllow) {
+		t.Errorf("gke-watchboard permissions.allow = %q, want %q", wbCfg.Permissions.Allow, wantAllow)
+	}
+	if len(wbCfg.Tools.Policies) != 8 {
+		t.Errorf("gke-watchboard tools.policies count = %d, want 8", len(wbCfg.Tools.Policies))
+	}
+	for _, p := range wbCfg.Tools.Policies {
+		if p.Mutating {
+			t.Errorf("gke-watchboard tool policy %q marked mutating", p.Name)
+		}
+	}
+
+	// Native gke-watchboard/.agents/mcp.json: B1 lookout-only stdio MCP (no hosted GKE MCP, no leeway).
+	rawMCP, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", WatchboardBundle, ".agents", "mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawMCP), "container.googleapis.com") {
+		t.Errorf("gke-watchboard mcp.json must not reference hosted GKE MCP:\n%s", rawMCP)
+	}
+	var wbMCP struct {
+		Version int `json:"version"`
+		Servers map[string]struct {
+			Transport string   `json:"transport"`
+			Command   string   `json:"command"`
+			Args      []string `json:"args"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(rawMCP, &wbMCP); err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := []string{
+		"mcp",
+		"--tools=k8s_triage_workload,k8s_resource_spec,k8s_triage_logs,k8s_event_timeline,k8s_list_resources,k8s_state_edges,k8s_triage_delta",
+		"--clusters-from=auto",
+		"--max-concurrency-per-cluster=8",
+	}
+	if wbMCP.Version != 1 || len(wbMCP.Servers) != 1 {
+		t.Fatalf("gke-watchboard mcp.json unexpected version/servers: %+v", wbMCP)
+	}
+	if srv := wbMCP.Servers["lookout"]; srv.Transport != "stdio" || srv.Command != "/usr/local/bin/lookout" || !slices.Equal(srv.Args, wantArgs) {
+		t.Errorf("gke-watchboard lookout MCP server = %+v", srv)
+	}
+
+	// Native gke-watchboard/.agents/AGENTS.md: digest-shaped prompt + CLI->MCP mapping.
+	rawMD, err := os.ReadFile(filepath.Join(root, "agents/sre-triage", WatchboardBundle, ".agents", "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := string(rawMD)
+	for _, want := range []string{
+		`"kind":"watchboard.digest"`,
+		`"kind":"watchboard.rotated"`,
+		"shipmind.dev/scenario",
+		"never by `fingerprint` alone",
+		"no shell",
+		"lookout_k8s_triage_workload",
+		"lookout_k8s_resource_spec",
+		"lookout_k8s_triage_logs",
+		"lookout_k8s_event_timeline",
+		"lookout_k8s_list_resources",
+		"lookout_k8s_state_edges",
+		"lookout_k8s_triage_delta",
+		"lookout_k8s_list_clusters",
+		"references/playbooks/<name>.md",
+		"never attempt to edit files, run a shell, or open",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("gke-watchboard/.agents/AGENTS.md lacks %q", want)
+		}
+	}
+
+	// Dockerfile includes additive gke-watchboard build, skills copy, and boot checks.
+	dockerfileBytes, err := os.ReadFile(filepath.Join(root, "images/agent/Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	df := string(dockerfileBytes)
+	for _, want := range []string{
+		"COPY --from=lookout /src/skills /lookout-skills",
+		"cp -a /in/gke-watchboard/.agents/. /out/gke-watchboard/.agents/",
+		"cp -a /lookout-skills/playbooks/. /out/gke-watchboard/.agents/skills/k8s-triage/references/playbooks/",
+		"test -f /out/gke-watchboard/.agents/skills/k8s-triage/references/playbooks/hpa-thrash.md",
+		"grep -q '^8 tools ' /tmp/watchboard-lookout-tools",
+		`boot_wb "gke-watchboard" "/out/gke-watchboard/.agents/config.json" ""`,
+		`boot_wb "gke-watchboard-alert" "/tmp/aug-gke-watchboard.json" "--agents-dir=/out/gke-watchboard/.agents"`,
+		"skills: 1 loaded — k8s-triage",
+		"subagents: 0 configured",
+	} {
+		if !strings.Contains(df, want) {
+			t.Errorf("images/agent/Dockerfile lacks %q", want)
+		}
 	}
 }

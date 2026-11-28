@@ -98,8 +98,8 @@ are synthetic end-to-end verification probes: diagnose them normally
 and never invoke `propose-change` for them. Never delegate to
 `propose-change` when the fix requires an unknown secret value, API
 key, password, token, or external service URL/connection string, and
-never delegate on repeat ("finding stands"), `resolved`, or
-`watchboard.rotated` signals. If `propose-change` reports that an open
+never delegate on repeat ("finding stands"), `watchboard.digest`,
+`resolved`, or `watchboard.rotated` signals. If `propose-change` reports that an open
 pull request already covers the incident or that the workload is not
 managed in the configured GitOps repository, note that in your finding
 and stop.
@@ -128,7 +128,7 @@ machine signal from k8s-lookout:
   If the arriving digest contains one or more new actionable warning
   entries (including post-`resolved` recurrences) after those
   exclusions, call `alert` once for that digest batch covering only
-  those new findings (after `propose-change` finishes, if used), even
+  those new findings, even
   if an earlier digest in the same watchboard session was a
   `shipmind.dev/scenario` probe that suppressed `alert` or already
   called `alert` on a different warning. If every entry in the

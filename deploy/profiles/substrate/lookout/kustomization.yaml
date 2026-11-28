@@ -17,9 +17,10 @@
 # renamed for this deployment.
 #
 # Not rendered here: Secret lookout-ax-agent (the agent's attach token
-# and the ax task template, which carries the agent's tokens as plain
-# env because ax has no secret references for env). `shipmind up`
-# renders it from agents/sre-triage and the cluster's existing tokens.
+# and the incident + watchboard ax task templates, which carry the attach
+# token as plain env because ax has no secret references for env).
+# `shipmind up` renders it from agents/sre-triage and the cluster's
+# existing tokens.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

@@ -230,9 +230,10 @@ allowlisted when `agent.vcs.chatAutoApprove: true`); setting
 tasks with `propose-change` as well. When
 `slack.alertChannel` is set, `up` turns on switchboard's `:8080` outbound
 HTTP ingress (generating `ate-credentials/switchboard-ingress` once and
-mirroring it into `switchboard/switchboard-agent`) so incident tasks post
-their diagnosis and pull request links to Slack through Substrate's egress
-gateway. switchboard takes no variables in its configuration, so `up`
+mirroring it into `switchboard/switchboard-agent`) so incident and watchboard
+tasks post their diagnoses, warning summaries, and pull request links to
+Slack through Substrate's egress gateway. switchboard takes no variables in
+its configuration, so `up`
 renders the configuration and the chat task template into one Secret,
 `switchboard/switchboard-agent`, as it does lookout's, and switchboard is
 a startup reader of it.
@@ -261,21 +262,25 @@ Workspace, `agent.incidentImage` and optional `agent.chatImage`, the
 cluster table) and the changes `status` should expect.
 
 **The agent's ax objects.** Two pieces of an environment are not
-Kubernetes manifests. The ax task template lookout stamps every incident
-task from carries the agent's attach bearer token (`CORE_AGENT_ATTACH_TOKEN`)
-as plain env (ax has no secret references for env), so it lives in a
-Secret rendered at deploy time, never in a repository. The tokens live
-in their own Secret (`lookout-ax/agent-tokens`, retaining both `inject`
-and `attach` keys untouched on existing clusters), generated once on a
-fresh cluster and never rotated by a deploy because every existing task
+Kubernetes manifests. The ax task templates lookout stamps tasks from
+(`task.yaml` for per-incident `gke-triage-f` tasks and
+`watchboard-task.yaml` for the per-cluster read-only `gke-watchboard`
+watchboard task with a short `2m` idle suspend and no VCS/PR tools, #133)
+carry the agent's attach bearer token (`CORE_AGENT_ATTACH_TOKEN`) as plain
+env (ax has no secret references for env), so they live in a Secret rendered
+at deploy time (`lookout-ax/lookout-ax-agent`), never in a repository. The
+tokens live in their own Secret (`lookout-ax/agent-tokens`, retaining both
+`inject` and `attach` keys untouched on existing clusters), generated once
+on a fresh cluster and never rotated by a deploy because every existing task
 has the attach token baked in; if `agent-tokens` is missing alongside a
 live task template, `status` and `up` refuse rather than rotating it.
 ax's Postgres password is the same kind of value: a Secret
 (`ax-system/ax-postgres`) that `up` generates once, when the render runs
 Postgres, and never rotates, because Postgres keeps the password it
 first booted with; `status` reports it if it is missing. The Workspace (`AGENTS.md`: the cluster table, repeat rule and optional
-GitOps / Slack alert instructions, plus `chat-config.json` and/or
-`incident-config.json` when `agent.vcs` or `slack.alertChannel` is set) is
+GitOps / Slack alert instructions, plus `chat-config.json`,
+`incident-config.json`, `watchboard-config.json`, and/or `audit-config.json`
+when `agent.vcs`, `slack.alertChannel`, or `audits.autoPR` is set) is
 an ax object, applied with the ax CLI. Both are rendered from templates in
 `agents/sre-triage/ax/`.
 

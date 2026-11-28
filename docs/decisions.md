@@ -4,6 +4,112 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-28: lookout's watchboard runs its own read-only gke-watchboard recipe and task template (#133)
+
+Extends 2026-11-05 ("Two agent profiles, autonomous and interactive, one
+image"), 2026-11-17 ("One general-purpose chat agent plus autonomous incident
+PRs and Slack alerts"), 2026-11-25 ("gke-chat is a native flat core-agent
+recipe with a trimmed posture surface and -tags no_tui (#144)"), and
+2026-11-28 ("Native flat gke-triage-f, lookout-only read path across all
+recipes, and pinned k8s-lookout skills (#131, #144)").
+
+`k8s-lookout`'s per-cluster watchboard task (`lookout-wb-<cluster>-<hash8>`)
+runs a dedicated native `core-agent` recipe, **`gke-watchboard`**, rendered
+as its own task template (`watchboard-task.yaml` in `Secret
+lookout-ax/lookout-ax-agent`) and wired into `lookout-ax` via
+`--ax-watchboard-task-template=/etc/lookout-ax/watchboard-task.yaml`
+(`k8s-lookout` `v0.46.0`, `#847`):
+
+1. **Digest-shaped native recipe (`agents/sre-triage/gke-watchboard/.agents/`).**
+   `AGENTS.md` is authored for rolling `"kind":"watchboard.digest"` batches
+   of warning-class leading indicators (`degradation`, `objectstate`,
+   `autoscaling`, `capacity`, `saturation.forecast`, `expiry`, `ingress`,
+   `gateway`, downgraded incidents — now carrying sanitized `message` text
+   per entry since `k8s-lookout#846`) and `"kind":"watchboard.rotated"`
+   handoffs. Each arriving digest (`sequence`) is evaluated independently,
+   matching repeats by target object (`namespace`, `kind_of_object`, `name`)
+   and `reason` (never by `fingerprint` alone), exempting
+   `shipmind.dev/scenario` probes from Slack alerts without suppressing
+   unrelated real warnings in the same or later digests, and summarizing
+   actionable warnings concisely.
+2. **B1 `lookout`-only stdio MCP plus pinned `k8s-triage` skill.**
+   `gke-watchboard/.agents/mcp.json` runs `lookout mcp` directly over stdio
+   with the trimmed 8-tool triage surface (`k8s_triage_workload`,
+   `k8s_resource_spec`, `k8s_triage_logs`, `k8s_event_timeline`,
+   `k8s_list_resources`, `k8s_state_edges`, `k8s_triage_delta`, plus
+   auto-added `k8s_list_clusters` under `--clusters-from=auto`, 47,930 bytes
+   / ~13.2k tokens of schema, dropping 34.8 KB `k8s_scan`) and **no** hosted
+   GKE MCP (`container.googleapis.com/mcp/read-only`). `images/agent` copies
+   `k8s-triage` into `/opt/core-agent/recipes/gke-watchboard/.agents/skills/`
+   and `playbooks` into `k8s-triage/references/playbooks/` (so ADK's
+   `load_skill_resource`, which restricts paths to `references/`, `assets/`,
+   or `scripts/`, can read `hpa-thrash.md` and sibling playbooks), and
+   `config.json` allowlists both `mcp:lookout_k8s_*` and `skill:*` tools
+   under `mode: "ask"` (`approval_timeout: "30s"`). Watchboard tasks receive
+   `*.<location>.gke.goog` egress alongside `container.googleapis.com` and
+   `aiplatform.googleapis.com` plus `CORE_AGENT_TRUSTED_DIRS`.
+3. **Tight budgets, short `2m` idle suspend, and strictly read-only.**
+   `gke-watchboard` caps each turn at `max_steps: 6` and
+   `max_wallclock_seconds: 90` (`final_report: true`, `max_session_cost_usd:
+   5`), and `watchboard-task.yaml` pins `spec.idle.suspendAfter: 2m` (120s —
+   strictly above the 90s wall-clock cap with 30s headroom so `ax` never
+   suspends an unwatched turn mid-flight, longer than `lookout`'s 60s
+   `--watchboard-flush` so bursts stay warm, and far shorter than
+   `agent.idleSuspendAfter`'s 10m default or 5m `incidentAutoPR` floor so
+   the watchboard frees its Substrate worker slot quickly). When
+   `slack.alertChannel` is set, `shipmind up` writes `watchboard-config.json`
+   to the ax Workspace layering only the `alert:slack` webhook target;
+   watchboard tasks **never** receive `propose-change`, `vcs_*`, file tools,
+   or GitHub egress even when `agent.vcs.incidentAutoPR: true`.
+4. **Zero-rotation upgrade and live-cluster cutover.** `shipmind status`
+   compares `token`, `task.yaml`, and `watchboard-task.yaml` in `Secret
+   lookout-ax/lookout-ax-agent` by value (and validates both templates'
+   `CORE_AGENT_ATTACH_TOKEN` when present). Upgrading an existing cluster
+   adds `watchboard-task.yaml` and restarts `lookout-ax` without touching or
+   rotating `Secret lookout-ax/agent-tokens`. Two operational cutover rules
+   govern existing clusters (matching 2026-11-03):
+   - Move `agent.incidentImage` in `go-steer/shipmind-deploy` to an
+     `images/agent` digest built at or after `#133` (carrying
+     `/opt/core-agent/recipes/gke-watchboard`) at the same time as bumping
+     the overlay's `shipmind` commit pin, so newly stamped watchboard tasks
+     find the baked recipe on boot.
+   - Because `ax` tasks are immutable and `lookout`'s ax sink reuses the
+     deterministic per-cluster task name `lookout-wb-<cluster>-<hash8>`
+     across restarts and `--watchboard-rotate` session rotations, delete the
+     pre-existing watchboard task (`ax delete task -a <atespace>
+     lookout-wb-<cluster>-<hash8>`) after `shipmind up` so `lookout-ax`
+     stamps a fresh watchboard actor from `watchboard-task.yaml`.
+
+**Why:** Stamping the shared watchboard from `gke-triage-f`'s per-incident
+template conflated two incompatible workloads: a single-object incident
+diagnoser (which can also run 240s autonomous `propose-change` PR turns and
+holds a worker slot for 5–10m) versus a long-lived warning-digest board
+receiving batches of unrelated leading indicators across the cluster. On
+`shipmind-stage` on 2026-11-20, that mismatch caused a synthetic scenario
+probe on digest #1 to suppress a real unrelated warning later in the same
+session, and left the watchboard occupying a Substrate worker slot between
+flushes. Splitting the recipe and task template isolates watchboard budgets,
+tools, egress, and worker-slot residency cleanly on the same `images/agent`
+image.
+
+**Rejected:**
+- *Keeping the watchboard on `gke-triage-f`'s incident template* (even with
+  prompt workarounds in Workspace `AGENTS.md`, the watchboard still inherits
+  incident step/time budgets, `propose-change` and GitHub egress whenever
+  `incidentAutoPR: true`, and a 5–10m idle timeout holding a Substrate worker
+  slot).
+- *Store-only warnings with no watchboard agent* (recording warnings in
+  `lookout`'s SQLite store and surfacing them only on daily scheduled
+  posture sweeps or on-demand `lookout mcp` calls saves worker slots and
+  model tokens, but gives up timely agent triage and Slack notification on
+  fast-moving leading indicators such as `degradation`, `capacity`,
+  `saturation.forecast`, `expiry`, `ingress`, and `gateway` between daily
+  runs).
+- *Adding a separate `agent.watchboardImage` field or a second container
+  image* (same binaries as `images/agent`; per 2026-11-05, profile
+  differences stay configuration on one image, rendered from
+  `agent.incidentImage`).
+
 ## 2026-11-28: Native flat gke-triage-f, lookout-only read path across all recipes, and pinned k8s-lookout skills (#131, #144)
 
 Amends 2026-11-25 ("gke-chat is a native flat core-agent recipe with a trimmed
