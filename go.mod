@@ -4,7 +4,7 @@ go 1.26.11
 
 require (
 	cloud.google.com/go/compute/metadata v0.10.0
-	github.com/anthropics/anthropic-sdk-go/v2 v2.12.0
+	github.com/anthropics/anthropic-sdk-go/v2 v2.15.0
 	github.com/go-steer/purser v0.5.0
 	go.yaml.in/yaml/v2 v2.4.5
 	go.yaml.in/yaml/v3 v3.0.6
