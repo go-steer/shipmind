@@ -15,7 +15,10 @@
 package scenario
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -460,6 +463,21 @@ func TestToolCatalog(t *testing.T) {
 	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), `"delete_k8s_resources" isn't a tool`) {
 		t.Errorf("a misspelled never_call loaded: %v", err)
 	}
+
+	// A misspelled tool in allow_tool_errors is refused against tools.yaml too.
+	allowDir := filepath.Join(t.TempDir(), "allow-typo")
+	if err := os.MkdirAll(allowDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	allowDoc := "chat:\n  ask: hi\nexpect:\n  mentions: [X]\n  allow_tool_errors:\n    - tool: k8s_triage_workloads\n      patterns: ['not found']\nlimits:\n  start: 1m\n  diagnose: 1m\n"
+	for name, body := range map[string]string{filepath.Join(allowDir, "scenario.yaml"): allowDoc, filepath.Join(filepath.Dir(allowDir), "tools.yaml"): "tools: [k8s_triage_workload]\n"} {
+		if err := os.WriteFile(name, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Load(allowDir); err == nil || !strings.Contains(err.Error(), `"k8s_triage_workloads" isn't a tool`) {
+		t.Errorf("a misspelled allow_tool_errors tool loaded: %v", err)
+	}
 }
 
 // The opt-in drain nightly runs the same e2e-runner build as the base
@@ -490,5 +508,225 @@ func TestDrainNightlyMatchesBase(t *testing.T) {
 	s, err := Load("../../e2e/scenarios/worker-drain")
 	if err != nil || s.Drain == nil {
 		t.Errorf("worker-drain: %v, drain %+v", err, s)
+	}
+}
+
+// cross-cluster-lookup (#104, #15): a chat question that names a Deployment
+// without naming its cluster. Pass requires listing clusters in scope and
+// checking across them, then either locating the workload on its cluster or
+// stating plainly that it could not be found — never fabricating a
+// credential-policy cause when nothing appears on the home cluster.
+func TestCrossClusterLookupScenario(t *testing.T) {
+	s, err := Load("../../e2e/scenarios/cross-cluster-lookup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Chat == nil || s.Workload != "" || s.Namespace != "" || s.Drain != nil {
+		t.Fatalf("cross-cluster-lookup must be a non-seeded chat scenario: %+v", s)
+	}
+	const homeCluster = "projects/example-project/locations/us-central1/clusters/stage"
+	c := s.ForCluster(homeCluster)
+	run := RunName(s.Name, t0)
+
+	ask, err := c.Ask(run)
+	if err != nil || !strings.Contains(ask, run) || strings.Contains(ask, "{{") {
+		t.Fatalf("Ask = %q, %v", ask, err)
+	}
+	if strings.Contains(ask, homeCluster) || strings.Contains(ask, "stage") {
+		t.Errorf("question must not name or assume the home cluster: %q", ask)
+	}
+	diag, err := c.Diagnosis(run)
+	if err != nil || !strings.Contains(diag, run) || !strings.Contains(diag, homeCluster) || strings.Contains(diag, "{{") {
+		t.Fatalf("Diagnosis = %q, %v", diag, err)
+	}
+
+	// Passing answers: located on another cluster, or honestly not found across scope.
+	for _, okAns := range []string{
+		"I listed clusters in scope and found Deployment `" + run + "` in namespace `triage-lab` on cluster `projects/example-project/locations/us-central1/clusters/dev` (not on `stage`). It has 2/2 ready pods.",
+		"Checked all clusters in scope (`stage`, `dev`, `prod`) and listed `triage-lab` on each. Deployment `" + run + "` was not found on any cluster in scope. Confirm the cluster or namespace name.",
+		"I checked namespace `triage-lab` on `dev` and `prod`, and no pods or Deployment appeared for `" + run + "`.",
+		"Deployment `" + run + "` wasn't found in `triage-lab` on `stage` or `dev`.",
+		"Cannot locate Deployment `" + run + "` in `triage-lab`; it is absent from `stage` and `dev`.",
+		"No TOOL FAILURE occurred and there were no permission errors. Deployment `" + run + "` could not be found in `triage-lab` across `stage` and `dev`.",
+	} {
+		missing, err := c.Score(okAns, run)
+		if err != nil || len(missing) != 0 {
+			t.Errorf("passing answer %q missing %v, err %v", okAns, missing, err)
+		}
+		unwanted, err := c.Unwanted(okAns, run)
+		if err != nil || len(unwanted) != 0 {
+			t.Errorf("passing answer %q unwanted %v, err %v", okAns, unwanted, err)
+		}
+	}
+
+	// Failing answers: unrelated object, vague answer with no cluster/absence,
+	// TOOL FAILURE marker, and fabricated credential-policy claims.
+	for _, tc := range []struct {
+		name, ans string
+		wantMiss  bool
+		wantBad   bool
+	}{
+		{"wrong object", "Cluster `dev` looks healthy; all deployments in `default` are running.", true, false},
+		{"vague without cluster or absence", "Deployment `" + run + "` has a configuration issue; check logs.", true, false},
+		{"tool failure", "TOOL FAILURE: lookout_k8s_list_clusters\nCould not reach cluster `" + run + "`.", false, true},
+		{"fabricated credential policy", "Deployment `" + run + "` on cluster `stage` failed due to a credential-policy mismatch in `ate-credentials`.", false, true},
+		{"fabricated egress denied", "Deployment `" + run + "` on cluster `stage` failed with egress denied from the credential provider.", false, true},
+		{"fabricated hyphenated egress-denied", "Deployment `" + run + "` on cluster `stage` hit an egress-denied error.", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			missing, err := c.Score(tc.ans, run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unwanted, err := c.Unwanted(tc.ans, run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (len(missing) > 0) != tc.wantMiss || (len(unwanted) > 0) != tc.wantBad {
+				t.Errorf("missing=%v (want %v), unwanted=%v (want %v)", missing, tc.wantMiss, unwanted, tc.wantBad)
+			}
+		})
+	}
+
+	// Trajectory: requires k8s_list_clusters plus a cluster read, forbids writes, bounds calls.
+	if failures, _ := s.Expect.Trajectory.Check([]string{"lookout_k8s_list_clusters", "lookout_k8s_list_resources"}, 4); len(failures) != 0 {
+		t.Errorf("list_clusters + list_resources failed: %q", failures)
+	}
+	if failures, _ := s.Expect.Trajectory.Check([]string{"lookout_k8s_list_clusters", "lookout_k8s_list_resources", "lookout_k8s_triage_workload"}, 5); len(failures) != 0 {
+		t.Errorf("list_clusters + list_resources + triage_workload failed: %q", failures)
+	}
+	if failures, _ := s.Expect.Trajectory.Check([]string{"lookout_k8s_list_resources"}, 3); len(failures) == 0 {
+		t.Error("passed without calling k8s_list_clusters")
+	}
+	if failures, _ := s.Expect.Trajectory.Check([]string{"lookout_k8s_list_clusters"}, 2); len(failures) == 0 {
+		t.Error("passed without reading any cluster after listing clusters")
+	}
+	if failures, _ := s.Expect.Trajectory.Check([]string{"lookout_k8s_list_clusters", "lookout_k8s_list_resources", "gke_patch_k8s_resource"}, 4); len(failures) == 0 {
+		t.Error("allowed a cluster write")
+	}
+	tooMany := make([]string, 31)
+	tooMany[0] = "lookout_k8s_list_clusters"
+	for i := 1; i < len(tooMany); i++ {
+		tooMany[i] = "lookout_k8s_list_resources"
+	}
+	if failures, _ := s.Expect.Trajectory.Check(tooMany, 4); len(failures) == 0 {
+		t.Error("allowed more than max_tool_calls")
+	}
+
+	// Expected tool errors: allow only {{.Name}} not-found errors on targeted
+	// lookout read tools; real auth, RBAC, cluster-not-found, and wrong-object
+	// errors still fail.
+	for _, tc := range []struct {
+		tool, msg string
+		want      bool
+	}{
+		{"lookout_k8s_triage_workload", "Tool execution failed. Details: workload Deployment/triage-lab/" + run + " not found (14 objects listed)", true},
+		{"lookout_k8s_resource_spec", `fetching Deployment triage-lab/` + run + `: deployments.apps "` + run + `" not found`, true},
+		{"lookout_k8s_event_timeline", "workload Deployment/triage-lab/" + run + " not found (14 objects listed)", true},
+		{"lookout_k8s_state_edges", "workload Deployment/triage-lab/" + run + " not found (14 objects listed)", true},
+		{"lookout_k8s_triage_logs", `deployments.apps "` + run + `" not found`, true},
+		{"lookout_k8s_triage_workload", "forbidden: cannot list deployments in namespace triage-lab", false},
+		{"lookout_k8s_triage_workload", `cluster "dev" not found`, false},
+		{"lookout_k8s_triage_workload", "workload Deployment/triage-lab/other-app not found (14 objects listed)", false},
+		{"lookout_k8s_list_clusters", "workload Deployment/triage-lab/" + run + " not found", false},
+	} {
+		if got := c.AllowsToolError(tc.tool, tc.msg, run); got != tc.want {
+			t.Errorf("AllowsToolError(%q, %q) = %v, want %v", tc.tool, tc.msg, got, tc.want)
+		}
+	}
+
+	// Result checks on k8s_list_clusters logfmt output shapes (k8s-lookout v0.46.0).
+	listOK := "cluster=demo project=example-project location=us-central1 canonical=example-project/us-central1/demo dns_endpoint=true\nscope=example-project via=gke clusters=2\nscanned=2 findings=0 elapsed=85ms clusters=2\n"
+	listFiltered := "scope=example-project via=gke clusters=2\nscanned=2 findings=0 elapsed=2ms clusters=0\n"
+	listEmpty := "scope=example-project via=gke clusters=0 skipped=\"1 no dns endpoint\"\nscanned=0 findings=0 elapsed=40ms clusters=0\n"
+	if got := s.CheckResults([]ToolResult{{Tool: "lookout_k8s_list_clusters", Output: listOK}}); len(got) != 0 {
+		t.Errorf("healthy list_clusters failed: %v", got)
+	}
+	if got := s.CheckResults([]ToolResult{{Tool: "lookout_k8s_list_clusters", Output: listFiltered}}); len(got) != 0 {
+		t.Errorf("filtered list_clusters with non-zero scanned failed: %v", got)
+	}
+	if got := s.CheckResults([]ToolResult{{Tool: "lookout_k8s_list_clusters", Output: listEmpty}}); len(got) == 0 {
+		t.Error("zero-cluster list_clusters result passed")
+	}
+	if got := s.CheckResults([]ToolResult{{Tool: "lookout_k8s_list_clusters", Output: "2 clusters found", Method: MethodSummarized}}); len(got) == 0 {
+		t.Error("llm_fallback summarized list_clusters result passed")
+	}
+}
+
+// Every calibration fixture in e2e/calibration/ matches the `shipmind scenario
+// judge` schema, points at a scenario whose diagnosis renders cleanly, is
+// documented in e2e/calibration/README.md, and the 2026-11-13 cross-cluster
+// fabricated answers both expect score 1 and trigger cross-cluster-lookup's
+// unwanted-pattern check.
+func TestCalibrationCases(t *testing.T) {
+	files, err := filepath.Glob("../../e2e/calibration/*.json")
+	if err != nil || len(files) < 12 {
+		t.Fatalf("calibration files = %v, err %v (want at least 12)", files, err)
+	}
+	readme, err := os.ReadFile("../../e2e/calibration/README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBandRE := regexp.MustCompile(`^([1-5])(?:-([1-5]))?$`)
+
+	type calCase struct {
+		Scenario string `json:"scenario"`
+		Workload string `json:"workload"`
+		Cluster  string `json:"cluster,omitempty"`
+		Answer   string `json:"answer"`
+		Want     string `json:"want"`
+	}
+	crossClusterCases := 0
+	for _, path := range files {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		var c calCase
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&c); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			t.Fatalf("%s: trailing data after JSON object (%v)", path, err)
+		}
+		if c.Scenario == "" || c.Workload == "" || strings.TrimSpace(c.Answer) == "" {
+			t.Errorf("%s: scenario, workload and answer are required", path)
+			continue
+		}
+		m := wantBandRE.FindStringSubmatch(c.Want)
+		if m == nil || (m[2] != "" && m[1] > m[2]) {
+			t.Errorf("%s: want %q is not a valid 1-5 score or band", path, c.Want)
+		}
+		s, err := Load(filepath.Join("../../e2e/scenarios", c.Scenario))
+		if err != nil {
+			t.Errorf("%s: load scenario %s: %v", path, c.Scenario, err)
+			continue
+		}
+		if s.Chat != nil && !chatCluster.MatchString(c.Cluster) {
+			t.Errorf("%s: chat calibration case needs a valid cluster path, got %q", path, c.Cluster)
+		}
+		diag, err := s.ForCluster(c.Cluster).Diagnosis(c.Workload)
+		if err != nil || strings.TrimSpace(diag) == "" || strings.Contains(diag, "{{") {
+			t.Errorf("%s: Diagnosis(%q) = %q, %v", path, c.Workload, diag, err)
+		}
+		caseName := strings.TrimSuffix(filepath.Base(path), ".json")
+		if !strings.Contains(string(readme), caseName) {
+			t.Errorf("%s: missing from e2e/calibration/README.md", caseName)
+		}
+		if c.Scenario == "cross-cluster-lookup" {
+			crossClusterCases++
+			if c.Want != "1" {
+				t.Errorf("%s: cross-cluster fabricated answer want = %q, want \"1\"", path, c.Want)
+			}
+			unwanted, err := s.ForCluster(c.Cluster).Unwanted(c.Answer, c.Workload)
+			if err != nil || len(unwanted) == 0 {
+				t.Errorf("%s: fabricated answer was not caught by expect.absent (err=%v)", path, err)
+			}
+		}
+	}
+	if crossClusterCases != 2 {
+		t.Errorf("found %d cross-cluster-lookup calibration cases, want 2", crossClusterCases)
 	}
 }

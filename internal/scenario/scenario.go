@@ -112,6 +112,12 @@ type Expect struct {
 	// (leeway returns a report whose clusters carry status "error"), and
 	// a model can write a confident answer over that.
 	Results []ResultCheck `yaml:"results"`
+	// AllowToolErrors names expected tool error messages (for a chat
+	// scenario) that are recorded as notes instead of failing the run — for
+	// example, a targeted read tool reporting a workload "not found" while
+	// checking across clusters. Unexpected errors (auth, RBAC, transport)
+	// still fail the run.
+	AllowToolErrors []ToolErrorAllow `yaml:"allow_tool_errors"`
 	// Trajectory is how the agent may get there (#89), checked against
 	// the session's tool calls and usage; nil checks nothing.
 	Trajectory *Trajectory `yaml:"trajectory"`
@@ -119,6 +125,32 @@ type Expect struct {
 	// against (#90): the root cause, the resources involved and the fix,
 	// as a template over the run's Name and Namespace. Empty: no judge.
 	Diagnosis string `yaml:"diagnosis"`
+}
+
+// ToolErrorAllow names a tool whose expected error messages do not fail a chat
+// run. Tool matches with or without one MCP server prefix, as in Trajectory.
+type ToolErrorAllow struct {
+	// Tool names the tool, checked against tools.yaml when present.
+	Tool string `yaml:"tool"`
+	// Patterns are case-insensitive regular expressions, templates like
+	// Mentions; a tool error message matching any pattern is allowed.
+	Patterns []string `yaml:"patterns"`
+}
+
+// AllowsToolError reports whether a failed call to tool with message msg is
+// explicitly allowed by s.Expect.AllowToolErrors for a run named name.
+func (s *Scenario) AllowsToolError(tool, msg, name string) bool {
+	for _, allow := range s.Expect.AllowToolErrors {
+		if !toolMatches(tool, allow.Tool) {
+			continue
+		}
+		for _, pattern := range allow.Patterns {
+			if re, err := s.mention(pattern, name); err == nil && re.MatchString(msg) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ResultCheck is what one tool's successful results must not show.
@@ -225,6 +257,9 @@ func Load(dir string) (*Scenario, error) {
 		if len(s.Expect.Results) > 0 {
 			fail("expect.results: only a chat scenario checks tool results")
 		}
+		if len(s.Expect.AllowToolErrors) > 0 {
+			fail("expect.allow_tool_errors: only a chat scenario allows expected tool errors")
+		}
 		if len(s.Expect.Absent) > 0 {
 			fail("expect.absent: only a chat scenario checks what the answer must not say")
 		}
@@ -255,17 +290,24 @@ func Load(dir string) (*Scenario, error) {
 			fail("expect.diagnosis: %v", err)
 		}
 	}
-	if s.Expect.Trajectory != nil {
-		if err := s.Expect.Trajectory.check(); err != nil {
-			fail("%v", err)
-		}
+	if s.Expect.Trajectory != nil || len(s.Expect.AllowToolErrors) > 0 {
 		known, err := loadTools(filepath.Join(filepath.Dir(dir), "tools.yaml"))
 		if err != nil {
 			fail("%v", err)
 		}
-		for _, name := range s.Expect.Trajectory.names() {
-			if known != nil && !known[name] {
-				fail("expect.trajectory: %q isn't a tool in %s", name, filepath.Join(filepath.Dir(dir), "tools.yaml"))
+		if s.Expect.Trajectory != nil {
+			if err := s.Expect.Trajectory.check(); err != nil {
+				fail("%v", err)
+			}
+			for _, name := range s.Expect.Trajectory.names() {
+				if known != nil && !known[name] {
+					fail("expect.trajectory: %q isn't a tool in %s", name, filepath.Join(filepath.Dir(dir), "tools.yaml"))
+				}
+			}
+		}
+		for _, allow := range s.Expect.AllowToolErrors {
+			if known != nil && allow.Tool != "" && !known[allow.Tool] {
+				fail("expect.allow_tool_errors: %q isn't a tool in %s", allow.Tool, filepath.Join(filepath.Dir(dir), "tools.yaml"))
 			}
 		}
 	}
@@ -300,6 +342,16 @@ func (s *Scenario) checkChat(fail func(format string, args ...any)) {
 		for _, pattern := range check.Absent {
 			if _, err := regexp.Compile("(?i)" + pattern); err != nil {
 				fail("expect.results %s %q: %v", check.Tool, pattern, err)
+			}
+		}
+	}
+	for _, allow := range s.Expect.AllowToolErrors {
+		if strings.TrimSpace(allow.Tool) == "" || len(allow.Patterns) == 0 {
+			fail("expect.allow_tool_errors: each entry wants a tool and at least one pattern")
+		}
+		for _, pattern := range allow.Patterns {
+			if _, err := s.mention(pattern, "probe"); err != nil {
+				fail("expect.allow_tool_errors %s %q: %v", allow.Tool, pattern, err)
 			}
 		}
 	}

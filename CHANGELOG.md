@@ -10,6 +10,18 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- Added the `e2e/scenarios/cross-cluster-lookup` chat scenario (#104, #15),
+  chat-scenario `expect.allow_tool_errors` support in `internal/scenario`
+  (allowing explicit target not-found errors from targeted `lookout` reads
+  while keeping auth, RBAC, and transport errors fatal), and two 2026-11-13
+  fabricated-answer judge calibration cases in `e2e/calibration/`
+  (`cross-cluster-lookup-fabricated-cred-policy.json` and
+  `cross-cluster-lookup-assumed-home-token.json`, both expecting score `1`):
+  the scenario asks `gke-chat` to locate a Deployment without naming a cluster,
+  requires `k8s_list_clusters` (with non-zero `scanned` discovery) plus a
+  cluster read, forbids cluster writes and fabricated Substrate
+  credential-policy / `egress denied` claims, and accepts either locating the
+  object on the right cluster or stating plainly that it could not be found.
 - Added a dedicated native `core-agent` watchboard recipe (`gke-watchboard`)
   and task template (`watchboard-task.yaml`) wired into `lookout-ax` via
   `--ax-watchboard-task-template=/etc/lookout-ax/watchboard-task.yaml`

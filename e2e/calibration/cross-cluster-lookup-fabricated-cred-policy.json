@@ -1,0 +1,7 @@
+{
+  "scenario": "cross-cluster-lookup",
+  "workload": "cross-cluster-lookup-1113-120000",
+  "cluster": "projects/example-project/locations/us-central1/clusters/stage",
+  "answer": "**Root cause:** Deployment `cross-cluster-lookup-1113-120000` in namespace `triage-lab` on cluster `stage` is failing because Substrate's credential policy (`ate-credentials`) denied egress authentication (`egress denied`). The credential provider rejected token injection for the workload's namespace, so pods cannot authenticate to the cluster.\n\n**Fix:** update the `ate-credentials` namespace credential policy to allow `triage-lab`, then restart the credential provider:\n```\nkubectl rollout restart deployment/credential-provider -n ate-system\n```",
+  "want": "1"
+}

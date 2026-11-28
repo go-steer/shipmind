@@ -701,6 +701,10 @@ func TestLoadChat(t *testing.T) {
 		{"bad absent", "chat: {ask: hi}\nexpect:\n  mentions: [x]\n  absent: ['(']\nlimits: {start: 1m, diagnose: 1m}\n", "expect.absent"},
 		{"result check without patterns", "chat: {ask: hi}\nexpect:\n  mentions: [x]\n  results: [{tool: report}]\nlimits: {start: 1m, diagnose: 1m}\n", "each entry wants a tool and at least one absent pattern"},
 		{"bad result pattern", "chat: {ask: hi}\nexpect:\n  mentions: [x]\n  results: [{tool: report, absent: ['(']}]\nlimits: {start: 1m, diagnose: 1m}\n", "expect.results report"},
+		{"allow_tool_errors without patterns", "chat: {ask: hi}\nexpect:\n  mentions: [x]\n  allow_tool_errors: [{tool: k8s_triage_workload}]\nlimits: {start: 1m, diagnose: 1m}\n", "each entry wants a tool and at least one pattern"},
+		{"bad allow_tool_errors pattern", "chat: {ask: hi}\nexpect:\n  mentions: [x]\n  allow_tool_errors: [{tool: k8s_triage_workload, patterns: ['(']}]\nlimits: {start: 1m, diagnose: 1m}\n", "expect.allow_tool_errors k8s_triage_workload"},
+		{"bad allow_tool_errors template", "chat: {ask: hi}\nexpect:\n  mentions: [x]\n  allow_tool_errors: [{tool: k8s_triage_workload, patterns: ['{{.Nope}}']}]\nlimits: {start: 1m, diagnose: 1m}\n", "expect.allow_tool_errors k8s_triage_workload"},
+		{"allow_tool_errors on an incident scenario", "namespace: lab\nworkload: w.yaml\nexpect:\n  mentions: [x]\n  allow_tool_errors: [{tool: k8s_triage_workload, patterns: [x]}]\nlimits: {incident: 1m, diagnose: 1m, suspend: 1m}\n", "only a chat scenario allows expected tool errors"},
 		{"result checks on an incident scenario", "namespace: lab\nworkload: w.yaml\nexpect:\n  mentions: [x]\n  results: [{tool: report, absent: [x]}]\nlimits: {incident: 1m, diagnose: 1m, suspend: 1m}\n", "only a chat scenario checks tool results"},
 		{"absences on an incident scenario", "namespace: lab\nworkload: w.yaml\nexpect:\n  mentions: [x]\n  absent: [x]\nlimits: {incident: 1m, diagnose: 1m, suspend: 1m}\n", "only a chat scenario checks what the answer must not say"},
 		{"a start limit on an incident scenario", "namespace: lab\nworkload: w.yaml\nexpect:\n  mentions: [x]\nlimits: {incident: 1m, diagnose: 1m, suspend: 1m, start: 1m}\n", "start is for a chat scenario"},
@@ -821,5 +825,154 @@ func TestRunChatSeededPostureScenarios(t *testing.T) {
 	// Run() incident runner still refuses seeded chat scenarios.
 	if r, err := Run(ctx, sPlace, nil, nil, nil, Options{}); r != nil || err == nil {
 		t.Errorf("Run on seeded chat scenario = %+v, %v", r, err)
+	}
+}
+
+func TestRunChatCrossClusterLookup(t *testing.T) {
+	ctx := context.Background()
+	s, err := Load("../../e2e/scenarios/cross-cluster-lookup")
+	if err != nil {
+		t.Fatalf("Load cross-cluster-lookup: %v", err)
+	}
+	const (
+		listClustersOK    = "cluster=demo project=example-project location=us-central1 canonical=example-project/us-central1/demo dns_endpoint=true\ncluster=dev project=example-project location=us-central1 canonical=example-project/us-central1/dev dns_endpoint=true\nscope=example-project via=gke clusters=2\nscanned=2 findings=0 elapsed=90ms clusters=2\n"
+		listClustersEmpty = "scope=example-project via=gke clusters=0 skipped=\"1 no dns endpoint\"\nscanned=0 findings=0 elapsed=50ms clusters=0\n"
+	)
+
+	// 1. Passing run: agent lists clusters, finds the workload on another cluster, and reports tool output.
+	w1, _, run1, o1 := newChatWorld(t)
+	name1 := RunName(s.Name, w1.now)
+	w1.answer = fmt.Sprintf("I listed the clusters in scope (`demo`, `dev`) and found Deployment `%s` in namespace `triage-lab` on cluster `projects/example-project/locations/us-central1/clusters/dev` (not on `demo`). All 2/2 pods are Running.", name1)
+	w1.mainCalls = []string{"lookout_k8s_list_clusters", "lookout_k8s_list_resources", "lookout_k8s_triage_workload"}
+	w1.mainResults = []ToolResult{
+		{Tool: "lookout_k8s_list_clusters", Output: listClustersOK},
+		{Tool: "lookout_k8s_list_resources", Output: "target=Deployment/triage-lab/" + name1 + " ready=2/2"},
+		{Tool: "lookout_k8s_triage_workload", Output: "workload=Deployment/triage-lab/" + name1 + " pods=2"},
+	}
+	r1, err := RunChat(ctx, s, w1, w1, run1, o1)
+	if err != nil || !r1.Pass || !r1.Correct {
+		t.Fatalf("found on another cluster: %+v, err %v", r1, err)
+	}
+
+	// 2. Passing run: agent lists clusters, checks across scope with k8s_list_resources, and honestly reports not found.
+	w2, _, run2, o2 := newChatWorld(t)
+	name2 := RunName(s.Name, w2.now)
+	w2.answer = fmt.Sprintf("I listed clusters in scope (`demo`, `dev`) and checked namespace `triage-lab` on both. Deployment `%s` was not found on any cluster in scope.", name2)
+	w2.mainCalls = []string{"lookout_k8s_list_clusters", "lookout_k8s_list_resources", "lookout_k8s_list_resources"}
+	w2.mainResults = []ToolResult{
+		{Tool: "lookout_k8s_list_clusters", Output: listClustersOK},
+		{Tool: "lookout_k8s_list_resources", Output: "kinds=12 namespace_absent=true"},
+	}
+	r2, err := RunChat(ctx, s, w2, w2, run2, o2)
+	if err != nil || !r2.Pass || !r2.Correct {
+		t.Fatalf("honestly not found: %+v, err %v", r2, err)
+	}
+
+	// 2b. Passing run: agent follows gke-chat AGENTS.md and calls k8s_triage_workload
+	// across discovered clusters when the workload is absent everywhere; lookout returns
+	// IsError with `workload ... <name> not found`, which allow_tool_errors records as a note.
+	w2b, _, run2b, o2b := newChatWorld(t)
+	name2b := RunName(s.Name, w2b.now)
+	w2b.answer = fmt.Sprintf("I checked `demo` and `dev`; Deployment `%s` was not found in `triage-lab` on any cluster in scope.", name2b)
+	w2b.mainCalls = []string{"lookout_k8s_list_clusters", "lookout_k8s_triage_workload", "lookout_k8s_triage_workload"}
+	w2b.mainResults = []ToolResult{{Tool: "lookout_k8s_list_clusters", Output: listClustersOK}}
+	w2b.mainFailed = []string{
+		"lookout_k8s_triage_workload: Tool execution failed. Details: workload Deployment/triage-lab/" + name2b + " not found (14 objects listed)",
+	}
+	r2b, err := RunChat(ctx, s, w2b, w2b, run2b, o2b)
+	if err != nil || !r2b.Pass || !r2b.Correct {
+		t.Fatalf("allowed not-found tool error should pass: %+v, err %v", r2b, err)
+	}
+	if !slices.ContainsFunc(r2b.Trajectory.Notes, func(n string) bool { return strings.Contains(n, "expected tool error allowed:") }) {
+		t.Errorf("notes = %q, want expected tool error note", r2b.Trajectory.Notes)
+	}
+
+	// 2c. Failing run: real auth/RBAC error on k8s_triage_workload is NOT allowed and still fails.
+	w2c, _, run2c, o2c := newChatWorld(t)
+	name2c := RunName(s.Name, w2c.now)
+	w2c.answer = fmt.Sprintf("I checked `demo` and `dev`; Deployment `%s` was not found on any cluster in scope.", name2c)
+	w2c.mainCalls = []string{"lookout_k8s_list_clusters", "lookout_k8s_triage_workload"}
+	w2c.mainResults = []ToolResult{{Tool: "lookout_k8s_list_clusters", Output: listClustersOK}}
+	w2c.mainFailed = []string{"lookout_k8s_triage_workload: Tool execution failed. Details: forbidden: cannot list deployments"}
+	r2c, err := RunChat(ctx, s, w2c, w2c, run2c, o2c)
+	if err != nil || r2c.Pass || !strings.Contains(strings.Join(r2c.Failures, "\n"), "a tool call failed: lookout_k8s_triage_workload") {
+		t.Fatalf("RBAC error should fail: %+v, err %v", r2c, err)
+	}
+
+	// 3. Failing run: agent assumes home cluster without k8s_list_clusters and fabricates a credential-policy cause.
+	w3, _, run3, o3 := newChatWorld(t)
+	name3 := RunName(s.Name, w3.now)
+	w3.answer = fmt.Sprintf("Deployment `%s` in `triage-lab` on `demo` failed because Substrate's credential policy (`ate-credentials`) returned egress denied.", name3)
+	w3.mainCalls = []string{"lookout_k8s_list_resources"}
+	w3.mainResults = []ToolResult{{Tool: "lookout_k8s_list_resources", Output: "kinds=12 namespace_absent=true"}}
+	r3, err := RunChat(ctx, s, w3, w3, run3, o3)
+	if err != nil || r3.Pass || r3.Correct {
+		t.Fatalf("fabricated answer should fail: %+v, err %v", r3, err)
+	}
+	joined := strings.Join(r3.Failures, "\n")
+	if !strings.Contains(joined, "the answer says") || !strings.Contains(joined, "never called k8s_list_clusters") {
+		t.Errorf("failures = %q, want both unwanted-answer and missing k8s_list_clusters", r3.Failures)
+	}
+
+	// 4. Failing run: k8s_list_clusters succeeded as an MCP call but scanned zero clusters.
+	w4, _, run4, o4 := newChatWorld(t)
+	name4 := RunName(s.Name, w4.now)
+	w4.answer = fmt.Sprintf("I could not find Deployment `%s` on any cluster in scope.", name4)
+	w4.mainCalls = []string{"lookout_k8s_list_clusters", "lookout_k8s_list_resources"}
+	w4.mainResults = []ToolResult{
+		{Tool: "lookout_k8s_list_clusters", Output: listClustersEmpty},
+		{Tool: "lookout_k8s_list_resources", Output: "kinds=12 namespace_absent=true"},
+	}
+	r4, err := RunChat(ctx, s, w4, w4, run4, o4)
+	if err != nil || r4.Pass || !strings.Contains(strings.Join(r4.Failures, "\n"), "scanned=0") {
+		t.Fatalf("zero-cluster list should fail on scanned=0: %+v, err %v", r4, err)
+	}
+}
+
+// cross-cluster-lookup's k8s_list_clusters result check across every shape
+// core-agent records in transcript.sse: plain MCP output, passthrough digest,
+// and llm_fallback summary.
+func TestCrossClusterListResultsInRecordedShapes(t *testing.T) {
+	s, err := Load("../../e2e/scenarios/cross-cluster-lookup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	quote := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	plain := func(out string) string { return `{"output":` + quote(out) + `}` }
+	passthrough := func(out string) string {
+		return `{"digest":` + quote(plain(out)) + `,"raw_bytes":240,"method":"passthrough","latency_ms":5}`
+	}
+	good := "cluster=demo project=example-project location=us-central1 canonical=example-project/us-central1/demo dns_endpoint=true\nscope=example-project via=gke clusters=1\nscanned=1 findings=0 elapsed=75ms clusters=1\n"
+	empty := "scope=example-project via=gke clusters=0 skipped=\"1 no dns endpoint\"\nscanned=0 findings=0 elapsed=40ms clusters=0\n"
+	for _, tc := range []struct {
+		name, response string
+		want           int
+	}{
+		{"plain, reached", plain(good), 0},
+		{"plain, zero scanned", plain(empty), 1},
+		{"digest passthrough, reached", passthrough(good), 0},
+		{"digest passthrough, zero scanned", passthrough(empty), 1},
+		{"summarized", `{"digest":"Found 1 cluster.","method":"llm_fallback"}`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := `data: {"seq":1,"event":{"author":"gke-chat","content":{"role":"user","parts":[{"functionResponse":{"name":"lookout_k8s_list_clusters","response":` + tc.response + `}}]}}}` + "\n\n"
+			tr, err := ParseEvents(strings.NewReader(stream))
+			if err != nil {
+				t.Fatal(err)
+			}
+			results := tr.Results()
+			if len(results) != 1 {
+				t.Fatalf("results = %+v, want 1", results)
+			}
+			if got := s.CheckResults(results); len(got) != tc.want {
+				t.Errorf("failures = %q, want %d (output %q)", got, tc.want, results[0].Output)
+			}
+		})
 	}
 }
