@@ -1,29 +1,12 @@
 {
   "version": 1,
   "servers": {
-    "gke": {
-      "transport": "http",
-      "url": "https://container.googleapis.com/mcp/read-only",
-      "auth": {
-        "google_oauth": {
-          "scopes": ["https://www.googleapis.com/auth/cloud-platform"]
-        }
-      },
-      "tools": [
-        "list_clusters",
-        "get_cluster",
-        "get_k8s_resource",
-        "describe_k8s_resource",
-        "get_k8s_logs",
-        "list_k8s_events"
-      ]
-    },
     "lookout": {
       "transport": "stdio",
       "command": "/usr/local/bin/lookout",
       "args": [
         "mcp",
-        "--tools=k8s_audit_all",
+        "--tools=k8s_audit_all,k8s_triage_workload,k8s_resource_spec,k8s_triage_logs,k8s_event_timeline,k8s_list_resources,k8s_state_edges,k8s_triage_delta",
         "--clusters-from=auto",
         "--max-concurrency-per-cluster=8"
       ]

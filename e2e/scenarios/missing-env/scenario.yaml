@@ -33,7 +33,7 @@ expect:
   # about four model calls; the bounds catch a runaway, not a slow day.
   trajectory:
     must_call:
-      - get_k8s_resource|describe_k8s_resource
+      - k8s_triage_workload|k8s_resource_spec|k8s_triage_logs|k8s_event_timeline|k8s_state_edges|k8s_triage_delta|k8s_list_resources|get_k8s_resource|describe_k8s_resource
     never_call:
       - patch_k8s_resource
       - apply_k8s_manifest

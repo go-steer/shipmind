@@ -1,0 +1,129 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Overflow-hint workload (#131): a crash-looping Deployment whose spec + delta
+# + radius sections fit cleanly under lookout's default 4096-byte --enrich-cap,
+# while its 10 distinct startup diagnostic log templates push the trailing logs
+# section past the cap under both --storm=off and --storm=on. lookout's
+# enricher drops section=logs and appends:
+#
+#   overflow section=logs cmd="lookout triage logs --workload=Deployment/{{.Namespace}}/{{.Name}} --namespace={{.Namespace}}"
+#
+# The missing SETTLEMENT_WEBHOOK_URL variable appears only in the container's
+# logs (not in the Deployment spec's env list, the ConfigMap, or kubelet events),
+# so the agent can only diagnose the incident by following the overflow trailer
+# with lookout_k8s_triage_logs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{.Name}}-config
+  namespace: {{.Namespace}}
+  labels:
+    shipmind.dev/scenario: triage-overflow
+data:
+  LEDGER_MODE: "strict"
+  PAYMENTS_ENDPOINT: "http://payments.{{.Namespace}}.svc:8080"
+  RECONCILIATION_WINDOW: "15m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+  labels:
+    app: {{.Name}}
+    shipmind.dev/scenario: triage-overflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{.Name}}
+  template:
+    metadata:
+      labels:
+        app: {{.Name}}
+    spec:
+      containers:
+        - name: settlement
+          image: docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+          envFrom:
+            - configMapRef:
+                name: {{.Name}}-config
+          env:
+            - name: SETTLEMENT_REGION_PRIMARY
+              value: "us-central1-settlement-primary-tier"
+            - name: SETTLEMENT_REGION_FAILOVER
+              value: "us-east1-settlement-failover-tier"
+            - name: SETTLEMENT_BATCH_SIZE_MAX
+              value: "5000-transactions-per-dispatch-batch"
+            - name: SETTLEMENT_BATCH_FLUSH_INTERVAL
+              value: "2500ms-bounded-backpressure-flush"
+            - name: SETTLEMENT_RETRY_BACKOFF_BASE
+              value: "500ms-exponential-jitter-retry-policy"
+            - name: SETTLEMENT_RETRY_BACKOFF_CAP
+              value: "30000ms-exponential-jitter-ceiling"
+            - name: SETTLEMENT_IDEMPOTENCY_TTL
+              value: "86400s-redis-idempotency-dedup-window"
+            - name: SETTLEMENT_LEDGER_PARTITION_COUNT
+              value: "64-consistent-hash-ledger-shards"
+            - name: SETTLEMENT_LEDGER_COMPACTION_POLICY
+              value: "hourly-incremental-merkle-checkpoint"
+            - name: SETTLEMENT_AUDIT_STREAM_TOPIC
+              value: "finance.settlement.audit.events.v2"
+            - name: SETTLEMENT_DEADLETTER_TOPIC
+              value: "finance.settlement.dlq.replay.v2"
+            - name: SETTLEMENT_METRICS_NAMESPACE
+              value: "payments_settlement_coordinator_prod"
+            - name: SETTLEMENT_TRACING_SAMPLER
+              value: "parentbased_traceidratio_0_10_otel"
+            - name: SETTLEMENT_GRPC_MAX_RECV_BYTES
+              value: "16777216-bytes-framed-protobuf-limit"
+            - name: SETTLEMENT_GRPC_KEEPALIVE_TIME
+              value: "45s-bidirectional-stream-keepalive"
+            - name: SETTLEMENT_HTTP_IDLE_CONN_TIMEOUT
+              value: "90s-upstream-keepalive-pool-timeout"
+            - name: SETTLEMENT_CIRCUIT_BREAKER_THRESHOLD
+              value: "0.25-error-ratio-over-60s-window"
+            - name: SETTLEMENT_RATE_LIMIT_BURST
+              value: "1200-requests-per-second-token-bucket"
+            - name: SETTLEMENT_SCHEMA_REGISTRY_MODE
+              value: "backward-transitive-compatibility-strict"
+            - name: SETTLEMENT_CURRENCY_PRECISION
+              value: "iso4217-minor-unit-exact-decimal"
+            - name: SETTLEMENT_CUTOFF_TIMEZONE
+              value: "America/New_York-clearinghouse-window"
+            - name: SETTLEMENT_CHECKPOINT_RETENTION
+              value: "72h-durable-snapshot-archive-policy"
+          command:
+            - sh
+            - -c
+            - |
+              echo "INFO boot-stage-01 initializing settlement coordinator configuration profile ledger-mode=${LEDGER_MODE} reconciliation-window=${RECONCILIATION_WINDOW} primary-region=${SETTLEMENT_REGION_PRIMARY} failover-region=${SETTLEMENT_REGION_FAILOVER} batch-max=${SETTLEMENT_BATCH_SIZE_MAX}"
+              echo "INFO boot-stage-02 verifying upstream payments connectivity endpoint=${PAYMENTS_ENDPOINT} grpc-keepalive=${SETTLEMENT_GRPC_KEEPALIVE_TIME} max-recv=${SETTLEMENT_GRPC_MAX_RECV_BYTES} http-idle=${SETTLEMENT_HTTP_IDLE_CONN_TIMEOUT}"
+              echo "INFO boot-stage-03 loading consistent-hash ledger partitions shards=${SETTLEMENT_LEDGER_PARTITION_COUNT} compaction=${SETTLEMENT_LEDGER_COMPACTION_POLICY} retention=${SETTLEMENT_CHECKPOINT_RETENTION} precision=${SETTLEMENT_CURRENCY_PRECISION}"
+              echo "INFO boot-stage-04 registering audit and deadletter streaming sinks audit-topic=${SETTLEMENT_AUDIT_STREAM_TOPIC} dlq-topic=${SETTLEMENT_DEADLETTER_TOPIC} schema-mode=${SETTLEMENT_SCHEMA_REGISTRY_MODE} cutoff-tz=${SETTLEMENT_CUTOFF_TIMEZONE}"
+              echo "INFO boot-stage-05 configuring backoff and traffic protection retry-base=${SETTLEMENT_RETRY_BACKOFF_BASE} retry-cap=${SETTLEMENT_RETRY_BACKOFF_CAP} circuit-breaker=${SETTLEMENT_CIRCUIT_BREAKER_THRESHOLD} rate-burst=${SETTLEMENT_RATE_LIMIT_BURST}"
+              echo "INFO boot-stage-06 attaching telemetry exporters metrics-namespace=${SETTLEMENT_METRICS_NAMESPACE} tracing-sampler=${SETTLEMENT_TRACING_SAMPLER} idempotency-ttl=${SETTLEMENT_IDEMPOTENCY_TTL} flush-interval=${SETTLEMENT_BATCH_FLUSH_INTERVAL}"
+              echo "INFO boot-stage-07 preflight clearinghouse calendar verification completed without warnings for active settlement batches across configured ledger partitions and failover windows"
+              echo "INFO boot-stage-08 hydrating local idempotency index snapshots and verifying deterministic serialization codecs prior to opening inbound settlement dispatch workers"
+              echo "INFO boot-stage-09 validating outbound confirmation webhook dispatcher settings from mounted ConfigMap before enabling settlement batch commits"
+              if [ -z "$SETTLEMENT_WEBHOOK_URL" ]; then
+                echo "FATAL: SETTLEMENT_WEBHOOK_URL is not set in ConfigMap {{.Name}}-config; cannot dispatch settlement confirmations" >&2
+                exit 1
+              fi
+              sleep 3600
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi

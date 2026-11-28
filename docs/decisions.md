@@ -4,6 +4,84 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-28: Native flat gke-triage-f, lookout-only read path across all recipes, and pinned k8s-lookout skills (#131, #144)
+
+Amends 2026-11-25 ("gke-chat is a native flat core-agent recipe with a trimmed
+posture surface and -tags no_tui (#144)"), 2026-11-24 ("gke-chat runs lookout
+and leeway as their own MCP servers, and a canary proves an agent image before
+its pin moves (#127)"), and 2026-11-05 ("The incident agent triages;
+specialists get briefs").
+
+1. **Native flat `gke-triage-f` recipe; delete `import-workload` and fold
+   machinery.** With `mast` and `images/agent-mast` retired (#152),
+   `gke-triage-f` is authored directly under
+   `agents/sre-triage/gke-triage-f/.agents/` (`AGENTS.md`, `config.json`,
+   `mcp.json`). The remaining legacy `mast` bundles
+   (`agents/sre-triage/gke-triage-f/{workload.yaml,mcp.json,schemas/,specialists/}`,
+   `agents/sre-triage/gke-triage/`, and
+   `agents/sre-triage/ax/core-agent-gke-triage-f.*`) and the entire
+   `core-agent config import-workload` + awk/jq fold loop in
+   `images/agent/Dockerfile` are deleted.
+2. **100% `lookout`-only Kubernetes read path everywhere (drop hosted GKE
+   MCP).** `https://container.googleapis.com/mcp/read-only` (the `gke` server)
+   is removed from both `gke-triage-f` and `gke-chat`. All live Kubernetes
+   reads flow through local stdio `lookout mcp --clusters-from=auto
+   --max-concurrency-per-cluster=8` inside `images/agent` (same transport
+   pattern as `gke-chat` posture audits; multi-cluster ready with Substrate's
+   injected Google token). Incident tasks (`gke-triage-f`) now carry
+   `CORE_AGENT_TRUSTED_DIRS` (so `core-agent` starts the recipe's stdio
+   `lookout` server) and the same `*.<location>.gke.goog` egress hosts as
+   `gke-chat`, while retaining `container.googleapis.com` for cluster
+   discovery; `LEEWAY_CLUSTERS_FROM` stays chat-only. Shared in-cluster mTLS
+   `lookout mcp` and sentinel `--store` / `--at` history reads are deferred.
+3. **Trimmed 8-tool triage surface (dropping `k8s_scan`).** `gke-triage-f`
+   runs `lookout mcp
+   --tools=k8s_triage_workload,k8s_resource_spec,k8s_triage_logs,k8s_event_timeline,k8s_list_resources,k8s_state_edges,k8s_triage_delta
+   --clusters-from=auto --max-concurrency-per-cluster=8`, exposing 8 tools
+   (including auto-added `k8s_list_clusters`; 47,930 B / ~13.2k tokens at
+   lookout's 3.64 B/token) and dropping `k8s_scan` (34.8 KB alone).
+   `gke-chat` adds `k8s_audit_all` for 9 `lookout` tools (65,601 B / ~18.0k
+   tokens) alongside `leeway`'s `report` (`agentic_never: true`). `core-agent`
+   digesting stays enabled on `lookout` because both flat main agents hold
+   `retrieve_raw`.
+4. **Pinned `k8s-lookout` skills and CLI-to-MCP mapping.** `images/agent`
+   copies skills straight from the pinned `lookout` build stage
+   (`/src/skills/`): `k8s-triage` + `playbooks` for `gke-triage-f` (1 loaded
+   skill), and `k8s-triage`, `cluster-health`, `k8s-audit`, `k8s-capacity`,
+   `gitops-drift` + `playbooks` for `gke-chat` (5 loaded skills). Because
+   ADK's `load_skill_resource` restricts paths to `references/`, `assets/`, or
+   `scripts/` (rejecting `../playbooks/`), `playbooks/*.md` are also copied
+   into `k8s-triage/references/playbooks/`, and both recipes allowlist
+   `skill:list_skills*`, `skill:load_skill*`, and `skill:load_skill_resource*`
+   under `permissions.mode: "ask"`. Both `AGENTS.md` files map `overflow
+   section=<s> cmd="lookout ..."` trailers and skill CLI examples to their
+   `lookout_k8s_*` MCP tools (noting that `lookout_k8s_triage_logs` rejects
+   passing `namespace` alongside `workload`), and `e2e/scenarios/triage-overflow`
+   exercises an incident whose enrichment bundle reliably overflows
+   `section=logs` under the default 4096-byte cap so the run only passes by
+   following the overflow trailer with `lookout_k8s_triage_logs`.
+
+**Why:** Keeping the hosted GKE MCP server alongside `lookout` gave the model
+two competing ways to read a pod, spent schema tokens on raw Kubernetes reads
+that lacked `lookout`'s secret masking, Drain log distillation, and dependency
+edge checks, and left the incident agent unable to follow the `overflow
+section=<s> cmd="lookout ..."` trailers `lookout watch` already attaches to
+incidents. Running `lookout mcp` over local stdio inside the distroless actor
+reuses `gke-chat`'s proven credential-injection and `*.<location>.gke.goog`
+egress path with zero new in-cluster mTLS sidecar or credential plane, while
+pinning the skills directly from the `lookout` build stage prevents skill
+documentation from drifting behind the `lookout` binary.
+
+**Rejected:** Running a shared in-cluster mTLS `lookout mcp` server attached
+to the sentinel's SQLite store now (introduces a new network hop, mTLS
+identity surface, and multi-cluster store design before the local stdio path
+is proven); keeping hosted GKE MCP beside `lookout` (duplicated read paths,
+raw unmasked payloads, extra schema tokens); enabling full `--profile=triage`
+including `k8s_scan` (adds 34.8 KB / ~9.6k tokens of schema to every model
+call for a target-free sweep an incident session already targeted); and
+keeping `gke-triage-f` behind `core-agent config import-workload` after `mast`
+was retired.
+
 ## 2026-11-28: Enable lookout storm correlation (--storm=auto) in the substrate profile (#132)
 
 1. **`--storm=auto` across the `substrate` profile.**

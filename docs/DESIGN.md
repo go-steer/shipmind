@@ -79,7 +79,7 @@ k8s-lookout ──(ax sink: one task per incident)──▶ ax-server ──▶ 
                                                                  │ ax runner
                                                                  │ core-agent (agent recipe)
                                                                  ▼
-                  GKE MCP / Vertex ◀── egress gateway (injected Google token)
+GKE APIs (*.gke.goog, container.googleapis.com) / Vertex ◀── egress gateway (injected Google token)
 substrate-scope: watches every actor        switchboard (M3): starts tasks per thread
 ```
 
@@ -121,7 +121,7 @@ fills them; none is created empty.
 ```
 versions.yaml            the bill of materials
 agents/
-  sre-triage/            gke-triage bundles, Workspace AGENTS.md, schemas
+  sre-triage/            native core-agent recipes (gke-triage-f, gke-chat), ax templates
 images/
   agent/                 core-agent + ax runner + lookout + leeway + agent recipes (#48)
   console/               the admin console (shipmind console -in-cluster, #128)

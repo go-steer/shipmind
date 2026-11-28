@@ -147,9 +147,9 @@ def is_executable_or_sh(p: Path) -> bool:
 
 SKIP_DIRS = {"vendor", "testdata"}
 
-# Legacy gke-triage / gke-triage-f bundles kept verbatim until converted
-# to native core-agent recipes (#144). Rewriting their headers would
-# change the agent image's contents.
+# Native agent recipes under agents/sre-triage/ contain only Markdown and
+# JSON files (templates live in agents/sre-triage/ax/*.tmpl); keep the tree
+# out of YAML header rewriting.
 VERBATIM = {Path("agents/sre-triage")}
 
 

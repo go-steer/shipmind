@@ -521,7 +521,7 @@ func TestRunFailures(t *testing.T) {
 		{"wrong answer", func(w *world) { w.answer = "The pod is crash-looping." }, "the answer lacks DATABASE_URL"},
 		{"no suspend", func(w *world) { w.suspendAfter = -1 }, "did not suspend"},
 		{"restarted", func(w *world) { w.wokeStatus = "idle" }, "the agent restarted instead of resuming"},
-		{"no read", func(w *world) { w.calls = []string{"gke_list_k8s_events"} }, "trajectory: never called get_k8s_resource or describe_k8s_resource"},
+		{"no read", func(w *world) { w.calls = []string{"gke_list_k8s_events"} }, "trajectory: never called k8s_triage_workload or k8s_resource_spec"},
 		{"a write", func(w *world) { w.calls = []string{"gke_get_k8s_resource", "gke_patch_k8s_resource"} }, "trajectory: called gke_patch_k8s_resource, which it must not"},
 		{"a runaway", func(w *world) { w.calls = slices.Repeat([]string{"gke_get_k8s_resource"}, 11) }, "trajectory: 11 tool calls, more than 10"},
 		{"lost history", func(w *world) { w.wokeEvents = 1 }, "lost history"},

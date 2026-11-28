@@ -92,8 +92,8 @@ spec:
     # tools, while the distroless image carries no shell or git binary.
     - --disable-tools=bash,read_many_files,view_file_outline,delete_file,stat,list_dir,glob
 {{- else }}
-    # No bash or file tools: the agent reads clusters through GKE's MCP
-    # server (the image has no kubectl), and
+    # No bash or file tools: the agent reads clusters through lookout mcp
+    # (and leeway mcp on gke-chat; the image has no kubectl), and
     # every tool's schema rides along in every model call. On a
     # multi-session daemon only an admin may approve bash (core-agent
     # #1355), so a Slack approval would be refused anyway.
@@ -128,10 +128,8 @@ spec:
     - name: CORE_AGENT_SWITCHBOARD_TOKEN
       value: injected
 {{- end }}
-{{- if .TrustRecipe }}
     - name: CORE_AGENT_TRUSTED_DIRS
       value: "/workspace/repo,/opt/core-agent/recipes/{{ .Bundle }}/.agents"
-{{- end }}
     - name: GOOGLE_CLOUD_PROJECT
       value: {{ printf "%q" .Project }}
     # core-agent requires an explicit Vertex AI location.

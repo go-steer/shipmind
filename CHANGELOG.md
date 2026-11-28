@@ -10,6 +10,13 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- Added the `e2e/scenarios/triage-overflow` scenario (#131): a crash-looping
+  workload whose enrichment bundle fits `spec`, `delta`, and `radius` under
+  `lookout`'s default 4096-byte `--enrich-cap` while overflowing `section=logs`
+  into an `overflow section=logs cmd="lookout triage logs ..."` trailer; the
+  missing `SETTLEMENT_WEBHOOK_URL` variable appears only in container logs, so
+  the scenario passes only when the incident agent follows the overflow hint
+  with `lookout_k8s_triage_logs`.
 - `shipmind scenario canary` now passes `-archive` to the canary Job,
   inheriting the environment overlay's nightly CronJob `-archive` target by
   default (overridable via `-archive gs://bucket/prefix`), so canary runs
@@ -251,6 +258,18 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Converted `gke-triage-f` to a native flat `core-agent` recipe under
+  `agents/sre-triage/gke-triage-f/.agents/`, removed all remaining legacy
+  `mast` bundles and `core-agent config import-workload`/fold machinery from
+  `images/agent/Dockerfile`, dropped the hosted GKE MCP server
+  (`https://container.googleapis.com/mcp/read-only`) across both `gke-triage-f`
+  and `gke-chat` in favor of local stdio `lookout mcp` (8-tool trimmed triage
+  surface dropping `k8s_scan` on `gke-triage-f`; 9-tool audit + triage surface
+  plus `leeway` on `gke-chat`), shipped pinned `k8s-lookout` skills (and
+  `k8s-triage/references/playbooks`) in `images/agent` with `skill:*` read
+  allowlists and CLI-to-MCP mapping notes, gave incident tasks
+  `CORE_AGENT_TRUSTED_DIRS` and `*.<location>.gke.goog` egress, and updated
+  incident scenario trajectories and `e2e/scenarios/tools.yaml` (#131, #144).
 - Enabled `k8s-lookout` storm correlation and the live topology graph across
   the `substrate` profile by switching `deploy/profiles/substrate/lookout`
   from `--storm=off` to `--storm=auto` (verified against

@@ -31,44 +31,24 @@
   },
   "permissions": {
     "allow": [
-      "mcp:gke_list_clusters*",
-      "mcp:gke_get_cluster*",
-      "mcp:gke_get_k8s_resource*",
-      "mcp:gke_describe_k8s_resource*",
-      "mcp:gke_get_k8s_logs*",
-      "mcp:gke_list_k8s_events*",
       "mcp:lookout_k8s_list_clusters*",
       "mcp:lookout_k8s_audit_all*",
-      "mcp:leeway_report*"
+      "mcp:lookout_k8s_triage_workload*",
+      "mcp:lookout_k8s_resource_spec*",
+      "mcp:lookout_k8s_triage_logs*",
+      "mcp:lookout_k8s_event_timeline*",
+      "mcp:lookout_k8s_list_resources*",
+      "mcp:lookout_k8s_state_edges*",
+      "mcp:lookout_k8s_triage_delta*",
+      "mcp:leeway_report*",
+      "skill:list_skills*",
+      "skill:load_skill*",
+      "skill:load_skill_resource*"
     ],
     "mode": "ask"
   },
   "tools": {
     "policies": [
-      {
-        "mutating": false,
-        "name": "list_clusters"
-      },
-      {
-        "mutating": false,
-        "name": "get_cluster"
-      },
-      {
-        "mutating": false,
-        "name": "get_k8s_resource"
-      },
-      {
-        "mutating": false,
-        "name": "describe_k8s_resource"
-      },
-      {
-        "mutating": false,
-        "name": "get_k8s_logs"
-      },
-      {
-        "mutating": false,
-        "name": "list_k8s_events"
-      },
       {
         "mutating": false,
         "name": "k8s_list_clusters"
@@ -79,39 +59,35 @@
       },
       {
         "mutating": false,
+        "name": "k8s_triage_workload"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_resource_spec"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_triage_logs"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_event_timeline"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_list_resources"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_state_edges"
+      },
+      {
+        "mutating": false,
+        "name": "k8s_triage_delta"
+      },
+      {
+        "mutating": false,
         "name": "report"
-      },
-      {
-        "mutating": true,
-        "name": "patch_k8s_resource"
-      },
-      {
-        "mutating": true,
-        "name": "apply_k8s_manifest"
-      },
-      {
-        "mutating": true,
-        "name": "delete_k8s_resource"
-      },
-      {
-        "mutating": true,
-        "name": "create_cluster"
-      },
-      {
-        "mutating": true,
-        "name": "update_cluster"
-      },
-      {
-        "mutating": true,
-        "name": "create_node_pool"
-      },
-      {
-        "mutating": true,
-        "name": "update_node_pool"
-      },
-      {
-        "mutating": true,
-        "name": "cancel_operation"
       }
     ]
   }

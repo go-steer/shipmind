@@ -13,11 +13,26 @@
 # limitations under the License.
 
 # The tools a scenario's expect.trajectory may name: the union of the tools
-# declared by gke-triage-f (agents/sre-triage/gke-triage-f/workload.yaml)
-# and gke-chat (agents/sre-triage/gke-chat/.agents/config.json); a test
-# keeps the two equal. A name not here is a typo, and Load refuses it
-# rather than let a never_call guard quietly match nothing.
+# declared by native gke-triage-f (agents/sre-triage/gke-triage-f/.agents/config.json)
+# and native gke-chat (agents/sre-triage/gke-chat/.agents/config.json), plus
+# retired hosted GKE MCP read and write tool names kept for historical
+# archived-run re-grading (#91) and cluster-mutation never_call safety guards.
+# TestToolCatalog keeps active recipe tools and retired GKE tools exact so a
+# typo in any scenario.yaml is refused by Load.
 tools:
+  # Active lookout MCP tools (gke-triage-f and gke-chat).
+  - k8s_list_clusters
+  - k8s_audit_all
+  - k8s_triage_workload
+  - k8s_resource_spec
+  - k8s_triage_logs
+  - k8s_event_timeline
+  - k8s_list_resources
+  - k8s_state_edges
+  - k8s_triage_delta
+  # Active leeway MCP tool (gke-chat).
+  - report
+  # Retired hosted GKE MCP read tools (retained for re-grading pre-#131 archives).
   - triage-classifier
   - get_k8s_resource
   - describe_k8s_resource
@@ -34,9 +49,7 @@ tools:
   - get_node_pool
   - list_operations
   - get_operation
-  - k8s_list_clusters
-  - k8s_audit_all
-  - report
+  # Cluster-mutating tools (retained for never_call safety guards across scenarios).
   - patch_k8s_resource
   - apply_k8s_manifest
   - delete_k8s_resource

@@ -22,27 +22,25 @@
 #                   drops the unused terminal UI (~5 MB) and declines MCP
 #                   elicitation in headless mode (#144)
 #   lookout         built (-tags allproviders) from k8s-lookout at its pin
-#                   in versions.yaml; gke-chat runs lookout mcp
-#                   --tools=k8s_audit_all --clusters-from=auto as a stdio
-#                   MCP server (#127, #144)
+#                   in versions.yaml; both gke-triage-f (8-tool trimmed
+#                   triage surface) and gke-chat (9-tool audit + triage
+#                   surface) run lookout mcp --clusters-from=auto as a
+#                   stdio MCP server (#127, #131, #144)
 #   leeway          built from leeway at its pin in versions.yaml; gke-chat
 #                   runs leeway mcp --timeout=20s --parallelism=32 as a
 #                   stdio MCP server (#127, #144)
 #   /opt/core-agent/recipes/<bundle>
-#                   gke-chat is authored natively under
-#                   agents/sre-triage/gke-chat/.agents/ (flat main agent
-#                   holding the GKE read, lookout audit, and leeway report
-#                   MCP servers directly, with propose-change layered at
-#                   deploy time; #144). gke-triage-f is converted from its
-#                   legacy workload bundle at build time by that same
-#                   core-agent (`core-agent config import-workload`), merged
-#                   with agents/sre-triage/ax/core-agent-gke-triage-f.json, and
-#                   folded into the main agent via
-#                   core-agent-gke-triage-f.fold-specialist. Each recipe is
-#                   booted once (no network needed) until its attach
-#                   listener answers as Substrate's router (Host check,
-#                   core-agent#1358), verifying MCP server startup, loaded
-#                   AGENTS.md, and posture tool registration.
+#                   both gke-triage-f and gke-chat are authored natively
+#                   under agents/sre-triage/<bundle>/.agents/ (flat main
+#                   agents holding lookout — and leeway on gke-chat —
+#                   directly, with zero hosted GKE MCP server and
+#                   propose-change layered at deploy time; #131, #144),
+#                   carrying pinned k8s-lookout skills from the lookout
+#                   build stage. Each recipe is booted once (no network
+#                   needed) until its attach listener answers as
+#                   Substrate's router (Host check, core-agent#1358),
+#                   verifying MCP server startup, loaded AGENTS.md,
+#                   bundled skills, and exact tool registration.
 #
 # The pins arrive as build arguments read from versions.yaml
 # (build-args.sh); this file has no defaults for them, so they can't
@@ -82,8 +80,8 @@ RUN git init -q . \
  && test "$(git rev-parse HEAD)" = "$CORE_AGENT_COMMIT"
 RUN go mod download
 # One binary for the image, built for the target, and one for this
-# stage, to run the importer below. --version reports the commit;
-# versions.yaml's note names the release it is.
+# stage, to run the recipe boot smoke checks below. --version reports
+# the commit; versions.yaml's note names the release it is.
 RUN ldflags="-s -w -X github.com/go-steer/core-agent/v3/internal/version.Version=${CORE_AGENT_COMMIT} -X github.com/go-steer/core-agent/v3/internal/version.Commit=${CORE_AGENT_COMMIT}" \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -tags no_tui -trimpath -ldflags "$ldflags" -o /out/core-agent ./cmd/core-agent \
@@ -143,73 +141,52 @@ FROM --platform=$BUILDPLATFORM alpine:3.22@sha256:2e0b81d60597f449baa56dc25d3553
 RUN apk add --no-cache jq curl
 COPY --from=core-agent /usr/local/bin/core-agent /usr/local/bin/core-agent
 COPY --from=lookout /usr/local/bin/lookout /usr/local/bin/lookout
+COPY --from=lookout /src/skills /lookout-skills
 COPY --from=leeway /usr/local/bin/leeway /usr/local/bin/leeway
 COPY agents/sre-triage /in
-# The posture servers, run exactly as gke-chat/.agents/mcp.json runs them,
-# with no network and no credentials: lookout must offer only its
-# cluster-choice tool (multi-cluster mode) and k8s_audit_all (2 tools),
-# leeway its report tool. The boot below then has core-agent list both
-# servers' tools for real on the main agent.
+# Assemble both native core-agent recipes (gke-triage-f and gke-chat), copy
+# pinned k8s-lookout skills (including playbooks both beside the skills and
+# under k8s-triage/references/playbooks so ADK's load_skill_resource can read
+# them), and verify exact lookout/leeway tool surfaces offline before booting.
 RUN set -e; \
-    lookout $(jq -r '.servers.lookout.args | join(" ")' /in/gke-chat/.agents/mcp.json) --list-tools > /tmp/lookout-tools; \
-    grep -q '^k8s_list_clusters ' /tmp/lookout-tools; \
-    grep -q '^k8s_audit_all ' /tmp/lookout-tools; \
-    grep -q '^2 tools ' /tmp/lookout-tools; \
-    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | leeway $(jq -r '.servers.leeway.args | join(" ")' /in/gke-chat/.agents/mcp.json) | grep -q '"name":"report"'; \
-    for b in gke-triage-f; do \
-      core-agent config import-workload -o "/out/$b" "/in/$b"; \
-      over="/in/ax/core-agent-$b.json"; \
-      if [ -f "$over" ]; then \
-        jq -s '.[0] * .[1]' "/out/$b/.agents/config.json" "$over" > /tmp/config.json; \
-        mv /tmp/config.json "/out/$b/.agents/config.json"; \
-      fi; \
-      mkdir -p "/out/$b/.agents/plans"; \
-      mcp="/out/$b/.agents/mcp.json"; \
-      for sa in /out/$b/.agents/subagents/*.md; do \
-        [ -f "$sa" ] || continue; \
-        n=$(basename "$sa" .md); \
-        if grep -q '^mcp_tools:\|^mcp:' "$sa" && ! grep -qx 'mode: single_turn' "$sa" && { ! grep -qx "root: roots/$n" "$sa" || [ ! -f "/out/$b/.agents/roots/$n/mcp.json" ]; }; then echo "recipe $b: the importer gave specialist $n, which uses MCP, no content root of its own"; exit 1; fi; \
-      done; \
-      if [ -e "$mcp" ]; then echo "recipe $b: the importer gave the main agent MCP servers"; exit 1; fi; \
-      fold="/in/ax/core-agent-$b.fold-specialist"; \
-      if [ -f "$fold" ]; then \
-        n=$(tr -d ' \n' < "$fold"); sa="/out/$b/.agents/subagents/$n.md"; \
-        test -f "$sa"; \
-        awk '/^## Subagent Roster/ { skip = 1; next } skip && /^## / { skip = 0 } !skip' "/out/$b/AGENTS.md" > /tmp/agents.md; \
-        awk 'f >= 2 { print; next } /^---$/ { f++ }' "$sa" > /tmp/body.md; \
-        grep -q '^Return your finding by calling `finish_task`' /tmp/body.md; \
-        awk '/^Return your finding by calling `finish_task`/ { exit } { print }' /tmp/body.md | sed 's/ and leave `proposed_change` empty//' > /tmp/diagnosis.md; \
-        { cat /tmp/agents.md; printf '\n## Diagnosis\n\n'; cat /tmp/diagnosis.md; cat "/in/ax/core-agent-$b.report.md"; } > "/out/$b/AGENTS.md"; \
-        cp "/in/$b/mcp.json" "$mcp"; \
-        rm "$sa"; rm -rf "/out/$b/.agents/roots/$n"; \
-        if grep -qF "\`$n\`" "/out/$b/AGENTS.md" || grep -qF finish_task "/out/$b/AGENTS.md" || ! grep -q '^## Diagnosis$' "/out/$b/AGENTS.md"; then \
-          echo "recipe $b: folding $n left its roster entry or finish_task, or no Diagnosis section:"; cat "/out/$b/AGENTS.md"; exit 1; \
-        fi; \
-        if ls /out/$b/.agents/subagents/*.md >/dev/null 2>&1; then echo "recipe $b: subagents remain after folding $n"; exit 1; fi; \
-      fi; \
-      main="/in/ax/core-agent-$b.main-tools.json"; \
-      if [ -f "$main" ] && [ "$(jq length "$main")" -gt 0 ]; then \
-        [ -f "$mcp" ] || cp "/in/$b/mcp.json" "$mcp"; \
-        jq --slurpfile t "$main" '.servers = {"gke": (.servers.gke | .tools = $t[0])}' "$mcp" > /tmp/mcp.json; \
-        mv /tmp/mcp.json "$mcp"; \
-        if ! jq -e --slurpfile t "$main" '(.servers | keys) == ["gke"] and .servers.gke.tools == $t[0]' "$mcp" >/dev/null; then echo "recipe $b: main agent's tools aren't $(cat "$main")"; exit 1; fi; \
-      else \
-        rm -f "$mcp"; \
-      fi; \
-      jq -S . "/out/$b/.agents/config.json" > "/tmp/got-$b.json"; \
-      jq -S . "/in/ax/core-agent-$b.base.json" > "/tmp/want-$b.json"; \
-      if ! cmp -s "/tmp/got-$b.json" "/tmp/want-$b.json"; then \
-        echo "recipe $b: core-agent-$b.base.json drifted from imported $b:"; \
-        diff -u "/tmp/want-$b.json" "/tmp/got-$b.json" || true; \
-        exit 1; \
-      fi; \
+    lookout $(jq -r '.servers.lookout.args | join(" ")' /in/gke-triage-f/.agents/mcp.json) --list-tools > /tmp/lookout-triage-tools; \
+    for t in k8s_list_clusters k8s_triage_workload k8s_resource_spec k8s_triage_logs k8s_event_timeline k8s_list_resources k8s_state_edges k8s_triage_delta; do \
+      grep -q "^${t} " /tmp/lookout-triage-tools; \
     done; \
-    mkdir -p /out/gke-chat/.agents/plans; \
+    grep -q '^8 tools ' /tmp/lookout-triage-tools; \
+    if grep -q '^k8s_scan ' /tmp/lookout-triage-tools; then echo "gke-triage-f must not expose k8s_scan"; exit 1; fi; \
+    if grep -q '^k8s_audit_all ' /tmp/lookout-triage-tools; then echo "gke-triage-f must not expose k8s_audit_all"; exit 1; fi; \
+    lookout $(jq -r '.servers.lookout.args | join(" ")' /in/gke-chat/.agents/mcp.json) --list-tools > /tmp/lookout-chat-tools; \
+    for t in k8s_list_clusters k8s_audit_all k8s_triage_workload k8s_resource_spec k8s_triage_logs k8s_event_timeline k8s_list_resources k8s_state_edges k8s_triage_delta; do \
+      grep -q "^${t} " /tmp/lookout-chat-tools; \
+    done; \
+    grep -q '^9 tools ' /tmp/lookout-chat-tools; \
+    if grep -q '^k8s_scan ' /tmp/lookout-chat-tools; then echo "gke-chat must not expose k8s_scan"; exit 1; fi; \
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | leeway $(jq -r '.servers.leeway.args | join(" ")' /in/gke-chat/.agents/mcp.json) | grep -q '"name":"report"'; \
+    mkdir -p /out/gke-triage-f/.agents/plans /out/gke-triage-f/.agents/skills; \
+    cp -a /in/gke-triage-f/.agents/. /out/gke-triage-f/.agents/; \
+    cp -a /lookout-skills/k8s-triage /lookout-skills/playbooks /out/gke-triage-f/.agents/skills/; \
+    mkdir -p /out/gke-triage-f/.agents/skills/k8s-triage/references/playbooks; \
+    cp -a /lookout-skills/playbooks/. /out/gke-triage-f/.agents/skills/k8s-triage/references/playbooks/; \
+    test -f /out/gke-triage-f/.agents/AGENTS.md; \
+    test -f /out/gke-triage-f/.agents/config.json; \
+    test -f /out/gke-triage-f/.agents/skills/k8s-triage/SKILL.md; \
+    test -f /out/gke-triage-f/.agents/skills/k8s-triage/references/playbooks/crashloopbackoff.md; \
+    jq -e '(.servers | keys | sort) == ["lookout"] and (.servers.lookout.agentic_never // false) == false' /out/gke-triage-f/.agents/mcp.json >/dev/null; \
+    test ! -d /out/gke-triage-f/.agents/subagents; \
+    test ! -d /out/gke-triage-f/.agents/roots; \
+    mkdir -p /out/gke-chat/.agents/plans /out/gke-chat/.agents/skills; \
     cp -a /in/gke-chat/.agents/. /out/gke-chat/.agents/; \
+    cp -a /lookout-skills/k8s-triage /lookout-skills/cluster-health /lookout-skills/k8s-audit /lookout-skills/k8s-capacity /lookout-skills/gitops-drift /lookout-skills/playbooks /out/gke-chat/.agents/skills/; \
+    mkdir -p /out/gke-chat/.agents/skills/k8s-triage/references/playbooks; \
+    cp -a /lookout-skills/playbooks/. /out/gke-chat/.agents/skills/k8s-triage/references/playbooks/; \
     test -f /out/gke-chat/.agents/AGENTS.md; \
     test -f /out/gke-chat/.agents/config.json; \
-    jq -e '(.servers | keys | sort) == ["gke", "leeway", "lookout"] and .servers.leeway.agentic_never == true and (.servers.lookout.agentic_never // false) == false' /out/gke-chat/.agents/mcp.json >/dev/null; \
-    test ! -d /out/gke-chat/.agents/subagents && test ! -d /out/gke-chat/.agents/roots
+    test -f /out/gke-chat/.agents/skills/k8s-triage/SKILL.md; \
+    test -f /out/gke-chat/.agents/skills/k8s-triage/references/playbooks/crashloopbackoff.md; \
+    jq -e '(.servers | keys | sort) == ["leeway", "lookout"] and .servers.leeway.agentic_never == true and (.servers.lookout.agentic_never // false) == false' /out/gke-chat/.agents/mcp.json >/dev/null; \
+    test ! -d /out/gke-chat/.agents/subagents; \
+    test ! -d /out/gke-chat/.agents/roots
 # The Host Substrate's router sends (switchboard's and lookout's
 # default router URL; the nightly's too).
 ARG ROUTER_HOST=atenet-router.ate-system.svc.cluster.local
@@ -221,8 +198,8 @@ ARG TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator
 ARG VCS_TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator --disable-tools=bash,read_many_files,view_file_outline,delete_file,stat,list_dir,glob --agentic-tools=false --no-background-agents --no-pricing-refresh"
 RUN set -e; mkdir -p /tmp/content; \
     boot() { \
-      label="$1"; cfg="$2"; extra="$3"; flags="$4"; \
-      SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected CORE_AGENT_GITHUB_TOKEN=injected CORE_AGENT_SWITCHBOARD_TOKEN=injected CORE_AGENT_TRUSTED_DIRS="/tmp,/out/${5}/.agents" GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \
+      label="$1"; cfg="$2"; extra="$3"; flags="$4"; recipe="$5"; \
+      SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected CORE_AGENT_GITHUB_TOKEN=injected CORE_AGENT_SWITCHBOARD_TOKEN=injected CORE_AGENT_TRUSTED_DIRS="/tmp,/out/${recipe}/.agents" GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \
         core-agent -c "$cfg" $extra $flags --no-repl \
           --attach-listen=127.0.0.1:8484 --attach-token=SMOKE_TOKEN \
           --session-db --session-db-path="/tmp/smoke-$label.db" --agents-content-dir=/tmp/content \
@@ -232,16 +209,23 @@ RUN set -e; mkdir -p /tmp/content; \
         [ "$code" != 000 ] && break; \
         kill -0 "$pid" 2>/dev/null || break; sleep 0.5; \
       done; \
-      if [ "$code" = 200 ] && [ "$5" = "gke-chat" ]; then \
+      if [ "$code" = 200 ]; then \
         sid=$(curl -sf -m 10 -X POST -H "Host: $ROUTER_HOST" -H "Authorization: Bearer smoke" -H "Content-Type: application/json" -d '{}' http://127.0.0.1:8484/sessions | jq -r '.sessionID // empty' || true); \
         if [ -z "$sid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; echo "recipe $label: POST /sessions returned no sessionID:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
         if ! curl -sf -m 10 -H "Host: $ROUTER_HOST" -H "Authorization: Bearer smoke" "http://127.0.0.1:8484/sessions/$sid/mcp" > "/tmp/smoke-$label-mcp.json"; then \
           kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
           echo "recipe $label: GET /sessions/$sid/mcp failed:"; cat "/tmp/smoke-$label.log"; exit 1; \
         fi; \
-        if ! jq -e '(.servers[] | select(.name=="lookout") | (.tools | map(.name) | sort)) == ["lookout_k8s_audit_all","lookout_k8s_list_clusters"] and (.servers[] | select(.name=="leeway") | (.tools | map(.name))) == ["leeway_report"]' "/tmp/smoke-$label-mcp.json" >/dev/null; then \
-          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
-          echo "recipe $label: unexpected main-agent posture MCP tools:"; cat "/tmp/smoke-$label-mcp.json"; cat "/tmp/smoke-$label.log"; exit 1; \
+        if [ "$recipe" = "gke-triage-f" ]; then \
+          if ! jq -e '(.servers | map(.name) | sort) == ["lookout"] and (.servers[] | select(.name=="lookout") | (.tools | map(.name) | sort)) == ["lookout_k8s_event_timeline","lookout_k8s_list_clusters","lookout_k8s_list_resources","lookout_k8s_resource_spec","lookout_k8s_state_edges","lookout_k8s_triage_delta","lookout_k8s_triage_logs","lookout_k8s_triage_workload"]' "/tmp/smoke-$label-mcp.json" >/dev/null; then \
+            kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
+            echo "recipe $label: unexpected main-agent triage MCP tools:"; cat "/tmp/smoke-$label-mcp.json"; cat "/tmp/smoke-$label.log"; exit 1; \
+          fi; \
+        else \
+          if ! jq -e '(.servers | map(.name) | sort) == ["leeway","lookout"] and (.servers[] | select(.name=="lookout") | (.tools | map(.name) | sort)) == ["lookout_k8s_audit_all","lookout_k8s_event_timeline","lookout_k8s_list_clusters","lookout_k8s_list_resources","lookout_k8s_resource_spec","lookout_k8s_state_edges","lookout_k8s_triage_delta","lookout_k8s_triage_logs","lookout_k8s_triage_workload"] and (.servers[] | select(.name=="leeway") | (.tools | map(.name))) == ["leeway_report"]' "/tmp/smoke-$label-mcp.json" >/dev/null; then \
+            kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
+            echo "recipe $label: unexpected main-agent chat MCP tools:"; cat "/tmp/smoke-$label-mcp.json"; cat "/tmp/smoke-$label.log"; exit 1; \
+          fi; \
         fi; \
       fi; \
       kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
@@ -252,12 +236,15 @@ RUN set -e; mkdir -p /tmp/content; \
       if grep -Eq "tools allowlist names |has no tool matching " "/tmp/smoke-$label.log"; then echo "recipe $label: unmatched MCP tool allowlist:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
       if grep -Eq "mcp: [0-9]+ server\(s\), [1-9][0-9]* down" "/tmp/smoke-$label.log"; then echo "recipe $label: subagent MCP server failed to start:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
       if grep -Eq "mcp: [0-9]+ server\(s\) loaded .*\[[1-9][0-9]* failed" "/tmp/smoke-$label.log"; then echo "recipe $label: main-agent MCP server failed to start:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
-      if [ "$5" = "gke-chat" ] && ! grep -Eq "instruction: loaded [1-9][0-9]* file\(s\): .*/out/gke-chat/\.agents/AGENTS\.md" "/tmp/smoke-$label.log"; then echo "recipe $label: native AGENTS.md was not loaded:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if grep -q "NOT loaded" "/tmp/smoke-$label.log"; then echo "recipe $label: bundled skill was dropped:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if ! grep -Eq "instruction: loaded [1-9][0-9]* file\(s\): .*/out/${recipe}/\.agents/AGENTS\.md" "/tmp/smoke-$label.log"; then echo "recipe $label: native AGENTS.md was not loaded:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if [ "$recipe" = "gke-triage-f" ] && ! grep -q "skills: 1 loaded — k8s-triage" "/tmp/smoke-$label.log"; then echo "recipe $label: expected 1 bundled skill (k8s-triage):"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if [ "$recipe" = "gke-chat" ] && ! grep -q "skills: 5 loaded — cluster-health, gitops-drift, k8s-audit, k8s-capacity, k8s-triage" "/tmp/smoke-$label.log"; then echo "recipe $label: expected 5 bundled skills:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
       echo "recipe $label: core-agent starts and answers the router"; \
     }; \
     for b in gke-triage-f gke-chat; do \
       boot "$b" "/out/$b/.agents/config.json" "" "$TASK_FLAGS" "$b"; \
-      jq '.permissions.allow += ["spawn_agent:propose-change","edit_file:/tmp/repos/*","write_file:/tmp/repos/*","vcs_commit:*","alert:slack"] | . + {"vcs":{"workspace_dir":"/tmp/repos","forges":[{"name":"github","provider":"github","token_env":"CORE_AGENT_GITHUB_TOKEN"}],"repositories":[{"forge":"github","repository":"example/repo","role":"gitops","base_branch":"main"}]},"subagents":[{"name":"propose-change","description":"Opens GitOps PRs","instructions":"@include builtin:propose-change\n","mode":"chat","capability":"change_executor","tools":["read_file","edit_file","write_file","grep","vcs_capabilities","vcs_clone","vcs_status","vcs_diff","vcs_log","vcs_commit","vcs_publish","vcs_propose","vcs_proposal_view","vcs_proposal_list"],"mcp":[],"budgets":{"max_turns":15,"max_wallclock_seconds":180}}],"alerts":{"rate_limit_per_target":"5/min","targets":[{"name":"slack","kind":"webhook","template":"switchboard","conversation":"C0123456789","url":"http://switchboard.switchboard.svc.cluster.local:8080/v1/messages","auth":{"bearer_env":"CORE_AGENT_SWITCHBOARD_TOKEN"}}]}}' "/out/$b/.agents/config.json" > "/tmp/aug-$b.json"; \
+      jq '.permissions.allow += ["spawn_agent:propose-change","edit_file:/tmp/repos/*","write_file:/tmp/repos/*","vcs_commit:*","alert:slack"] | . + {"vcs":{"workspace_dir":"/tmp/repos","forges":[{"name":"github","provider":"github","token_env":"CORE_AGENT_GITHUB_TOKEN"}],"repositories":[{"forge":"github","repository":"example/repo","role":"gitops","base_branch":"main"}]},"subagents":[{"name":"propose-change","description":"Opens GitOps PRs","instructions":"@include builtin:propose-change\n","mode":"chat","capability":"change_executor","tools":["read_file","edit_file","write_file","grep","vcs_capabilities","vcs_clone","vcs_status","vcs_diff","vcs_log","vcs_commit","vcs_publish","vcs_propose","vcs_proposal_view","vcs_proposal_list"],"mcp":[],"skills":[],"budgets":{"max_turns":15,"max_wallclock_seconds":180}}],"alerts":{"rate_limit_per_target":"5/min","targets":[{"name":"slack","kind":"webhook","template":"switchboard","conversation":"C0123456789","url":"http://switchboard.switchboard.svc.cluster.local:8080/v1/messages","auth":{"bearer_env":"CORE_AGENT_SWITCHBOARD_TOKEN"}}]}}' "/out/$b/.agents/config.json" > "/tmp/aug-$b.json"; \
       boot "$b-augmented" "/tmp/aug-$b.json" "--agents-dir=/out/$b/.agents" "$VCS_TASK_FLAGS" "$b"; \
     done
 
@@ -269,7 +256,7 @@ FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c
 
 LABEL org.opencontainers.image.source="https://github.com/go-steer/shipmind" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.description="core-agent as an ax task image, with lookout, leeway, and the shipmind sre-triage agent bundles."
+      org.opencontainers.image.description="core-agent as an ax task image, with lookout, leeway, and the shipmind sre-triage agent recipes."
 
 COPY --from=ax-runner /out/ax-task-runner /usr/local/bin/ax-task-runner
 COPY --from=core-agent /out/core-agent /usr/local/bin/core-agent
