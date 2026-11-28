@@ -4,6 +4,65 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-28: Enable lookout storm correlation (--storm=auto) in the substrate profile (#132)
+
+1. **`--storm=auto` across the `substrate` profile.**
+   `deploy/profiles/substrate/lookout/lookout.yaml` switches `--storm=off` to
+   `--storm=auto` for all environments (keeping `args[1]`
+   `--cluster-name=CLUSTER` and `args[2]` `--namespace=NAMESPACES` at their
+   indices for environment overlay patches). At startup `k8s-lookout` probes
+   `pods`, `nodes`, and `apps/replicasets` `list+watch` against the vendored
+   `ClusterRole/lookout-ax-watch` (`deploy/vendor/k8s-lookout/deploy/12-clusterrole-watcher/`)
+   and resolves storm correlation and the live topology graph `on`.
+   `TestSubstrateLookoutStormAutoAndGraphRBAC` enforces both `--storm=auto`
+   and all six graph grants in CI.
+2. **Storm-aware scenario detection without touching shared storm tasks.**
+   `internal/scenario` keeps `Transcript.FirstIncident` rejecting `storm` and
+   `storm.*` payloads so `sweep` and deferred cleanup never claim or delete a
+   shared storm task. `Transcript.StormContaining` parses `k8s-lookout`'s
+   `kind=storm` (`representative_incidents`) and `kind=storm.member`
+   (`incident`) wire payloads, including multi-bullet core-agent `[Inbox]`
+   bundles. During incident lookup (`waitForIncident` / `findIncident`), `scenario.Run`
+   inspects new non-`Failed` tasks and already-`Running` pre-existing
+   `lookout-*` tasks (never waking `Suspended` tasks, and caching tasks
+   classified as non-storm by `sweep` or earlier polls so unrelated
+   per-incident tasks are not re-polled over 15s SSE streams or kept awake),
+   always prefers a dedicated per-incident task when one exists or is still
+   booting, and otherwise fails fast with `Result.Storm` populated (storm
+   task, session, kind, and blast-radius ancestor), removes the scenario
+   workload, and leaves the shared storm task untouched.
+
+**Why:** Running with `--storm=off` carried two costs on `substrate`
+deployments. First, correlated bursts opened one ax task per failing pod
+instead of one storm task — a node outage affecting 15 pods saturated a
+4-worker pool (`deploy/profiles/substrate/workers/workerpool.yaml`, 12 actor
+slots). Second, `--storm=off` turned off `k8s-lookout`'s live topology graph,
+pushing incident enrichment onto per-incident scoped-list fallbacks and
+disabling `--store` graph history (`--at` queries). The vendored
+`ClusterRole/lookout-ax-watch` already grants the required
+`pods`/`nodes`/`apps/replicasets` `list+watch` permissions (and the
+routing-layer `services`/`endpointslices`/`ingresses`/`networkpolicies`
+`list+watch` grants for graph history), so `--storm=auto` resolves `on` with
+no RBAC expansion while loudly degrading if a narrower overlay trims grants.
+Nightly scenarios deploy one single-replica workload on staggered 30-minute
+schedules (`03:17`, `03:47`, `04:17` UTC) — below lookout's 3-incident / 60s
+storm threshold — so normal runs still open dedicated per-incident tasks;
+when concurrent failures fold a probe into a storm, structured `Result.Storm`
+reporting replaces a misleading 10-minute `"no lookout incident task"`
+timeout without clobbering the live storm agent.
+
+**Rejected:** Keeping `--storm=off` (leaves the worker pool exposed to burst
+saturation and forfeits live topology-graph enrichment and store history);
+enabling `--storm=auto` only in production overlays while keeping dev and
+stage on `--storm=off` (splits runtime behavior across environments so storm
+correlation and topology-graph changes reach production untested); adopting
+a shared storm task as `Result.Task` to grade, drain, or delete in
+`internal/scenario` (a storm session targets the shared blast-radius ancestor
+rather than one workload's ConfigMap or memory limit, accumulates multi-turn
+usage beyond single-incident trajectory bounds, will not idle-suspend while
+sibling members stay broken, and deleting it would destroy live incident
+handling).
+
 ## 2026-11-25: gke-chat is a native flat core-agent recipe with a trimmed posture surface and -tags no_tui (#144)
 
 Amends 2026-11-05 ("Two agent profiles, autonomous and interactive, one

@@ -98,7 +98,11 @@ spec:
             - --cluster-name=CLUSTER
             - --namespace=NAMESPACES
             - --dedup-window=5m
-            - --storm=off
+            # Enables storm correlation to protect the worker pool and
+            # activates the live topology graph for enrichment and store
+            # history (#132). Probes pods/nodes/replicasets list+watch
+            # against ClusterRole lookout-ax-watch at startup.
+            - --storm=auto
             - --store=/var/lib/lookout/lookout.db
             - --sink=ax
             - --ax-server=ax-server.ax-system.svc.cluster.local:8080

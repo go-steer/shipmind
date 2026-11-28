@@ -251,6 +251,15 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Enabled `k8s-lookout` storm correlation and the live topology graph across
+  the `substrate` profile by switching `deploy/profiles/substrate/lookout`
+  from `--storm=off` to `--storm=auto` (verified against
+  `ClusterRole/lookout-ax-watch`'s `pods`, `nodes`, and `apps/replicasets`
+  `list+watch` grants by `TestSubstrateLookoutStormAutoAndGraphRBAC`), and
+  taught `internal/scenario` incident lookup to detect `kind=storm` /
+  `kind=storm.member` folds cleanly into `Result.Storm` (caching non-storm
+  tasks to avoid repeated SSE polls or waking suspended tasks) without
+  grading, draining, or deleting shared storm tasks (#132).
 - Pinned `agent` (`769a4f7@sha256:ec2c35b2`: `core-agent 1b15d237` `-tags no_tui`,
   `k8s-lookout v0.46.0`, `leeway v0.1.9`, `ax-runner db1c1de`, native flat
   `gke-chat`) and `e2e-runner` (`769a4f7@sha256:783ce1da`: Substrate `v1.0.1`
