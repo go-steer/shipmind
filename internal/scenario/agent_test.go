@@ -210,6 +210,106 @@ func TestMessageText(t *testing.T) {
 	}
 }
 
+func TestInboxMessages(t *testing.T) {
+	got := inboxMessages("[Inbox]\n- from sa:lookout: {\"kind\":\"storm\"}\n- from sa:lookout: {\"kind\":\"storm.member\"}\n\nHow to handle")
+	want := []string{`{"kind":"storm"}`, "{\"kind\":\"storm.member\"}\n\nHow to handle"}
+	if !slices.Equal(got, want) {
+		t.Errorf("inboxMessages = %q, want %q", got, want)
+	}
+	if single := inboxMessages(`{"kind":"storm"}`); !slices.Equal(single, []string{`{"kind":"storm"}`}) {
+		t.Errorf("plain inboxMessages = %q", single)
+	}
+}
+
+// StormContaining parses k8s-lookout's real kind=storm (StormPayload) and
+// kind=storm.member (StormMemberPayload) wire shapes, both plain and inside
+// multi-bullet core-agent [Inbox] bundles, and ignores non-matching storms,
+// prefix collisions, wrong namespaces, and storm.member_superseded pointers.
+func TestStormContaining(t *testing.T) {
+	const (
+		stormPayload = `{"kind":"storm","fingerprint":"fp-s","severity":"critical","cluster":"demo","ancestor_kind":"Node","ancestor_name":"gke-pool-1","reason":"CrashLoopBackOff","message":"storm","affected_count":3,"namespaces_count":1,"representative_incidents":[{"fingerprint":"fp-1","reason":"BackOff","namespace":"triage-lab","kind_of_object":"Pod","name":"other-1-abc","uid":"u1"},{"fingerprint":"fp-2","reason":"BackOff","namespace":"triage-lab","kind_of_object":"Pod","name":"missing-env-1128-031700-7d9f8c-abcde","uid":"u2"}]}`
+		memberAttach = `{"kind":"storm.member","storm_fingerprint":"fp-s","storm_session_id":"lookout-2222222222222222/s1","ancestor_kind":"Deployment","ancestor_namespace":"triage-lab","ancestor_name":"shared-app","cluster":"demo","message":"late arrival","incident":{"fingerprint":"fp-4","reason":"BackOff","namespace":"triage-lab","kind_of_object":"Pod","name":"missing-env-1128-031700-7d9f8c-abcde","uid":"u4"}}`
+		superseded   = `{"kind":"storm.member_superseded","storm_fingerprint":"fp-s","storm_session_id":"lookout-2222222222222222/s1","ancestor_kind":"Node","ancestor_name":"gke-pool-1","cluster":"demo","message":"superseded","incident":{"fingerprint":"fp-2","reason":"BackOff","namespace":"triage-lab","kind_of_object":"Pod","name":"missing-env-1128-031700-7d9f8c-abcde","uid":"u2","session_id":"lookout-0123456789abcdef/s1"}}`
+	)
+
+	t.Run("kind=storm representative match", func(t *testing.T) {
+		tr := &Transcript{Events: []Event{{Seq: 1, Author: "user", Texts: []string{"[Inbox]\n- from sa:lookout: " + stormPayload + "\n\nHow to handle"}}}}
+		got, ok := tr.StormContaining("triage-lab", "missing-env-1128-031700")
+		if !ok || got.Kind != "storm" || got.Ancestor() != "Node gke-pool-1" || got.AffectedCount != 3 || got.MemberSessionID != "" {
+			t.Fatalf("StormContaining = %+v, %v", got, ok)
+		}
+		if _, ok := tr.StormContaining("other-ns", "missing-env-1128-031700"); ok {
+			t.Error("matched wrong namespace")
+		}
+		if _, ok := tr.StormContaining("triage-lab", "missing-env-1128-03170"); ok {
+			t.Error("matched non-hyphen prefix collision")
+		}
+	})
+
+	t.Run("kind=storm.member in multi-bullet inbox", func(t *testing.T) {
+		otherStorm := `{"kind":"storm","ancestor_kind":"Node","ancestor_name":"gke-pool-1","affected_count":3,"representative_incidents":[{"namespace":"triage-lab","kind_of_object":"Pod","name":"unrelated-abc"}]}`
+		tr := &Transcript{Events: []Event{
+			{Seq: 1, Author: "model", Texts: []string{stormPayload}}, // non-user event ignored
+			{Seq: 2, Author: "user", Texts: []string{"[Inbox]\n- from sa:lookout: " + otherStorm + "\n- from sa:lookout: " + memberAttach + "\n\nHow to handle"}},
+		}}
+		got, ok := tr.StormContaining("triage-lab", "missing-env-1128-031700")
+		if !ok || got.Kind != "storm.member" || got.Ancestor() != "Deployment triage-lab/shared-app" {
+			t.Fatalf("StormContaining = %+v, %v", got, ok)
+		}
+	})
+
+	t.Run("ignores storm.member_superseded and malformed payloads", func(t *testing.T) {
+		for _, text := range []string{
+			superseded,
+			`{"kind":"storm.update","ancestor_kind":"Node","ancestor_name":"gke-pool-1","affected_count":10}`,
+			`{"kind":"storm","ancestor_name":"node-1","representative_incidents":["missing-env-1128-031700-abc"]}`,
+			`not json`,
+		} {
+			tr := &Transcript{Events: []Event{{Seq: 1, Author: "user", Texts: []string{text}}}}
+			if sm, ok := tr.StormContaining("triage-lab", "missing-env-1128-031700"); ok {
+				t.Errorf("StormContaining(%s) = %+v, want false", text, sm)
+			}
+		}
+	})
+
+	t.Run("IsStorm classifies storm payloads and excludes superseded member pointers", func(t *testing.T) {
+		for _, tc := range []struct {
+			text string
+			want bool
+		}{
+			{stormPayload, true},
+			{"[Inbox]\n- from sa:lookout: " + memberAttach + "\n\nHow to handle", true},
+			{`{"kind":"storm.update","ancestor_kind":"Node","ancestor_name":"gke-pool-1","affected_count":10}`, true},
+			{superseded, false},
+			{`{"kind":"k8s-event","namespace":"triage-lab","name":"app-1"}`, false},
+			{`old incident`, false},
+		} {
+			tr := &Transcript{Events: []Event{{Seq: 1, Author: "user", Texts: []string{tc.text}}}}
+			if got := tr.IsStorm(); got != tc.want {
+				t.Errorf("IsStorm(%s) = %v, want %v", tc.text, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("StormMatch.Ancestor formatting", func(t *testing.T) {
+		for _, tc := range []struct {
+			m    StormMatch
+			want string
+		}{
+			{StormMatch{AncestorKind: "Node", AncestorName: "n1"}, "Node n1"},
+			{StormMatch{AncestorKind: "Deployment", AncestorNamespace: "ns", AncestorName: "app"}, "Deployment ns/app"},
+			{StormMatch{AncestorKind: "Namespace", AncestorNamespace: "ns"}, "Namespace ns"},
+			{StormMatch{AncestorName: "n1"}, "n1"},
+			{StormMatch{AncestorKind: "Cluster"}, "Cluster"},
+			{StormMatch{}, "unknown ancestor"},
+		} {
+			if got := tc.m.Ancestor(); got != tc.want {
+				t.Errorf("Ancestor(%+v) = %q, want %q", tc.m, got, tc.want)
+			}
+		}
+	})
+}
+
 // A subagent started in the background reports in a later "[Background
 // reports]" turn; that is not a new message, and the answer is what the
 // agent says after it.

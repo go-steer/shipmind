@@ -659,6 +659,18 @@ const backgroundReports = "[Background reports]"
 // bundle: ...").
 const inboxHeader = "[Inbox]\n- "
 
+// stripInboxSender strips core-agent's optional "from <sender>: " prefix
+// from one inbox bullet, where a sender (a caller identity) has no
+// whitespace; an unattributed message has no prefix.
+func stripInboxSender(bullet string) string {
+	if head, after, ok := strings.Cut(bullet, ": "); ok {
+		if sender, ok := strings.CutPrefix(head, "from "); ok && sender != "" && !strings.ContainsAny(sender, " \t\n") {
+			return after
+		}
+	}
+	return bullet
+}
+
 // messageText returns the message a person or lookout sent, from the
 // text of the event that carries it: core-agent's first inbox bullet
 // without its sender, or unboxed text as is. What follows the message in
@@ -669,14 +681,23 @@ func messageText(text string) string {
 	if !ok {
 		return text
 	}
-	// "from <sender>: ", where a sender (a caller identity) has no
-	// whitespace; an unattributed message has no prefix.
-	if head, after, ok := strings.Cut(rest, ": "); ok {
-		if sender, ok := strings.CutPrefix(head, "from "); ok && sender != "" && !strings.ContainsAny(sender, " \t\n") {
-			rest = after
-		}
+	return stripInboxSender(rest)
+}
+
+// inboxMessages returns every message carried by a user event: each bullet
+// of a core-agent "[Inbox]" bundle with any sender prefix stripped, or the
+// plain text as a single element when unboxed.
+func inboxMessages(text string) []string {
+	rest, ok := strings.CutPrefix(text, inboxHeader)
+	if !ok {
+		return []string{text}
 	}
-	return rest
+	parts := strings.Split(rest, "\n- ")
+	msgs := make([]string, 0, len(parts))
+	for _, p := range parts {
+		msgs = append(msgs, stripInboxSender(p))
+	}
+	return msgs
 }
 
 // Answer returns the agent's answer to the first message a person or
@@ -798,14 +819,14 @@ type Incident struct {
 }
 
 // FirstIncident parses the task's first message as a lookout incident.
-// ok is false when it isn't one; a storm (kind "storm") never is: a
-// storm task is keyed on a shared ancestor (a Node, a namespace, the
-// cluster), lives across storms and lists many members, so it is never
-// a scenario run's own task.
+// ok is false when it isn't one; a storm (kind "storm" or "storm.*")
+// never is: a storm task is keyed on a shared ancestor (a Node, a
+// namespace, the cluster), lives across storms and lists many members,
+// so it is never a scenario run's own task.
 func (t *Transcript) FirstIncident() (Incident, bool) {
 	// The first JSON value: core-agent's inbox bundle goes on after it.
 	var in Incident
-	if err := json.NewDecoder(strings.NewReader(t.FirstMessage())).Decode(&in); err != nil || in.Name == "" || in.Kind == "" || in.Kind == "storm" {
+	if err := json.NewDecoder(strings.NewReader(t.FirstMessage())).Decode(&in); err != nil || in.Name == "" || in.Kind == "" || in.Kind == "storm" || strings.HasPrefix(in.Kind, "storm.") {
 		return Incident{}, false
 	}
 	return in, true
@@ -816,4 +837,133 @@ func (t *Transcript) FirstIncident() (Incident, bool) {
 // of its pods ("<workload>-<replicaset hash>-<pod hash>").
 func (in Incident) About(ns, workload string) bool {
 	return in.Namespace == ns && (in.Name == workload || strings.HasPrefix(in.Name, workload+"-"))
+}
+
+// StormMatch describes a lookout storm that folded a scenario workload:
+// either as a founding representative in a kind="storm" payload or as a
+// late-arriving member in a kind="storm.member" payload (k8s-lookout
+// pkg/inject.StormPayload and StormMemberPayload).
+type StormMatch struct {
+	Task              string `json:"task,omitempty"`
+	Session           string `json:"session,omitempty"`
+	Kind              string `json:"kind"`
+	AncestorKind      string `json:"ancestor_kind,omitempty"`
+	AncestorNamespace string `json:"ancestor_namespace,omitempty"`
+	AncestorName      string `json:"ancestor_name,omitempty"`
+	AffectedCount     int    `json:"affected_count,omitempty"`
+	// MemberSessionID is set when lookout opened a per-incident session
+	// for the workload before the storm formed (StormIncidentRef.SessionID).
+	MemberSessionID string `json:"member_session_id,omitempty"`
+}
+
+// Ancestor formats the storm's blast-radius ancestor ("Node gke-a" or
+// "Deployment triage-lab/app"), matching k8s-lookout's Ancestor.Display.
+func (s StormMatch) Ancestor() string {
+	name := s.AncestorName
+	if s.AncestorNamespace != "" && name != "" {
+		name = s.AncestorNamespace + "/" + name
+	} else if s.AncestorNamespace != "" {
+		name = s.AncestorNamespace
+	}
+	switch {
+	case s.AncestorKind != "" && name != "":
+		return s.AncestorKind + " " + name
+	case name != "":
+		return name
+	case s.AncestorKind != "":
+		return s.AncestorKind
+	default:
+		return "unknown ancestor"
+	}
+}
+
+// stormIncidentRef mirrors k8s-lookout's inject.StormIncidentRef on
+// kind="storm" representative_incidents and kind="storm.member" incident.
+type stormIncidentRef struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	SessionID string `json:"session_id"`
+}
+
+// stormEnvelope decodes k8s-lookout's inject.StormPayload (kind="storm")
+// and inject.StormMemberPayload (kind="storm.member").
+type stormEnvelope struct {
+	Kind              string             `json:"kind"`
+	AncestorKind      string             `json:"ancestor_kind"`
+	AncestorNamespace string             `json:"ancestor_namespace"`
+	AncestorName      string             `json:"ancestor_name"`
+	AffectedCount     int                `json:"affected_count"`
+	Representatives   []stormIncidentRef `json:"representative_incidents"`
+	Incident          *stormIncidentRef  `json:"incident"`
+}
+
+// IsStorm reports whether any user message in the transcript is a lookout
+// storm payload (kind="storm", "storm.member", or "storm.update"). It
+// returns false for kind="storm.member_superseded", which lookout injects
+// into a member's own per-incident session.
+func (t *Transcript) IsStorm() bool {
+	for _, e := range t.Events {
+		if !isUser(e) {
+			continue
+		}
+		for _, raw := range inboxMessages(strings.Join(e.Texts, "\n")) {
+			var env struct {
+				Kind string `json:"kind"`
+			}
+			if err := json.NewDecoder(strings.NewReader(raw)).Decode(&env); err != nil {
+				continue
+			}
+			switch env.Kind {
+			case "storm", "storm.member", "storm.update":
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// StormContaining reports whether any lookout storm payload in the
+// transcript folds workload in namespace ns: either in a kind="storm"
+// payload's representative_incidents or in a kind="storm.member"
+// late-arrival payload's incident. It does not match
+// kind="storm.member_superseded", which lookout injects into a member's
+// own per-incident session rather than the storm session.
+func (t *Transcript) StormContaining(ns, workload string) (StormMatch, bool) {
+	for _, e := range t.Events {
+		if !isUser(e) {
+			continue
+		}
+		for _, raw := range inboxMessages(strings.Join(e.Texts, "\n")) {
+			var env stormEnvelope
+			if err := json.NewDecoder(strings.NewReader(raw)).Decode(&env); err != nil {
+				continue
+			}
+			switch env.Kind {
+			case "storm":
+				for _, ref := range env.Representatives {
+					if (Incident{Namespace: ref.Namespace, Name: ref.Name}).About(ns, workload) {
+						return StormMatch{
+							Kind:              env.Kind,
+							AncestorKind:      env.AncestorKind,
+							AncestorNamespace: env.AncestorNamespace,
+							AncestorName:      env.AncestorName,
+							AffectedCount:     env.AffectedCount,
+							MemberSessionID:   ref.SessionID,
+						}, true
+					}
+				}
+			case "storm.member":
+				if env.Incident != nil && (Incident{Namespace: env.Incident.Namespace, Name: env.Incident.Name}).About(ns, workload) {
+					return StormMatch{
+						Kind:              env.Kind,
+						AncestorKind:      env.AncestorKind,
+						AncestorNamespace: env.AncestorNamespace,
+						AncestorName:      env.AncestorName,
+						MemberSessionID:   env.Incident.SessionID,
+					}, true
+				}
+			}
+		}
+	}
+	return StormMatch{}, false
 }

@@ -221,6 +221,11 @@ type Result struct {
 	// Drain is what a worker drain did to the task, for a scenario with a
 	// drain block (#105).
 	Drain *DrainResult `json:"drain,omitempty"`
+	// Storm is set when lookout folded the scenario workload into a shared
+	// storm task instead of opening a dedicated per-incident task (#132).
+	// Storm tasks are shared across workloads, so the runner reports the
+	// fold and never grades, drains, or deletes the storm task.
+	Storm *StormMatch `json:"storm,omitempty"`
 	// Judge is a model's grade of the answer against the scenario's
 	// expect.diagnosis (#90), when the run had a judge: reported, never a
 	// failure, until there is a baseline to gate on.
@@ -513,7 +518,7 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	if err != nil {
 		return nil, err
 	}
-	sweep(ctx, s, k, tasks, agent, &o)
+	seen := sweep(ctx, s, k, tasks, agent, &o)
 	before, err := tasks.Tasks(ctx)
 	if err != nil {
 		return nil, err
@@ -551,7 +556,11 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 		cctx, cancel := cleanupCtx()
 		defer cancel()
 		if r.Task == "" {
-			r.Task, r.Session = findIncident(cctx, tasks, agent, before, s.Namespace, name)
+			// Cleanup deletes only a dedicated per-incident task, never a
+			// shared storm task; reuse seen so unrelated tasks are not
+			// re-probed or woken during cleanup.
+			m := findIncident(cctx, tasks, agent, before, s.Namespace, name, seen, false)
+			r.Task, r.Session = m.task, m.session
 		}
 		if r.Task == "" {
 			return
@@ -565,20 +574,10 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	}()
 
 	// 1. lookout opens an incident: a new lookout-* task whose session
-	// names the workload.
-	werr := until(ctx, &o, s.Limits.Incident, func(ctx context.Context) (bool, error) {
-		r.Task, r.Session = findIncident(ctx, tasks, agent, before, s.Namespace, name)
-		return r.Task != "", nil
-	})
-	if werr != nil {
-		if errors.Is(werr, errTimeout) {
-			failf("no lookout incident task named %s within %s", name, s.Limits.Incident)
-			return r, nil
-		}
+	// names the workload (or folds it into a shared storm task, #132).
+	if ok, werr := waitForIncident(ctx, s, tasks, agent, before, name, start, seen, r, &o); !ok || werr != nil {
 		return r, werr
 	}
-	r.IncidentAfter = o.Now().Sub(start).Round(time.Second).String()
-	o.Log("incident: task %s, session %s, after %s", r.Task, r.Session, r.IncidentAfter)
 
 	// checkTrajectory grades the path to the answer (#89) and records it.
 	checkTrajectory := func(tr *Transcript) {
@@ -605,7 +604,7 @@ func Run(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o O
 	answeredAt := o.Now()
 	idle := 0
 	var tr *Transcript
-	werr = until(ctx, &o, s.Limits.Diagnose, func(ctx context.Context) (bool, error) {
+	werr := until(ctx, &o, s.Limits.Diagnose, func(ctx context.Context) (bool, error) {
 		state, err := agent.State(ctx, r.Task, r.Session)
 		if err != nil {
 			return false, nil
@@ -977,40 +976,195 @@ func gradeAnswer(ctx context.Context, s *Scenario, name string, r *Result, o *Op
 // resolved signals, and must never be taken for a run's task.
 var incidentTask = regexp.MustCompile(`^lookout-[0-9a-f]{16}$`)
 
-// findIncident returns the new incident task (one not in before) whose
-// incident, its first message, is about the workload, if there is one
-// yet.
-func findIncident(ctx context.Context, tasks Tasks, agent Agent, before map[string]string, ns, workload string) (task, session string) {
+// taskClass remembers what kind of lookout-* task a previous inspection
+// found so waitForIncident does not re-read unrelated per-incident tasks
+// (each Router.Events read holds an SSE stream open for EventsWait and
+// resets the task's idle timer) or wake a storm task that has suspended.
+type taskClass uint8
+
+const (
+	taskUnknown taskClass = iota
+	taskUnrelated
+	taskStorm
+)
+
+// waitForIncident polls for a new dedicated lookout-* task for workload
+// in s.Namespace. Under --storm=auto (#132), if lookout folds the workload
+// into a shared storm task instead of opening a dedicated task, it records
+// r.Storm and a failure and returns (false, nil) so the run removes its
+// workload and exits without grading, draining, or deleting the storm task.
+func waitForIncident(ctx context.Context, s *Scenario, tasks Tasks, agent Agent, before map[string]string, name string, start time.Time, seen map[string]taskClass, r *Result, o *Options) (bool, error) {
+	if seen == nil {
+		seen = map[string]taskClass{}
+	}
+	var lastStorm *StormMatch
+	werr := until(ctx, o, s.Limits.Incident, func(ctx context.Context) (bool, error) {
+		m := findIncident(ctx, tasks, agent, before, s.Namespace, name, seen, true)
+		if m.task != "" {
+			r.Task, r.Session = m.task, m.session
+			return true, nil
+		}
+		if m.storm != nil {
+			lastStorm = m.storm
+			if !m.booting && m.storm.MemberSessionID == "" {
+				r.Storm = m.storm
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+	if werr != nil {
+		if errors.Is(werr, errTimeout) {
+			if lastStorm != nil {
+				r.Storm = lastStorm
+				o.Log("incident folded into storm task %s (session %s, %s, kind %s) before timeout; shared storm task will not be graded or deleted",
+					r.Storm.Task, r.Storm.Session, r.Storm.Ancestor(), r.Storm.Kind)
+				r.Failures = append(r.Failures, fmt.Sprintf("workload %s was folded into storm task %s (%s); shared storm tasks are not graded or deleted by scenario runs", name, r.Storm.Task, r.Storm.Ancestor()))
+				return false, nil
+			}
+			r.Failures = append(r.Failures, fmt.Sprintf("no lookout incident task named %s within %s", name, s.Limits.Incident))
+			return false, nil
+		}
+		return false, werr
+	}
+	r.IncidentAfter = o.Now().Sub(start).Round(time.Second).String()
+	if r.Storm != nil {
+		o.Log("incident folded into storm task %s (session %s, %s, kind %s) after %s; shared storm task will not be graded or deleted",
+			r.Storm.Task, r.Storm.Session, r.Storm.Ancestor(), r.Storm.Kind, r.IncidentAfter)
+		r.Failures = append(r.Failures, fmt.Sprintf("workload %s was folded into storm task %s (%s); shared storm tasks are not graded or deleted by scenario runs", name, r.Storm.Task, r.Storm.Ancestor()))
+		return false, nil
+	}
+	o.Log("incident: task %s, session %s, after %s", r.Task, r.Session, r.IncidentAfter)
+	return true, nil
+}
+
+// incidentLookup is one poll's outcome from findIncident: either a
+// dedicated per-incident task (task != "") or a shared storm task that
+// folded the workload (storm != nil). booting is true when a brand-new
+// lookout task has not yet exposed a session with its first message.
+type incidentLookup struct {
+	task    string
+	session string
+	storm   *StormMatch
+	booting bool
+}
+
+// findIncident looks for the new dedicated incident task (one not in
+// before) whose first message is about workload in ns. When checkStorms
+// is true and no dedicated task matches yet, it also inspects new tasks
+// and already-Running pre-existing lookout-* tasks (skipping Failed tasks,
+// tasks already classified as unrelated in seen, and any Suspended storm
+// or pre-existing task so it never wakes them) to detect whether lookout
+// folded the workload into a shared storm task.
+func findIncident(ctx context.Context, tasks Tasks, agent Agent, before map[string]string, ns, workload string, seen map[string]taskClass, checkStorms bool) incidentLookup {
 	now, err := tasks.Tasks(ctx)
 	if err != nil {
-		return "", ""
+		return incidentLookup{}
 	}
-	names := make([]string, 0, len(now))
-	for t := range now {
-		if _, old := before[t]; !old && incidentTask.MatchString(t) {
-			names = append(names, t)
+	var newNames, runningOld []string
+	for t, phase := range now {
+		if !incidentTask.MatchString(t) || phase == "Failed" || seen[t] == taskUnrelated {
+			continue
+		}
+		if _, old := before[t]; !old {
+			if seen[t] == taskStorm && phase != "Running" {
+				continue
+			}
+			newNames = append(newNames, t)
+		} else if checkStorms && phase == "Running" {
+			runningOld = append(runningOld, t)
 		}
 	}
-	slices.Sort(names)
-	for _, t := range names {
+	slices.Sort(newNames)
+	var out incidentLookup
+	for _, t := range newNames {
 		sessions, err := agent.Sessions(ctx, t)
 		if err != nil {
+			out.booting = true
 			continue // still booting
 		}
+		inspected, incomplete, isStorm := false, false, false
 		for _, sess := range sessions {
 			if sess.ID == coreAgentDefaultSession {
 				continue
 			}
 			tr, err := agent.Events(ctx, t, sess.ID)
-			if err != nil {
+			if err != nil || tr == nil || tr.FirstMessage() == "" {
+				out.booting, incomplete = true, true
 				continue
 			}
+			inspected = true
 			if in, ok := tr.FirstIncident(); ok && in.About(ns, workload) {
-				return t, sess.ID
+				return incidentLookup{task: t, session: sess.ID}
+			}
+			if tr.IsStorm() {
+				isStorm = true
+				if checkStorms && out.storm == nil {
+					if sm, ok := tr.StormContaining(ns, workload); ok {
+						sm.Task, sm.Session = t, sess.ID
+						out.storm = &sm
+					}
+				}
+			}
+		}
+		if !inspected {
+			out.booting = true
+		} else if seen != nil && !incomplete {
+			if isStorm {
+				seen[t] = taskStorm
+			} else {
+				seen[t] = taskUnrelated
 			}
 		}
 	}
-	return "", ""
+	if !checkStorms || out.storm != nil {
+		return out
+	}
+	slices.Sort(runningOld)
+	for _, t := range runningOld {
+		if sm := findStormInTask(ctx, agent, t, ns, workload, seen); sm != nil {
+			out.storm = sm
+			return out
+		}
+	}
+	return out
+}
+
+func findStormInTask(ctx context.Context, agent Agent, task, ns, workload string, seen map[string]taskClass) *StormMatch {
+	sessions, err := agent.Sessions(ctx, task)
+	if err != nil {
+		return nil
+	}
+	inspected, incomplete, isStorm := false, false, false
+	for _, sess := range sessions {
+		if sess.ID == coreAgentDefaultSession {
+			continue
+		}
+		tr, err := agent.Events(ctx, task, sess.ID)
+		if err != nil || tr == nil || tr.FirstMessage() == "" {
+			incomplete = true
+			continue
+		}
+		inspected = true
+		if tr.IsStorm() {
+			isStorm = true
+			if sm, ok := tr.StormContaining(ns, workload); ok {
+				if seen != nil {
+					seen[task] = taskStorm
+				}
+				sm.Task, sm.Session = task, sess.ID
+				return &sm
+			}
+		}
+	}
+	if seen != nil && inspected && !incomplete {
+		if isStorm {
+			seen[task] = taskStorm
+		} else {
+			seen[task] = taskUnrelated
+		}
+	}
+	return nil
 }
 
 // sweep removes what killed runs of this scenario left behind: its
@@ -1018,10 +1172,13 @@ func findIncident(ctx context.Context, tasks Tasks, agent Agent, before map[stri
 // message, parsed) is about one of its run workloads in its namespace.
 // Nothing else: lookout's watchboard, cluster-scope and storm tasks hear
 // about scenario workloads too, and are long-lived agents. Best effort:
-// failures are logged, not fatal.
-func sweep(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o *Options) {
+// failures are logged, not fatal. It returns the classifications of the
+// tasks it already inspected and kept so waitForIncident skips unrelated
+// non-storm tasks on later polls.
+func sweep(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o *Options) map[string]taskClass {
+	seen := map[string]taskClass{}
 	if o.Keep {
-		return
+		return seen
 	}
 	if sw, ok := k.(Sweeper); ok {
 		if out, err := sw.DeleteLabeled(ctx, s.Namespace, "deployments,configmaps", Leftovers+"="+s.Name); err != nil {
@@ -1033,7 +1190,7 @@ func sweep(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o
 	now, err := tasks.Tasks(ctx)
 	if err != nil {
 		o.Log("sweep: %v", err)
-		return
+		return seen
 	}
 	prefix := s.Name + "-"
 	for t := range now {
@@ -1044,12 +1201,19 @@ func sweep(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o
 		if err != nil {
 			continue
 		}
+		inspected, incomplete, isStorm, deleted := false, false, false, false
 		for _, sess := range sessions {
 			if sess.ID == coreAgentDefaultSession {
 				continue
 			}
 			tr, err := agent.Events(ctx, t, sess.ID)
-			if err != nil {
+			if err != nil || tr == nil || tr.FirstMessage() == "" {
+				incomplete = true
+				continue
+			}
+			inspected = true
+			if tr.IsStorm() {
+				isStorm = true
 				continue
 			}
 			in, ok := tr.FirstIncident()
@@ -1061,9 +1225,18 @@ func sweep(ctx context.Context, s *Scenario, k Kube, tasks Tasks, agent Agent, o
 			} else {
 				o.Log("sweep: deleted task %s, left by an earlier run", t)
 			}
+			deleted = true
 			break
 		}
+		if !deleted && inspected && !incomplete {
+			if isStorm {
+				seen[t] = taskStorm
+			} else {
+				seen[t] = taskUnrelated
+			}
+		}
 	}
+	return seen
 }
 
 func lenEvents(t *Transcript) int {

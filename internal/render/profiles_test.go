@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/kustomize/kyaml/yaml"
 
@@ -579,6 +580,9 @@ patches:
 	if gotArgs[len(gotArgs)-1] != "--sources="+wantLookoutReactiveSources {
 		t.Errorf("overlay last arg = %q, want --sources=%s", gotArgs[len(gotArgs)-1], wantLookoutReactiveSources)
 	}
+	if !slices.Contains(gotArgs, "--storm=auto") {
+		t.Errorf("overlay args %v lost --storm=auto", gotArgs)
+	}
 
 	// Negative cases: every invariant check must fail when violated.
 	clone := func() Objects {
@@ -649,6 +653,267 @@ patches:
 	}
 	for _, tc := range negatives {
 		err := checkSubstrateLookoutReactiveSources(tc.objs)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want error containing %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+type rbacGrant struct {
+	group, resource, verb string
+}
+
+// lookoutStormGraphGrants mirrors k8s-lookout v0.46.0's internal/watch
+// graphAccess slice: the exact SelfSubjectAccessReview grants that
+// --storm=auto probes at startup before resolving storm correlation on.
+var lookoutStormGraphGrants = []rbacGrant{
+	{group: "", resource: "pods", verb: "list"},
+	{group: "", resource: "pods", verb: "watch"},
+	{group: "", resource: "nodes", verb: "list"},
+	{group: "", resource: "nodes", verb: "watch"},
+	{group: "apps", resource: "replicasets", verb: "list"},
+	{group: "apps", resource: "replicasets", verb: "watch"},
+}
+
+// checkSubstrateLookoutStormAuto verifies #132 on a rendered substrate
+// profile (or its lookout part):
+//   - --storm is pinned once to auto (so lookout probes its graph grants
+//     and resolves storm correlation + the live topology graph on);
+//   - ClusterRole lookout-ax-watch grants every list+watch permission
+//     k8s-lookout's --storm=auto probe requires (pods, nodes,
+//     apps/replicasets) without resourceNames restrictions, and is bound
+//     to ServiceAccount lookout-ax/lookout-ax.
+func checkSubstrateLookoutStormAuto(objs Objects) error {
+	d, ok := objs.Find("Deployment", "lookout-ax", "lookout-ax")
+	if !ok {
+		return fmt.Errorf("no Deployment lookout-ax/lookout-ax")
+	}
+	saNode, err := d.Pipe(yaml.Lookup("spec", "template", "spec", "serviceAccountName"))
+	if err != nil || saNode == nil || yaml.GetValue(saNode) != "lookout-ax" {
+		return fmt.Errorf("Deployment lookout-ax/lookout-ax serviceAccountName = %q, want lookout-ax", yaml.GetValue(saNode))
+	}
+	argsNode, err := d.Pipe(yaml.Lookup("spec", "template", "spec", "containers", "[name=lookout]", "args"))
+	if err != nil || argsNode == nil {
+		return fmt.Errorf("lookout args: %v", err)
+	}
+	elems, err := argsNode.Elements()
+	if err != nil {
+		return err
+	}
+	var args []string
+	for _, e := range elems {
+		args = append(args, yaml.GetValue(e))
+	}
+	var stormFlags, windowFlags []string
+	for i, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--storm="), strings.HasPrefix(a, "-storm="):
+			stormFlags = append(stormFlags, a[strings.Index(a, "=")+1:])
+		case a == "--storm" || a == "-storm":
+			if i+1 < len(args) {
+				stormFlags = append(stormFlags, args[i+1])
+			} else {
+				stormFlags = append(stormFlags, "")
+			}
+		case strings.HasPrefix(a, "--storm-window="), strings.HasPrefix(a, "-storm-window="):
+			windowFlags = append(windowFlags, a[strings.Index(a, "=")+1:])
+		case a == "--storm-window" || a == "-storm-window":
+			if i+1 < len(args) {
+				windowFlags = append(windowFlags, args[i+1])
+			} else {
+				windowFlags = append(windowFlags, "")
+			}
+		}
+	}
+	if len(stormFlags) != 1 || stormFlags[0] != "auto" {
+		return fmt.Errorf("lookout --storm values %v, want exactly [auto]", stormFlags)
+	}
+	for _, raw := range windowFlags {
+		dur, err := time.ParseDuration(raw)
+		if err != nil || dur <= 0 {
+			return fmt.Errorf("lookout --storm-window=%q disables or breaks storm correlation (want > 0)", raw)
+		}
+	}
+
+	if _, leaked := objs.Find("ClusterRole", "", "lookout-watch"); leaked {
+		return fmt.Errorf("unrenamed ClusterRole lookout-watch leaked into render")
+	}
+	cr, ok := objs.Find("ClusterRole", "", "lookout-ax-watch")
+	if !ok {
+		return fmt.Errorf("no ClusterRole lookout-ax-watch")
+	}
+	if err := checkClusterRoleGrants(cr, lookoutStormGraphGrants); err != nil {
+		return fmt.Errorf("ClusterRole lookout-ax-watch: %w", err)
+	}
+	crb, ok := objs.Find("ClusterRoleBinding", "", "lookout-ax-watch")
+	if !ok {
+		return fmt.Errorf("no ClusterRoleBinding lookout-ax-watch")
+	}
+	if err := checkBinding(crb, "ClusterRole", "lookout-ax-watch", "lookout-ax", "lookout-ax"); err != nil {
+		return fmt.Errorf("ClusterRoleBinding lookout-ax-watch: %w", err)
+	}
+	return nil
+}
+
+func checkClusterRoleGrants(o Object, required []rbacGrant) error {
+	var r struct {
+		Rules []struct {
+			APIGroups     []string `yaml:"apiGroups"`
+			Resources     []string `yaml:"resources"`
+			ResourceNames []string `yaml:"resourceNames"`
+			Verbs         []string `yaml:"verbs"`
+		} `yaml:"rules"`
+	}
+	s, err := o.String()
+	if err != nil {
+		return err
+	}
+	if err := yaml.Unmarshal([]byte(s), &r); err != nil {
+		return err
+	}
+	grants := func(want rbacGrant) bool {
+		for _, rule := range r.Rules {
+			if len(rule.ResourceNames) > 0 {
+				continue
+			}
+			groupOK := slices.Contains(rule.APIGroups, want.group) || slices.Contains(rule.APIGroups, "*")
+			resOK := slices.Contains(rule.Resources, want.resource) || slices.Contains(rule.Resources, "*")
+			verbOK := slices.Contains(rule.Verbs, want.verb) || slices.Contains(rule.Verbs, "*")
+			if groupOK && resOK && verbOK {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range required {
+		if !grants(want) {
+			return fmt.Errorf("missing %s on %s/%s", want.verb, want.group, want.resource)
+		}
+	}
+	return nil
+}
+
+func TestSubstrateLookoutStormAutoAndGraphRBAC(t *testing.T) {
+	for _, dir := range []string{
+		filepath.Join(profilesDir, "substrate", "lookout"),
+		filepath.Join(profilesDir, "substrate"),
+	} {
+		if err := checkSubstrateLookoutStormAuto(build(t, dir)); err != nil {
+			t.Errorf("%s: %v", dir, err)
+		}
+	}
+
+	clone := func() Objects {
+		return build(t, filepath.Join(profilesDir, "substrate", "lookout"))
+	}
+	setArgs := func(objs Objects, args ...string) Objects {
+		d, _ := objs.Find("Deployment", "lookout-ax", "lookout-ax")
+		c, err := d.Pipe(yaml.Lookup("spec", "template", "spec", "containers", "[name=lookout]"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.PipeE(yaml.SetField("args", yaml.NewListRNode(args...))); err != nil {
+			t.Fatal(err)
+		}
+		return objs
+	}
+	drop := func(objs Objects, kind, ns, name string) Objects {
+		return slices.DeleteFunc(objs, func(o Object) bool {
+			return o.Kind() == kind && o.Namespace() == ns && o.Name() == name
+		})
+	}
+	replaceCR := func(objs Objects, rulesYAML string) Objects {
+		cr, _ := objs.Find("ClusterRole", "", "lookout-ax-watch")
+		node, err := yaml.Parse(rulesYAML)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cr.PipeE(yaml.SetField("rules", node)); err != nil {
+			t.Fatal(err)
+		}
+		return objs
+	}
+	setSA := func(objs Objects, sa string) Objects {
+		d, _ := objs.Find("Deployment", "lookout-ax", "lookout-ax")
+		ps, err := d.Pipe(yaml.Lookup("spec", "template", "spec"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ps.PipeE(yaml.SetField("serviceAccountName", yaml.NewScalarRNode(sa))); err != nil {
+			t.Fatal(err)
+		}
+		return objs
+	}
+
+	negatives := []struct {
+		name string
+		objs Objects
+		want string
+	}{
+		{
+			name: "wrong serviceAccountName",
+			objs: setSA(clone(), "default"),
+			want: `serviceAccountName = "default", want lookout-ax`,
+		},
+		{
+			name: "--storm=off",
+			objs: setArgs(clone(), "--in-cluster", "--cluster-name=CLUSTER", "--namespace=NAMESPACES", "--storm=off"),
+			want: "lookout --storm values [off]",
+		},
+		{
+			name: "--storm-window=0s disables storm correlation",
+			objs: setArgs(clone(), "--in-cluster", "--cluster-name=CLUSTER", "--namespace=NAMESPACES", "--storm=auto", "--storm-window=0s"),
+			want: `lookout --storm-window="0s"`,
+		},
+		{
+			name: "missing --storm",
+			objs: setArgs(clone(), "--in-cluster", "--cluster-name=CLUSTER", "--namespace=NAMESPACES"),
+			want: "lookout --storm values []",
+		},
+		{
+			name: "duplicate --storm",
+			objs: setArgs(clone(), "--in-cluster", "--cluster-name=CLUSTER", "--namespace=NAMESPACES", "--storm=auto", "--storm=off"),
+			want: "lookout --storm values [auto off]",
+		},
+		{
+			name: "missing ClusterRole",
+			objs: drop(clone(), "ClusterRole", "", "lookout-ax-watch"),
+			want: "no ClusterRole lookout-ax-watch",
+		},
+		{
+			name: "missing ClusterRoleBinding",
+			objs: drop(clone(), "ClusterRoleBinding", "", "lookout-ax-watch"),
+			want: "no ClusterRoleBinding lookout-ax-watch",
+		},
+		{
+			name: "ClusterRole missing replicasets watch",
+			objs: replaceCR(clone(), `- apiGroups: [""]
+  resources: ["pods", "nodes"]
+  verbs: ["list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["replicasets"]
+  verbs: ["list"]
+`),
+			want: "missing watch on apps/replicasets",
+		},
+		{
+			name: "ClusterRole restricts nodes with resourceNames",
+			objs: replaceCR(clone(), `- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  resourceNames: ["node-a"]
+  verbs: ["list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["replicasets"]
+  verbs: ["list", "watch"]
+`),
+			want: "missing list on /nodes",
+		},
+	}
+	for _, tc := range negatives {
+		err := checkSubstrateLookoutStormAuto(tc.objs)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: got %v, want error containing %q", tc.name, err, tc.want)
 		}

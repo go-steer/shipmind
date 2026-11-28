@@ -90,6 +90,35 @@ type world struct {
 	neverPlaced bool
 	// deleteRefused: deleting the worker pod fails.
 	deleteRefused bool
+	// Storm correlation (#132):
+	//   - stormNewAt >= 0: a brand-new storm task lookout-3333333333333333
+	//     appears at stormNewAt containing w.name in representative_incidents
+	//     (optionally carrying stormMemberSession as session_id).
+	//   - stormAttachAt >= 0: the pre-existing Running storm task
+	//     lookout-2222222222222222 receives a kind=storm.member for w.name
+	//     at stormAttachAt.
+	//   - bootingUntil > 0: lookout-0123456789abcdef returns a booting error
+	//     from Sessions until bootingUntil.
+	//   - wakeOnProbe: realistically transitions lookout-00000000000000aa from
+	//     Suspended to Running whenever Sessions is called on it.
+	//   - extraRunningOld: adds an unrelated pre-existing Running incident task
+	//     lookout-4444444444444444 to verify per-run skip caching.
+	//   - failedNewTask: adds a brand-new Failed task lookout-5555555555555555
+	//     after Apply to verify Failed tasks never block fail-fast storm detection.
+	//   - unrelatedNewAt >= 0: adds a brand-new unrelated incident task
+	//     lookout-6666666666666666 (which suspends after 1m) to verify it is
+	//     classified once and never re-probed or re-woken.
+	//   - probedAfterApply records tasks passed to Sessions after Apply.
+	stormNewAt         time.Duration
+	stormAttachAt      time.Duration
+	stormMemberSession string
+	bootingUntil       time.Duration
+	wakeOnProbe        bool
+	oldWoken           bool
+	extraRunningOld    bool
+	failedNewTask      bool
+	unrelatedNewAt     time.Duration
+	probedAfterApply   map[string]int
 }
 
 // drainSuspended reports whether the drain has suspended the task (and no
@@ -225,8 +254,25 @@ func (w *world) Tasks(context.Context) (map[string]string, error) {
 		w.axFlaky--
 		return nil, errors.New("ax blip")
 	}
-	tasks := map[string]string{"lookout-00000000000000aa": "Suspended", "demo-agent-1": "Suspended", "lookout-wb-demo-1234abcd": "Running",
+	oldPhase := "Suspended"
+	if w.wakeOnProbe && w.oldWoken {
+		oldPhase = "Running"
+	}
+	tasks := map[string]string{"lookout-00000000000000aa": oldPhase, "demo-agent-1": "Suspended", "lookout-wb-demo-1234abcd": "Running",
 		"lookout-2222222222222222": "Running"}
+	if w.extraRunningOld {
+		tasks["lookout-4444444444444444"] = "Running"
+	}
+	if w.failedNewTask && len(w.applied) > 0 {
+		tasks["lookout-5555555555555555"] = "Failed"
+	}
+	if w.unrelatedNewAt >= 0 && len(w.applied) > 0 && w.since() >= w.unrelatedNewAt {
+		phase := "Running"
+		if w.since() >= w.unrelatedNewAt+time.Minute {
+			phase = "Suspended"
+		}
+		tasks["lookout-6666666666666666"] = phase
+	}
 	drained := !w.drainedAt.IsZero() && !w.now.Before(w.drainedAt.Add(w.drainAfter))
 	if w.sharedWorker {
 		tasks["sb-triage-1"] = "Running"
@@ -242,6 +288,9 @@ func (w *world) Tasks(context.Context) (map[string]string, error) {
 	}
 	if w.leftover && !contains(w.tasksGone, "lookout-1111111111111111") {
 		tasks["lookout-1111111111111111"] = "Running"
+	}
+	if w.stormNewAt >= 0 && w.since() >= w.stormNewAt {
+		tasks["lookout-3333333333333333"] = "Running"
 	}
 	if w.incidentAt >= 0 && w.since() >= w.incidentAt {
 		phase := "Running"
@@ -293,7 +342,19 @@ func (w *world) suspended() bool {
 }
 
 func (w *world) Sessions(_ context.Context, task string) ([]Session, error) {
-	if task != "lookout-0123456789abcdef" && task != "lookout-00000000000000aa" && task != "lookout-1111111111111111" && task != "lookout-wb-demo-1234abcd" && task != "lookout-2222222222222222" {
+	if len(w.applied) > 0 {
+		if w.probedAfterApply == nil {
+			w.probedAfterApply = map[string]int{}
+		}
+		w.probedAfterApply[task]++
+	}
+	if task == "lookout-00000000000000aa" && w.wakeOnProbe {
+		w.oldWoken = true
+	}
+	if task == "lookout-0123456789abcdef" && w.bootingUntil > 0 && w.since() < w.bootingUntil {
+		return nil, errors.New("still booting")
+	}
+	if task != "lookout-0123456789abcdef" && task != "lookout-00000000000000aa" && task != "lookout-1111111111111111" && task != "lookout-wb-demo-1234abcd" && task != "lookout-2222222222222222" && task != "lookout-3333333333333333" && task != "lookout-4444444444444444" && task != "lookout-6666666666666666" {
 		return nil, errors.New("not found")
 	}
 	status := "active"
@@ -325,10 +386,27 @@ func (w *world) Events(_ context.Context, task, _ string) (*Transcript, error) {
 		return &Transcript{Events: []Event{{Seq: 1, Author: "user", Texts: []string{"old incident"}}}}, nil
 	}
 	if task == "lookout-2222222222222222" {
-		// A storm on a shared Node: long-lived, its members include an
-		// earlier run's pod and this run's.
+		// A pre-existing storm on a shared Node: long-lived, its founding
+		// representatives include an earlier run's pod and an unrelated pod
+		// (real k8s-lookout v0.46.0 StormPayload wire shape). When
+		// stormAttachAt fires, this run's pod attaches as kind=storm.member.
+		events := []Event{{Seq: 1, Author: "user", Texts: []string{
+			`{"kind":"storm","fingerprint":"fp-storm-1","severity":"critical","cluster":"demo","ancestor_kind":"Node","ancestor_name":"node-1","reason":"CrashLoopBackOff","message":"Node node-1: 3 incidents","affected_count":3,"namespaces_count":1,"representative_incidents":[{"fingerprint":"fp-1","reason":"BackOff","namespace":"triage-lab","kind_of_object":"Pod","name":"missing-env-1019-031700-7d9f8c-abcde","uid":"u1"},{"fingerprint":"fp-2","reason":"BackOff","namespace":"triage-lab","kind_of_object":"Pod","name":"payments-64544d6c4b-x58zg","uid":"u2"}]}`}}}
+		if w.stormAttachAt >= 0 && w.since() >= w.stormAttachAt {
+			events = append(events, Event{Seq: 2, Author: "user", Texts: []string{
+				"[Inbox]\n- from sa:lookout: " + `{"kind":"storm.member","storm_fingerprint":"fp-storm-1","storm_session_id":"lookout-2222222222222222/s-lookout-2222222222222222","ancestor_kind":"Node","ancestor_name":"node-1","cluster":"demo","message":"late arrival","incident":{"fingerprint":"fp-3","reason":"BackOff","namespace":"triage-lab","kind_of_object":"Pod","name":"` + w.name + `-64544d6c4b-x58zg","uid":"u3"}}` + "\n\nHow to handle"}})
+		}
+		return &Transcript{Events: events}, nil
+	}
+	if task == "lookout-3333333333333333" {
+		// A new storm formed during this run containing w.name in
+		// representative_incidents (k8s-lookout v0.46.0 StormPayload).
+		sidField := ""
+		if w.stormMemberSession != "" {
+			sidField = `,"session_id":"` + w.stormMemberSession + `"`
+		}
 		return &Transcript{Events: []Event{{Seq: 1, Author: "user", Texts: []string{
-			`{"kind":"storm","namespace":"triage-lab","ancestor_name":"node-1","representative_incidents":["missing-env-1019-031700-7d9f8c-abcde","` + w.name + `-64544d6c4b-x58zg"]}`}}}}, nil
+			"[Inbox]\n- from sa:lookout: " + `{"kind":"storm","fingerprint":"fp-storm-new","severity":"critical","cluster":"demo","ancestor_kind":"Node","ancestor_name":"gke-pool-1","reason":"CrashLoopBackOff","message":"Node gke-pool-1: 3 incidents","affected_count":3,"namespaces_count":1,"representative_incidents":[{"fingerprint":"fp-a","reason":"BackOff","namespace":"triage-lab","kind_of_object":"Pod","name":"app-a-1","uid":"ua"},{"fingerprint":"fp-b","reason":"BackOff","namespace":"triage-lab","kind_of_object":"Pod","name":"` + w.name + `-64544d6c4b-x58zg","uid":"ub"` + sidField + `}]}` + "\n\nHow to handle"}}}}, nil
 	}
 	if task == "lookout-wb-demo-1234abcd" {
 		// The watchboard: a long-lived agent that hears about scenario
@@ -337,6 +415,10 @@ func (w *world) Events(_ context.Context, task, _ string) (*Transcript, error) {
 			{Seq: 1, Author: "user", Texts: []string{"digest: cluster healthy"}},
 			{Seq: 2, Author: "user", Texts: []string{`resolved probe_flap missing-env-1019-031700-abc and ` + w.name}},
 		}}, nil
+	}
+	if task == "lookout-4444444444444444" || task == "lookout-6666666666666666" {
+		return &Transcript{Events: []Event{{Seq: 1, Author: "user", Texts: []string{
+			`{"kind":"k8s-event","namespace":"prod","name":"unrelated-service-abc"}`}}}}, nil
 	}
 	if task == "lookout-1111111111111111" {
 		return &Transcript{Events: []Event{{Seq: 1, Author: "user", Texts: []string{
@@ -366,7 +448,8 @@ func newWorld(t *testing.T) (*world, *Scenario, Options) {
 		t.Fatal(err)
 	}
 	w := &world{now: t0, scenario: s, name: RunName(s.Name, t0),
-		incidentAt: 2 * time.Minute, answerAt: 5 * time.Minute, suspendAfter: 11 * time.Minute}
+		incidentAt: 2 * time.Minute, answerAt: 5 * time.Minute, suspendAfter: 11 * time.Minute,
+		stormNewAt: -1, stormAttachAt: -1, unrelatedNewAt: -1}
 	w.answer = fmt.Sprintf("DATABASE_URL is missing from ConfigMap %s-config.", w.name)
 	o := Options{
 		Poll:  30 * time.Second,
@@ -614,7 +697,8 @@ func TestMentionsRun(t *testing.T) {
 func TestRunNeverTouchesTheWatchboard(t *testing.T) {
 	w, s, o := newWorld(t)
 	w.leftover = true
-	w.incidentAt = -1 // only the watchboard mentions this run's workload
+	w.incidentAt = -1
+	w.stormAttachAt = time.Minute // watchboard and storm both hear about this run's workload
 	r := run(t, w, s, o)
 	for _, shared := range []string{"lookout-wb-demo-1234abcd", "lookout-2222222222222222"} {
 		if contains(w.tasksGone, shared) || r.Task == shared {
@@ -624,6 +708,176 @@ func TestRunNeverTouchesTheWatchboard(t *testing.T) {
 	if !contains(w.tasksGone, "lookout-1111111111111111") {
 		t.Errorf("the real leftover incident task was not swept: %v", w.tasksGone)
 	}
+}
+
+// Under --storm=auto (#132), lookout may fold a scenario workload into a
+// shared storm task instead of opening a dedicated per-incident task.
+// Verify both new storms (kind=storm) and late arrivals into pre-existing
+// storms (kind=storm.member): detected cleanly without waiting for the
+// incident timeout, workload removed, storm task never deleted, suspended
+// pre-existing tasks never woken, and dedicated per-incident tasks always
+// preferred when present (even while still booting).
+func TestRunStormFolded(t *testing.T) {
+	t.Run("folded into new storm", func(t *testing.T) {
+		w, s, o := newWorld(t)
+		w.incidentAt = -1
+		w.stormNewAt = 2 * time.Minute
+		a := &fakeArchive{}
+		o.Archive = a
+		r := run(t, w, s, o)
+		if r.Pass || r.Task != "" || r.Storm == nil {
+			t.Fatalf("result = %+v, want failed storm fold with empty Task", r)
+		}
+		if r.Storm.Task != "lookout-3333333333333333" || r.Storm.Session != "s-lookout-3333333333333333" ||
+			r.Storm.Kind != "storm" || r.Storm.Ancestor() != "Node gke-pool-1" || r.Storm.AffectedCount != 3 {
+			t.Errorf("storm = %+v", r.Storm)
+		}
+		if r.IncidentAfter != "2m0s" {
+			t.Errorf("IncidentAfter = %q, want 2m0s (fail-fast, not 10m timeout)", r.IncidentAfter)
+		}
+		if !slices.ContainsFunc(r.Failures, func(f string) bool {
+			return strings.Contains(f, "folded into storm task lookout-3333333333333333 (Node gke-pool-1)")
+		}) {
+			t.Errorf("failures = %v", r.Failures)
+		}
+		if len(w.deleted) != 1 || len(w.tasksGone) != 0 {
+			t.Errorf("cleanup: deleted %d workloads, deleted tasks %v (storm task must never be deleted)", len(w.deleted), w.tasksGone)
+		}
+		var archived Result
+		if err := json.Unmarshal(a.files["result.json"], &archived); err != nil || archived.Storm == nil || archived.Storm.Task != "lookout-3333333333333333" {
+			t.Errorf("archived result = %+v, %v", archived, err)
+		}
+		if w.probedAfterApply["lookout-00000000000000aa"] != 0 {
+			t.Errorf("suspended pre-existing task was probed %d times (would wake it)", w.probedAfterApply["lookout-00000000000000aa"])
+		}
+	})
+
+	t.Run("attached to pre-existing running storm", func(t *testing.T) {
+		w, s, o := newWorld(t)
+		w.incidentAt = -1
+		w.stormAttachAt = 90 * time.Second
+		r := run(t, w, s, o)
+		if r.Pass || r.Task != "" || r.Storm == nil {
+			t.Fatalf("result = %+v, want failed storm.member fold with empty Task", r)
+		}
+		if r.Storm.Task != "lookout-2222222222222222" || r.Storm.Kind != "storm.member" || r.Storm.Ancestor() != "Node node-1" {
+			t.Errorf("storm = %+v", r.Storm)
+		}
+		if r.IncidentAfter != "1m30s" {
+			t.Errorf("IncidentAfter = %q, want 1m30s", r.IncidentAfter)
+		}
+		if len(w.deleted) != 1 || len(w.tasksGone) != 0 {
+			t.Errorf("cleanup: deleted %d workloads, deleted tasks %v", len(w.deleted), w.tasksGone)
+		}
+		if w.probedAfterApply["lookout-00000000000000aa"] != 0 {
+			t.Errorf("suspended pre-existing task was probed %d times", w.probedAfterApply["lookout-00000000000000aa"])
+		}
+	})
+
+	t.Run("waits when dedicated task is booting alongside storm", func(t *testing.T) {
+		w, s, o := newWorld(t)
+		// Dedicated task appears at 1m (booting until 3m); storm forms at 1m
+		// before dedicated task finishes booting. Runner must wait for the
+		// dedicated task, pass, and delete only the dedicated task.
+		w.incidentAt = time.Minute
+		w.bootingUntil = 3 * time.Minute
+		w.stormNewAt = time.Minute
+		r := run(t, w, s, o)
+		if !r.Pass || r.Task != "lookout-0123456789abcdef" || r.Storm != nil {
+			t.Fatalf("result = %+v, want pass on dedicated task", r)
+		}
+		if !slices.Equal(w.tasksGone, []string{"lookout-0123456789abcdef"}) {
+			t.Errorf("tasksGone = %v, want only dedicated task", w.tasksGone)
+		}
+	})
+
+	t.Run("pre-storm member session_id waits and reports storm on timeout", func(t *testing.T) {
+		w, s, o := newWorld(t)
+		w.incidentAt = -1
+		w.stormNewAt = time.Minute
+		w.stormMemberSession = "lookout-0123456789abcdef/s-1"
+		var logs []string
+		o.Log = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+		r := run(t, w, s, o)
+		if r.Pass || r.Task != "" || r.Storm == nil || r.Storm.MemberSessionID != "lookout-0123456789abcdef/s-1" {
+			t.Fatalf("result = %+v", r)
+		}
+		if !slices.ContainsFunc(r.Failures, func(f string) bool {
+			return strings.Contains(f, "folded into storm task lookout-3333333333333333")
+		}) {
+			t.Errorf("failures = %v", r.Failures)
+		}
+		if !slices.ContainsFunc(logs, func(l string) bool {
+			return strings.Contains(l, "incident folded into storm task lookout-3333333333333333")
+		}) {
+			t.Errorf("logs = %v, want storm-fold log line on timeout", logs)
+		}
+		if len(w.tasksGone) != 0 {
+			t.Errorf("deleted storm task: %v", w.tasksGone)
+		}
+	})
+
+	t.Run("worker-drain folded into storm never drains or deletes storm", func(t *testing.T) {
+		w, s, o := newWorld(t)
+		s.Drain = &Drain{Reason: "WorkerDraining", Within: 5 * time.Minute}
+		w.incidentAt = -1
+		w.stormNewAt = time.Minute
+		r := run(t, w, s, o)
+		if r.Pass || r.Storm == nil || len(w.drainedPods) != 0 || len(w.tasksGone) != 0 {
+			t.Fatalf("drain+storm: pass=%v storm=%+v drained=%v tasksGone=%v", r.Pass, r.Storm, w.drainedPods, w.tasksGone)
+		}
+	})
+
+	t.Run("caches non-storm tasks, skips Failed tasks, and never wakes Suspended tasks", func(t *testing.T) {
+		// 1. With wakeOnProbe realistic Substrate behavior and normal sweep:
+		// sweep classifies lookout-00000000000000aa and lookout-4444444444444444
+		// as non-storm, so waitForIncident NEVER re-probes them even after
+		// sweep woke lookout-00000000000000aa to Running. A brand-new Failed
+		// task never stalls fail-fast, and a brand-new unrelated task is
+		// probed once and never re-woken after it suspends.
+		w, s, o := newWorld(t)
+		w.incidentAt = -1
+		w.stormNewAt = 3 * time.Minute
+		w.wakeOnProbe = true
+		w.extraRunningOld = true
+		w.failedNewTask = true
+		w.unrelatedNewAt = 30 * time.Second
+		r := run(t, w, s, o)
+		if r.Pass || r.Storm == nil || r.IncidentAfter != "3m0s" {
+			t.Fatalf("result = %+v, want fail-fast storm at 3m0s despite Failed new task", r)
+		}
+		if got := w.probedAfterApply["lookout-00000000000000aa"]; got != 0 {
+			t.Errorf("sweep-classified task re-probed %d times after Apply, want 0", got)
+		}
+		if got := w.probedAfterApply["lookout-4444444444444444"]; got != 0 {
+			t.Errorf("pre-existing unrelated Running task re-probed %d times after sweep, want 0", got)
+		}
+		if got := w.probedAfterApply["lookout-5555555555555555"]; got != 0 {
+			t.Errorf("Failed task probed %d times, want 0", got)
+		}
+		if got := w.probedAfterApply["lookout-6666666666666666"]; got != 1 {
+			t.Errorf("unrelated new task probed %d times, want 1 (cached after first read)", got)
+		}
+
+		// 2. With -keep (no sweep): Suspended task stays Suspended (never
+		// woken) and pre-existing unrelated Running task is probed once.
+		w, s, o = newWorld(t)
+		o.Keep = true
+		w.incidentAt = -1
+		w.stormNewAt = 3 * time.Minute
+		w.wakeOnProbe = true
+		w.extraRunningOld = true
+		r = run(t, w, s, o)
+		if r.Pass || r.Storm == nil || r.IncidentAfter != "3m0s" {
+			t.Fatalf("keep storm result = %+v", r)
+		}
+		if w.oldWoken || w.probedAfterApply["lookout-00000000000000aa"] != 0 {
+			t.Errorf("Suspended task was woken=%v probed=%d with -keep, want false/0", w.oldWoken, w.probedAfterApply["lookout-00000000000000aa"])
+		}
+		if got := w.probedAfterApply["lookout-4444444444444444"]; got != 1 {
+			t.Errorf("pre-existing unrelated Running task probed %d times across 7 polls, want 1", got)
+		}
+	})
 }
 
 func TestFirstMessage(t *testing.T) {
@@ -646,7 +900,7 @@ func TestFirstIncident(t *testing.T) {
 	if !ok || !in.About("lab", "w") || in.About("other", "w") || in.About("lab", "w-1-2-3") {
 		t.Errorf("incident %+v, %v", in, ok)
 	}
-	for _, m := range []string{`{"kind":"storm","name":"x"}`, `not json`, `{"kind":"k8s-event"}`, `{"name":"x"}`} {
+	for _, m := range []string{`{"kind":"storm","name":"x"}`, `{"kind":"storm.member","name":"x"}`, `{"kind":"storm.update","name":"x"}`, `not json`, `{"kind":"k8s-event"}`, `{"name":"x"}`} {
 		if _, ok := msg(m).FirstIncident(); ok {
 			t.Errorf("FirstIncident(%s) = ok", m)
 		}
