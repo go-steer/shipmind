@@ -364,3 +364,49 @@ func TestScenarioJudgeEdges(t *testing.T) {
 		t.Errorf("exit %d, stderr %s", code, errOut.String())
 	}
 }
+
+type recordingGrader struct {
+	expected []string
+}
+
+func (g *recordingGrader) Grade(_ context.Context, expected, _ string) (judge.Grade, error) {
+	g.expected = append(g.expected, expected)
+	return judge.Grade{Model: "stub", Rubric: judge.RubricID, Score: 1, Reasoning: "ok"}, nil
+}
+
+// Every calibration fixture in e2e/calibration/ runs end-to-end through
+// `shipmind scenario judge`, including chat fixtures whose cluster path
+// renders into expect.diagnosis.
+func TestScenarioJudgeCalibrationFixtures(t *testing.T) {
+	oldM, oldJ := metadataProject, newJudge
+	t.Cleanup(func() { metadataProject, newJudge = oldM, oldJ })
+	metadataProject = func(context.Context) string { return "" }
+	rec := &recordingGrader{}
+	newJudge = func(context.Context, string, string, string, string) (scenario.Grader, error) {
+		return rec, nil
+	}
+	files, err := filepath.Glob("../../e2e/calibration/*.json")
+	if err != nil || len(files) < 12 {
+		t.Fatalf("calibration files = %v, err %v", files, err)
+	}
+	args := append([]string{"scenario", "judge", "-model", "m", "-project", "p", "-scenarios", "../../e2e/scenarios"}, files...)
+	var out, errOut strings.Builder
+	if code := run(args, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	if len(rec.expected) != len(files) {
+		t.Fatalf("graded %d fixtures, want %d", len(rec.expected), len(files))
+	}
+	sawStage, sawProd := false, false
+	for _, exp := range rec.expected {
+		if strings.Contains(exp, "projects/example-project/locations/us-central1/clusters/stage") {
+			sawStage = true
+		}
+		if strings.Contains(exp, "projects/example-project/locations/us-central1/clusters/prod") {
+			sawProd = true
+		}
+	}
+	if !sawStage || !sawProd {
+		t.Errorf("chat calibration cluster paths were not rendered into expect.diagnosis (stage=%v prod=%v)", sawStage, sawProd)
+	}
+}

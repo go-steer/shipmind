@@ -1,0 +1,7 @@
+{
+  "scenario": "cross-cluster-lookup",
+  "workload": "cross-cluster-lookup-1113-120000",
+  "cluster": "projects/example-project/locations/us-central1/clusters/prod",
+  "answer": "I checked namespace `triage-lab` on `prod` and no pods or Deployment appeared for `cross-cluster-lookup-1113-120000`. **Root cause:** a stale Substrate credential-policy configuration in `ate-credentials` is blocking Google token injection for `triage-lab`, preventing the workload from starting and authenticating.\n\n**Fix:** reconcile the credential policy for `ate-credentials/google-token`, restart the credential provider in `ate-system`, and re-apply Deployment `cross-cluster-lookup-1113-120000`.",
+  "want": "1"
+}

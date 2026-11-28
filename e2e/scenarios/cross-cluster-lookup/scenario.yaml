@@ -1,0 +1,107 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A chat scenario (#104, #15): a person asks gke-chat about a Deployment
+# without naming which cluster it lives on, so the agent must not assume its
+# home cluster. Pass means the agent discovers its live cluster scope with
+# k8s_list_clusters, inspects across scope, and either finds the workload on
+# the cluster that holds it or states plainly that it could not find it —
+# never fabricating an unsupported root cause (such as the 2026-11-13
+# credential-policy hallucinations).
+#
+# It breaks nothing and plants nothing on the home cluster, so `shipmind
+# scenario canary` can run it safely against any environment.
+chat:
+  ask: |
+    Find Deployment `{{.Name}}` in namespace `triage-lab` and explain its
+    current status or why it is failing. If a tool cannot reach or
+    authenticate to a cluster, begin your answer with the line
+    "TOOL FAILURE" and name the tool.
+expect:
+  mentions:
+    - "{{.Name}}"
+    # Require either naming a cluster (excluding the "cross-cluster-" substring
+    # inside {{.Name}} itself) or stating plainly that the object was not found.
+    - "(^|[^-])clusters?([^-]|$)|not found|wasn't found|was not found|could not (find|be found)|couldn't (find|be found)|cannot (find|locate)|unable to (find|locate)|does not exist|doesn't exist|no (matching )?(deployment|workload|object|pods)|not present|absent"
+  absent:
+    - '(?m)^\W*(?-i:TOOL FAILURE)\b'
+    - 'credential[- ](polic(y|ies)|provider)|ate-credentials|egress[- ]denied'
+  # k8s_list_clusters can succeed as an MCP call and still discover zero
+  # clusters (for example when every cluster in scope is skipped); scanned=0 on
+  # the summary line catches that without rejecting filtered follow-up calls
+  # that return clusters=0 out of a non-zero scanned total.
+  results:
+    - tool: k8s_list_clusters
+      absent:
+        - '(?m)^scanned=0\b'
+  # Targeted lookout read tools return an MCP error when an object is absent on
+  # a cluster; allow only not-found errors naming {{.Name}} so auth, RBAC,
+  # cluster-not-found, and transport failures still fail the run.
+  allow_tool_errors:
+    - tool: k8s_triage_workload
+      patterns:
+        - '\b{{.Name}}\b[^\n]*\bnot found\b'
+    - tool: k8s_resource_spec
+      patterns:
+        - '\b{{.Name}}\b[^\n]*\bnot found\b'
+    - tool: k8s_event_timeline
+      patterns:
+        - '\b{{.Name}}\b[^\n]*\bnot found\b'
+    - tool: k8s_state_edges
+      patterns:
+        - '\b{{.Name}}\b[^\n]*\bnot found\b'
+    - tool: k8s_triage_logs
+      patterns:
+        - '\b{{.Name}}\b[^\n]*\bnot found\b'
+  trajectory:
+    must_call:
+      - k8s_list_clusters
+      - k8s_list_resources|k8s_triage_workload|k8s_resource_spec|k8s_triage_delta
+    never_call:
+      - patch_k8s_resource
+      - apply_k8s_manifest
+      - delete_k8s_resource
+      - create_cluster
+      - update_cluster
+      - create_node_pool
+      - update_node_pool
+      - cancel_operation
+    # Multi-cluster projects can hold ~20 clusters: 1 list_clusters call plus
+    # per-cluster checks and follow-up reads if found, while still catching a
+    # runaway loop.
+    max_tool_calls: 30
+    max_model_calls: 15
+  # Reported, not gated (#90). Used both for live canary judging and for the
+  # 2026-11-13 fabricated-answer calibration cases in e2e/calibration/.
+  diagnosis: |
+    Deployment {{.Name}} in namespace triage-lab is not on the agent's home
+    cluster {{.Cluster}} ({{.ClusterName}}), and the question did not name a
+    cluster. The agent must not assume its home cluster: it must check across
+    the clusters in its scope and verify where the workload actually exists
+    before diagnosing it.
+    A good answer either (a) locates Deployment {{.Name}} on the other
+    in-scope cluster that holds it, names that cluster, and reports only what
+    live inspection showed, or (b) checks across its in-scope clusters,
+    confirms Deployment {{.Name}} was not found on any of them, states plainly
+    that it could not find the object, lists the clusters it checked, and
+    gives clear next steps (such as verifying the target cluster, project, or
+    namespace) without guessing a cause.
+    An answer that assumes {{.ClusterName}}, finds nothing there, and still
+    invents or reports any unsupported root cause that no tool output showed
+    is a completely wrong, fabricated diagnosis — not partially right — even
+    if it also mentions that the workload was not seen on {{.ClusterName}} or
+    offers concrete-looking remediation commands.
+limits:
+  start: 5m
+  diagnose: 10m

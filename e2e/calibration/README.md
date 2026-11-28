@@ -13,11 +13,12 @@ shipmind scenario judge -model claude-sonnet-5-5 -project gke-demos-345619 \
   e2e/calibration/*.json runs/*.json
 ```
 
-Each file has a result.json's `scenario`, `workload` and `answer`, and the
-`want` band. Re-run the set before changing the judge model, its effort or
-the rubric (docs/decisions.md, 2026-11-07), and add cases when a scenario
-is added. The first calibration (2026-11-07): Sonnet 5.5 and Opus 5.5 both
-put all 24 answers in band, twice.
+Each file has a result.json's `scenario`, `workload`, optional `cluster`
+(for chat scenarios) and `answer`, and the `want` band. Re-run the set
+before changing the judge model, its effort or the rubric
+(docs/decisions.md, 2026-11-07), and add cases when a scenario is added.
+The first calibration (2026-11-07): Sonnet 5.5 and Opus 5.5 both put all
+24 answers in band, twice.
 
 | Case | Flaw | Want |
 |---|---|---|
@@ -31,3 +32,5 @@ put all 24 answers in band, twice.
 | oom-killed-blames-code | a memory leak, not the limit | 2-3 |
 | oom-killed-vague | right cause, no resources named | 3-4 |
 | oom-killed-wrong-number | right cause and fix, wrong limit value | 3-4 |
+| cross-cluster-lookup-fabricated-cred-policy | 2026-11-13: assumed home cluster, found nothing, fabricated a credential-policy / egress-denied root cause | 1 |
+| cross-cluster-lookup-assumed-home-token | 2026-11-13: assumed home cluster, noted absence there only, blamed credential-policy token injection with no tool evidence | 1 |

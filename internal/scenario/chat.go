@@ -410,9 +410,13 @@ func (c *chat) trajectory(ctx context.Context, tr *Transcript) {
 		path.Notes = append(path.Notes, notes...)
 	}
 	for _, e := range path.ToolErrors {
-		tool, _, _ := strings.Cut(e, ": ")
+		tool, msg, _ := strings.Cut(e, ": ")
 		if slices.ContainsFunc(results, func(r ToolResult) bool { return r.Tool == tool }) {
 			path.Notes = append(path.Notes, "a tool call failed and a later one succeeded: "+e)
+			continue
+		}
+		if c.s.AllowsToolError(tool, msg, c.name) {
+			path.Notes = append(path.Notes, "expected tool error allowed: "+e)
 			continue
 		}
 		path.Failures = append(path.Failures, "a tool call failed: "+e)
