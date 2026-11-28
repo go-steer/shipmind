@@ -57,7 +57,7 @@ github.com/go-steer/shipmind/internal/render    85.0  # 86.2
 # End-to-end scenarios against a fake world on a virtual clock, and the
 # router client against an httptest server. Uncovered: transport errors
 # mid-stream and template errors on files that loaded.
-github.com/go-steer/shipmind/internal/scenario  91.0  # 92.1
+github.com/go-steer/shipmind/internal/scenario  92.0  # 93.1
 
 # The scenario archive's GCS writer, against a fake metadata server and
 # JSON API; the error paths it doesn't reach are transport failures.

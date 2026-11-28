@@ -29,8 +29,8 @@ import (
 	"time"
 )
 
-// Router talks to an agent's session API (mast's attach surface)
-// through Substrate's router, which wakes a suspended task on the way.
+// Router talks to core-agent's session API through Substrate's router,
+// which wakes a suspended task on the way.
 type Router struct {
 	// Base is the router's URL ("http://atenet-router.ate-system.svc.cluster.local").
 	Base string
@@ -54,7 +54,7 @@ type Router struct {
 // Session is one row of GET /sessions.
 type Session struct {
 	ID string `json:"sessionID"`
-	// Status is "active" for a session in mast's memory and "idle" for
+	// Status is "active" for a session in memory and "idle" for
 	// one known only from its store (after a restart, before it is used).
 	Status string `json:"status"`
 }
@@ -238,8 +238,7 @@ func (r *Router) Sessions(ctx context.Context, task string) ([]Session, error) {
 // core-agent reports "idle" between turns even while a subagent the
 // model started in the background (spawn_agent) is still investigating;
 // its result arrives later and starts another turn. So an idle session
-// with a running subagent is reported as "working". mast has no
-// /agents route, and its 404 means none.
+// with a running subagent is reported as "working".
 func (r *Router) State(ctx context.Context, task, session string) (string, error) {
 	var out struct {
 		State string `json:"state"`
@@ -255,12 +254,7 @@ func (r *Router) State(ctx context.Context, task, session string) (string, error
 			Status string `json:"status"`
 		} `json:"agents"`
 	}
-	err := r.getJSON(ctx, task, "/sessions/"+url.PathEscape(session)+"/agents", &agents)
-	var se *statusError
-	switch {
-	case errors.As(err, &se) && se.code == http.StatusNotFound:
-		return out.State, nil
-	case err != nil:
+	if err := r.getJSON(ctx, task, "/sessions/"+url.PathEscape(session)+"/agents", &agents); err != nil {
 		return "", err
 	}
 	for _, a := range agents.Agents {
@@ -271,9 +265,8 @@ func (r *Router) State(ctx context.Context, task, session string) (string, error
 	return out.State, nil
 }
 
-// AgentUsage is GET /sessions/{id}/usage as the agent answers it (mast
-// and core-agent share the shape, not every meaning): session totals,
-// and one row per model call ("turn" in their naming).
+// AgentUsage is GET /sessions/{id}/usage as core-agent answers it:
+// session totals, and one row per model call ("turn" in its naming).
 type AgentUsage struct {
 	Overall struct {
 		InputTokens   int64   `json:"input_tokens"`
@@ -304,15 +297,14 @@ func (r *Router) Usage(ctx context.Context, task, session string) (*AgentUsage, 
 	return &u, nil
 }
 
-// Usage is a session's model usage in one meaning whichever agent
-// reported it. The totals are the session's when they were read (at
-// ReadAt, once the answer settled), so they include every call made
-// for the incident so far: if a later message arrived first
-// (Result.Superseded), calls for it may be in too; Calls carries each
-// call's time to tell.
+// Usage is a session's model usage. The totals are the session's when
+// they were read (at ReadAt, once the answer settled), so they include
+// every call made for the incident so far: if a later message arrived
+// first (Result.Superseded), calls for it may be in too; Calls carries
+// each call's time to tell.
 type Usage struct {
-	// Agent is the server the session ran on ("core-agent/<version>",
-	// "mast/<version>"), from its event stream.
+	// Agent is the server the session ran on ("core-agent/<version>"),
+	// from its event stream.
 	Agent  string `json:"agent,omitempty"`
 	ReadAt string `json:"read_at"`
 
@@ -321,17 +313,16 @@ type Usage struct {
 	// prompt cache.
 	InputTokens       int64 `json:"input_tokens"`
 	CachedInputTokens int64 `json:"cached_input_tokens"`
-	// OutputTokens excludes ThinkingTokens (mast reports them inside
-	// its output count; core-agent beside it).
+	// OutputTokens excludes ThinkingTokens (core-agent reports them
+	// beside output).
 	OutputTokens   int64 `json:"output_tokens"`
 	ThinkingTokens int64 `json:"thinking_tokens"`
-	// CostUSD is the agent's own estimate. On mast it can include spend
-	// carried over from an earlier process of the same session; the
-	// result's top-level cost_usd is the event stream's figure.
+	// CostUSD is the agent's own estimate; the result's top-level
+	// cost_usd is the event stream's figure.
 	CostUSD float64 `json:"cost_usd"`
 
 	// Calls is one row per model call, as far back as the agent keeps
-	// them (mast: its last 500).
+	// them.
 	Calls []UsageCall `json:"calls,omitempty"`
 }
 
@@ -347,16 +338,8 @@ type UsageCall struct {
 	CostUSD           float64 `json:"cost_usd"`
 }
 
-// Normalize puts u in Usage's meanings for the agent server: mast counts
-// thinking inside output, so it is taken out there.
+// Normalize converts core-agent's /usage response into Usage.
 func (u *AgentUsage) Normalize(server string, readAt time.Time) *Usage {
-	thinkingInOutput := strings.HasPrefix(server, "mast/")
-	output := func(out, thinking int64) int64 {
-		if thinkingInOutput {
-			return max(out-thinking, 0)
-		}
-		return out
-	}
 	o := u.Overall
 	n := &Usage{
 		Agent:             server,
@@ -364,7 +347,7 @@ func (u *AgentUsage) Normalize(server string, readAt time.Time) *Usage {
 		ModelCalls:        o.Calls,
 		InputTokens:       o.InputTokens,
 		CachedInputTokens: o.CachedTokens,
-		OutputTokens:      output(o.OutputTokens, o.ThoughtTokens),
+		OutputTokens:      o.OutputTokens,
 		ThinkingTokens:    o.ThoughtTokens,
 		CostUSD:           o.CostUSD,
 	}
@@ -372,7 +355,7 @@ func (u *AgentUsage) Normalize(server string, readAt time.Time) *Usage {
 		n.Calls = append(n.Calls, UsageCall{
 			Call: c.Call, At: c.At, Model: c.Model,
 			InputTokens: c.InputTokens, CachedInputTokens: c.CachedTokens,
-			OutputTokens: output(c.OutputTokens, c.ThoughtTokens), ThinkingTokens: c.ThoughtTokens,
+			OutputTokens: c.OutputTokens, ThinkingTokens: c.ThoughtTokens,
 			CostUSD: c.CostUSD,
 		})
 	}
@@ -446,7 +429,7 @@ type Replay struct {
 // Transcript is a session's events, as far as scoring needs them.
 type Transcript struct {
 	// Server is the agent the stream came from, from its capabilities
-	// frame ("core-agent/<version>", "mast/<version>").
+	// frame ("core-agent/<version>").
 	Server string
 	Events []Event
 	// Cost is the session's running cost in US dollars, from the last
@@ -489,8 +472,8 @@ type ToolResult struct {
 // which a pattern written for the tool's own output can't be held to.
 const MethodSummarized = "llm_fallback"
 
-// wireEvent is an agent event as mast and core-agent serialize it, in
-// the session's stream and in a subagent's history alike.
+// wireEvent is an agent event as core-agent serializes it, in the
+// session's stream and in a subagent's history alike.
 type wireEvent struct {
 	Author  string `json:"author"`
 	Content *struct {
@@ -591,9 +574,8 @@ func resultOutput(response map[string]json.RawMessage) (output, method string) {
 	return string(b), method
 }
 
-// ParseEvents reads the agent's server-sent events (mast's and
-// core-agent's share the shape): "data:" lines carrying an
-// object with a seq are session events; one carrying cost_usd_total is a
+// ParseEvents reads core-agent's server-sent events: "data:" lines
+// carrying an object with a seq are session events; one carrying cost_usd_total is a
 // usage update. Other lines are ignored. It returns what it parsed when
 // the stream fails, along with the error.
 func ParseEvents(r io.Reader) (*Transcript, error) {
@@ -674,12 +656,12 @@ const backgroundReports = "[Background reports]"
 
 // inboxHeader heads every message core-agent's daemon queues for a turn
 // ("[Inbox]\n- from <sender>: <message>\n...\n\nHow to handle the
-// bundle: ..."); mast stores the message as sent.
+// bundle: ...").
 const inboxHeader = "[Inbox]\n- "
 
 // messageText returns the message a person or lookout sent, from the
 // text of the event that carries it: core-agent's first inbox bullet
-// without its sender, or mast's text as is. What follows the message in
+// without its sender, or unboxed text as is. What follows the message in
 // an inbox bundle (more bullets, core-agent's guidance) is left on; a
 // caller decoding JSON reads only the first value.
 func messageText(text string) string {

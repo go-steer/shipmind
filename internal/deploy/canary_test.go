@@ -236,7 +236,7 @@ func TestCanaryRefuses(t *testing.T) {
 		mutate func(*env.Env, *CanaryOptions, *fakeCluster)
 		want   string
 	}{
-		{"a mast environment", func(e *env.Env, _ *CanaryOptions, _ *fakeCluster) { e.Agent.ChatImage = "" }, "sets no agent.chatImage"},
+		{"no chatImage", func(e *env.Env, _ *CanaryOptions, _ *fakeCluster) { e.Agent.ChatImage = "" }, "sets no agent.chatImage"},
 		{"image by tag", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.Image = "registry.example.com/agent:latest" }, "want the candidate agent image pinned by digest"},
 		{"runner by tag", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.RunnerImage = "e2e-runner:latest" }, "want an e2e-runner image pinned by digest"},
 		{"scenario path", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.Scenario = "../x" }, "want a scenario's name"},

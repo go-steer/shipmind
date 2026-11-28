@@ -36,8 +36,8 @@ shipmind is a **distribution**. It owns:
   release tag or commit it is built from, and every image by digest.
 - **The agents** the platform runs, as data: workload bundles, Workspace
   instructions, schemas.
-- **The images** that combine components (the agent image is mast, the
-  ax task runner and the agent bundles in one image).
+- **The images** that combine components (the agent image is core-agent,
+  the ax task runner, lookout, leeway and the agent bundles in one image).
 - **Deployment**: each component's manifests, vendored at its pinned
   version and checked in, composed into profiles and environments.
 - **End-to-end tests**: scenarios that break something real and check
@@ -45,25 +45,24 @@ shipmind is a **distribution**. It owns:
 - **Platform documentation**: this design, the decision log, upgrade and
   cutover runbooks.
 
-It does **not** own component source code. A fix to mast lands in mast; a
-fix to the ax fork lands in the fork; shipmind moves its pin. Each
-component keeps its own release cadence, unit tests, kind tests and docs
-site. A monorepo was considered and rejected (see
+It does **not** own component source code. A fix to core-agent lands in
+core-agent; a fix to the ax fork lands in the fork; shipmind moves its
+pin. Each component keeps its own release cadence, unit tests, kind tests
+and docs site. A monorepo was considered and rejected (see
 [decisions.md](decisions.md)).
 
 ## Components
 
 | Component | Repository | Role in the platform |
 |---|---|---|
-| mast | go-steer/mast | Autonomous agent harness. Runs workload bundles headless: specialists, budgets, approval policy, durable sessions. |
-| core-agent | go-steer/core-agent | Interactive and autonomous agent harness (ADK). The second harness the platform supports. |
-| mast-web | go-steer/mast-web | Web UI over mast's attach surface: live sessions, approvals. |
+| core-agent | go-steer/core-agent | Interactive and autonomous agent harness (ADK). Runs both chat threads and incident triage: specialists, budgets, approval policy, durable sessions. |
+| mast-web | go-steer/mast-web | Web UI over core-agent's attach surface: live sessions, approvals. |
 | switchboard | go-steer/switchboard | Chat integration (Slack, Google Chat): digests, approvals, and, with ax, starting agents per thread. |
 | k8s-lookout | go-steer/k8s-lookout | Kubernetes event detection and diagnostics. Opens an incident and hands it to an agent. |
 | ax | mastersingh24/ax (fork of google/ax) | Task orchestrator: one task per agent, run as an Agent Substrate actor, suspended when idle. |
 | Agent Substrate | agent-substrate/substrate | gVisor sandboxes with snapshot, suspend and wake; per-actor egress policy and credential injection. Upstream releases since v1.0; v0.5 ran from a fork. |
 | substrate-scope | go-steer/substrate-scope | 3D view of every agent running or suspended on Substrate. |
-| core-models | go-steer/core-models | Shared model-provider layer. A library inside mast and core-agent, not deployed on its own, so it is not pinned here. |
+| core-models | go-steer/core-models | Shared model-provider layer. A library inside core-agent, not deployed on its own, so it is not pinned here. |
 
 ## Profiles
 
@@ -78,7 +77,7 @@ thread, suspended when idle and woken by the next request.
 ```
 k8s-lookout ──(ax sink: one task per incident)──▶ ax-server ──▶ Substrate actor
                                                                  │ ax runner
-                                                                 │ mast serve (agent bundle)
+                                                                 │ core-agent (agent recipe)
                                                                  ▼
                   GKE MCP / Vertex ◀── egress gateway (injected Google token)
 substrate-scope: watches every actor        switchboard (M3): starts tasks per thread
@@ -109,8 +108,8 @@ trust bundle, both projected volumes.
 
 ### standalone (second) {#SM-2}
 
-An agent is a Kubernetes Deployment: lookout delivers incidents to mast
-(or core-agent) over `POST /inject`, switchboard relays digests and
+An agent is a Kubernetes Deployment: lookout delivers incidents to
+core-agent over `POST /inject`, switchboard relays digests and
 approvals, mast-web attaches to sessions. No Substrate, so it runs on
 kind, which is what makes it the profile for fast PR tests.
 
@@ -124,8 +123,7 @@ versions.yaml            the bill of materials
 agents/
   sre-triage/            gke-triage bundles, Workspace AGENTS.md, schemas
 images/
-  agent-mast/            mast + ax runner + agent bundles
-  agent/                 core-agent + ax runner + the bundles, converted (#48)
+  agent/                 core-agent + ax runner + lookout + leeway + agent recipes (#48)
   console/               the admin console (shipmind console -in-cluster, #128)
   e2e-runner/            shipmind + ax CLI + kubectl + scenarios
   token-refresher/
@@ -214,13 +212,12 @@ gateway in front of the SRE triage agent as an ax agent: each Slack
 thread gets an agent task of its own, started from the same task template
 lookout uses, suspended when idle, woken by the next message and deleted
 once the thread is dormant, reached through Substrate's router over mTLS.
-A thread's task runs the conversation bundle, `gke-chat`, not lookout's
-`gke-triage-f`: mast meters a session's budget for its whole life, and a
-thread is one session, so `gke-chat` caps work per turn (calls, wall
-clock) with one cost ceiling per thread, where `gke-triage-f` caps calls
-per incident. It also answers questions rather than closing an incident,
-and doesn't pause for approval after every finding; a change to the
-cluster still parks at the write gate.
+A thread's task runs the conversation recipe, `gke-chat`, not lookout's
+`gke-triage-f`: a thread is one long-lived session, so `gke-chat` caps
+work per turn (calls, wall clock) with one cost ceiling per thread,
+where `gke-triage-f` caps calls per incident. It also answers questions
+rather than closing an incident, and doesn't pause for approval after
+every finding; a change to the cluster still parks at the write gate.
 An environment opts in by referencing it, as with the nightly scenario.
 When the environment also sets `agent.vcs` (with `agent.chatImage`), `up`
 layers `chat-config.json` onto `triage` so the single general-purpose
@@ -229,8 +226,8 @@ Slack agent delegates GitOps repository edits and pull requests to
 egress credential injection from `ate-credentials/<secret>`, with Slack
 approval prompts on `vcs_publish` and `vcs_propose` by default, or
 allowlisted when `agent.vcs.chatAutoApprove: true`); setting
-`agent.vcs.incidentAutoPR: true` (with `agent.incidentImage`) equips
-lookout's autonomous incident tasks with `propose-change` as well. When
+`agent.vcs.incidentAutoPR: true` equips lookout's autonomous incident
+tasks with `propose-change` as well. When
 `slack.alertChannel` is set, `up` turns on switchboard's `:8080` outbound
 HTTP ingress (generating `ate-credentials/switchboard-ingress` once and
 mirroring it into `switchboard/switchboard-agent`) so incident tasks post
@@ -260,18 +257,20 @@ component-specific rules such as ax's Postgres keeping its volume.
 SHA and adds its own values, and a `shipmind.yaml` with what kustomize
 can't carry: the kube context (every command passes it explicitly, never
 the current context), the agent's ax settings (atespace, project,
-Workspace, agent image, the cluster table) and the changes `status`
-should expect.
+Workspace, `agent.incidentImage` and optional `agent.chatImage`, the
+cluster table) and the changes `status` should expect.
 
 **The agent's ax objects.** Two pieces of an environment are not
 Kubernetes manifests. The ax task template lookout stamps every incident
-task from carries the agent's two bearer tokens as plain env (ax has no
-secret references for env), so it lives in a Secret rendered at deploy
-time, never in a repository. The tokens live in their own Secret
-(`lookout-ax/agent-tokens`); a deployment made before shipmind has them
-only in its task template, and `up` adopts them from there. Tokens are
-never rotated by a deploy: every existing task has them baked in. ax's
-Postgres password is the same kind of value: a Secret
+task from carries the agent's attach bearer token (`CORE_AGENT_ATTACH_TOKEN`)
+as plain env (ax has no secret references for env), so it lives in a
+Secret rendered at deploy time, never in a repository. The tokens live
+in their own Secret (`lookout-ax/agent-tokens`, retaining both `inject`
+and `attach` keys untouched on existing clusters), generated once on a
+fresh cluster and never rotated by a deploy because every existing task
+has the attach token baked in; if `agent-tokens` is missing alongside a
+live task template, `status` and `up` refuse rather than rotating it.
+ax's Postgres password is the same kind of value: a Secret
 (`ax-system/ax-postgres`) that `up` generates once, when the render runs
 Postgres, and never rotates, because Postgres keeps the password it
 first booted with; `status` reports it if it is missing. The Workspace (`AGENTS.md`: the cluster table, repeat rule and optional
@@ -286,7 +285,7 @@ Kubernetes objects, a by-value comparison for the task template Secret
 and the Workspace. Each difference is either expected (listed in
 `shipmind.yaml` with its reason) or drift; it exits 3 on drift, so "no
 drift" is a script-checkable gate. `shipmind up` applies the render,
-stores the tokens (adopted or generated once), applies the task template
+stores the tokens (generated once, never rotated), applies the task template
 Secret and the Workspace, and waits for every Deployment to roll out;
 `-dry-run` validates every write server-side and writes nothing. Both run
 from a shipmind checkout at exactly the commit the overlay pins, with no
@@ -557,10 +556,10 @@ repository (plus its private overlay) and one nightly scenario runs.
 
 ### Milestone 2: standalone profile and PR wiring tests {#SM-7}
 
-The standalone profile on kind, the wiring tier on every PR, and
-core-agent as a second harness. Retire the cross-repository checks this
-replaces (core-agent's lookout pin check and gke-troubleshoot recipe e2e)
-once shipmind covers them.
+The standalone profile on kind and the wiring tier on every PR, running
+core-agent. Retire the cross-repository checks this replaces
+(core-agent's lookout pin check and gke-troubleshoot recipe e2e) once
+shipmind covers them.
 
 ### Milestone 3: switchboard starts agents {#SM-8}
 

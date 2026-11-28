@@ -188,7 +188,7 @@ func Canary(ctx context.Context, root string, e *env.Env, c cluster.Cluster, o C
 func (o CanaryOptions) check(e *env.Env) (string, error) {
 	switch {
 	case e.Agent.ChatImage == "":
-		return "", errors.New("the environment sets no agent.chatImage: a canary runs the core-agent chat task")
+		return "", errors.New("the environment sets no agent.chatImage: a canary runs the chat task")
 	case !canaryImage.MatchString(o.Image):
 		return "", fmt.Errorf("image %q: want the candidate agent image pinned by digest", o.Image)
 	case !canaryImage.MatchString(o.RunnerImage):

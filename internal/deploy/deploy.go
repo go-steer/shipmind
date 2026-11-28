@@ -98,22 +98,23 @@ func (r *Report) Drift() []Change {
 	return d
 }
 
-// tokens finds the agent's tokens: the tokens Secret, else (adopting a
-// deployment made before shipmind) the ones in the live task template.
-// source says which; found is false when the cluster has none yet. When
-// both exist and disagree, it fails: picking one would cut lookout off
-// from the tasks that carry the other.
+// tokens finds the agent's tokens in the tokens Secret and verifies they
+// agree with any live task template. source says where they came from;
+// found is false when the cluster has none yet. When both exist and
+// disagree, or a live template exists without the tokens Secret, it
+// fails: picking or rotating tokens would cut lookout off from live
+// tasks carrying the old one.
 func tokens(ctx context.Context, c cluster.Cluster) (t agent.Tokens, source string, found bool, err error) {
 	stored, inStore, err := c.Secret(ctx, Namespace, TokensSecret)
 	if err != nil {
 		return t, "", false, err
 	}
-	// A template whose tokens can't be read is an error even with the
-	// tokens Secret present: deploying over it would cut lookout off
-	// from the tasks that carry whatever it holds. One naming no tokens
-	// carries none a task could hold, so with the Secret present it is
-	// simply replaced; without it there is nothing to adopt.
-	live, inTemplate, err := templateTokens(ctx, c)
+	// A template whose attach token can't be read is an error even with
+	// the tokens Secret present: deploying over it would cut lookout off
+	// from the tasks that carry whatever it holds. One naming no attach
+	// token carries none a core-agent task could hold, so with the Secret
+	// present it is simply replaced; without it there is nothing to keep.
+	liveAttach, inTemplate, err := templateAttachToken(ctx, c)
 	if err != nil && (!inStore || !errors.Is(err, errNoTemplateTokens)) {
 		return t, "", false, err
 	}
@@ -122,10 +123,8 @@ func tokens(ctx context.Context, c cluster.Cluster) (t agent.Tokens, source stri
 		if err := t.Check(); err != nil {
 			return t, "", false, fmt.Errorf("secret %s/%s: %w", Namespace, TokensSecret, err)
 		}
-		// A core-agent template (agent.incidentImage) carries only the
-		// attach token, so only that one can disagree.
-		if inTemplate && (live.Attach != t.Attach || (live.Inject != "" && live.Inject != t.Inject)) {
-			return t, "", false, fmt.Errorf("the tokens in secret %s/%s and in the live task template (secret %s/%s) disagree; existing tasks carry one pair, so resolve it by hand before deploying",
+		if inTemplate && liveAttach != t.Attach {
+			return t, "", false, fmt.Errorf("the attach token in secret %s/%s and in the live task template (secret %s/%s) disagree; existing tasks carry one token, so resolve it by hand before deploying",
 				Namespace, TokensSecret, Namespace, AgentSecret)
 		}
 		return t, "secret " + Namespace + "/" + TokensSecret, true, nil
@@ -133,23 +132,19 @@ func tokens(ctx context.Context, c cluster.Cluster) (t agent.Tokens, source stri
 	if !inTemplate {
 		return t, "", false, nil
 	}
-	if live.Inject == "" {
-		return t, "", false, fmt.Errorf("the live task template (secret %s/%s) is core-agent's, which carries no inject token, and secret %s/%s is missing: restore it by hand before deploying",
-			Namespace, AgentSecret, Namespace, TokensSecret)
-	}
-	return live, "adopted from the live task template (secret " + Namespace + "/" + AgentSecret + ")", true, nil
+	return t, "", false, fmt.Errorf("the live task template (secret %s/%s) carries an attach token, and secret %s/%s is missing: restore it by hand before deploying",
+		Namespace, AgentSecret, Namespace, TokensSecret)
 }
 
-// errNoTemplateTokens is a live task template that names no tokens.
+// errNoTemplateTokens is a live task template that names no attach token.
 var errNoTemplateTokens = fmt.Errorf("tokens in secret %s/%s: the task template names none", Namespace, AgentSecret)
 
-// templateTokens reads the tokens out of the live task template, if
-// there is one: mast's carries both, core-agent's (agent.incidentImage)
-// only the attach token, and Inject comes back empty.
-func templateTokens(ctx context.Context, c cluster.Cluster) (t agent.Tokens, found bool, err error) {
+// templateAttachToken reads CORE_AGENT_ATTACH_TOKEN out of the live task
+// template, if there is one.
+func templateAttachToken(ctx context.Context, c cluster.Cluster) (attach string, found bool, err error) {
 	data, ok, err := c.Secret(ctx, Namespace, AgentSecret)
 	if err != nil || !ok {
-		return t, false, err
+		return "", false, err
 	}
 	var task struct {
 		Spec struct {
@@ -157,32 +152,21 @@ func templateTokens(ctx context.Context, c cluster.Cluster) (t agent.Tokens, fou
 		} `yaml:"spec"`
 	}
 	if err := yaml.Unmarshal(data["task.yaml"], &task); err != nil {
-		return t, false, fmt.Errorf("secret %s/%s task.yaml: %w", Namespace, AgentSecret, err)
+		return "", false, fmt.Errorf("secret %s/%s task.yaml: %w", Namespace, AgentSecret, err)
 	}
-	coreAgent, named := false, false
+	named := false
 	for _, e := range task.Spec.Env {
-		switch e.Name {
-		case "MAST_INJECT_TOKEN":
-			t.Inject, named = e.Value, true
-		case "MAST_ATTACH_TOKEN":
-			t.Attach, named = e.Value, true
-		case "CORE_AGENT_ATTACH_TOKEN":
-			t.Attach, coreAgent, named = e.Value, true, true
+		if e.Name == "CORE_AGENT_ATTACH_TOKEN" {
+			attach, named = e.Value, true
 		}
 	}
 	if !named {
-		return t, false, errNoTemplateTokens
+		return "", false, errNoTemplateTokens
 	}
-	if coreAgent && t.Inject == "" {
-		if err := t.CheckAttach(); err != nil {
-			return t, false, fmt.Errorf("tokens in secret %s/%s: %w", Namespace, AgentSecret, err)
-		}
-		return t, true, nil
+	if err := (agent.Tokens{Attach: attach}).CheckAttach(); err != nil {
+		return "", false, fmt.Errorf("tokens in secret %s/%s: %w", Namespace, AgentSecret, err)
 	}
-	if err := t.Check(); err != nil {
-		return t, false, fmt.Errorf("tokens in secret %s/%s: %w", Namespace, AgentSecret, err)
-	}
-	return t, true, nil
+	return attach, true, nil
 }
 
 // Status compares the environment with the cluster, read only.
@@ -674,10 +658,10 @@ type UpOptions struct {
 
 // Up brings the cluster to the environment. It computes everything
 // before it writes anything; then applies the Namespaces, the agent's
-// tokens (adopted or generated once, never rotated here) and task
-// template Secret, then every other object, then the Workspace;
-// restarts lookout if its task template changed (lookout reads it only
-// at startup); and waits for every rendered Deployment to roll out.
+// tokens (generated once, never rotated here) and task template Secret,
+// then every other object, then the Workspace; restarts lookout if its
+// task template changed (lookout reads it only at startup); and waits
+// for every rendered Deployment to roll out.
 func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 	if err := Prepare(p); err != nil {
 		return err

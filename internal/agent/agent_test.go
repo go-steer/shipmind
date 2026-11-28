@@ -38,10 +38,10 @@ func testEnv() *env.Env {
 	return &env.Env{
 		Context: "demo",
 		Agent: env.Agent{
-			Atespace:  "agents",
-			Project:   "example-project",
-			Workspace: "demo-ws",
-			Image:     "registry.example.com/agent@sha256:" + strings.Repeat("0", 64),
+			Atespace:      "agents",
+			Project:       "example-project",
+			Workspace:     "demo-ws",
+			IncidentImage: "registry.example.com/agent@sha256:" + strings.Repeat("0", 64),
 			Clusters: []env.Cluster{
 				{Name: "demo", Path: "projects/example-project/locations/us-central1/clusters/demo"},
 				{Name: "prod", Path: "projects/example-project/locations/europe-west1/clusters/prod"},
@@ -51,7 +51,8 @@ func testEnv() *env.Env {
 }
 
 func TestTask(t *testing.T) {
-	b, err := Task(root, testEnv(), tok)
+	e := testEnv()
+	b, err := Task(root, e, tok)
 	if err != nil {
 		t.Fatalf("Task: %v", err)
 	}
@@ -72,18 +73,20 @@ func TestTask(t *testing.T) {
 		t.Fatalf("rendered task is not YAML: %v\n%s", err, b)
 	}
 	envs := map[string]string{}
-	for _, e := range task.Spec.Env {
-		envs[e.Name] = e.Value
+	for _, ev := range task.Spec.Env {
+		envs[ev.Name] = ev.Value
 	}
 	switch {
 	case task.Metadata.Atespace != "agents":
 		t.Errorf("atespace %q", task.Metadata.Atespace)
-	case task.Spec.Image != testEnv().Agent.Image:
+	case task.Spec.Image != e.Agent.IncidentImage:
 		t.Errorf("image %q", task.Spec.Image)
 	case envs["GOOGLE_CLOUD_PROJECT"] != "example-project":
 		t.Errorf("project %q", envs["GOOGLE_CLOUD_PROJECT"])
-	case envs["MAST_INJECT_TOKEN"] != tok.Inject || envs["MAST_ATTACH_TOKEN"] != tok.Attach:
-		t.Errorf("tokens %v", envs)
+	case envs["CORE_AGENT_ATTACH_TOKEN"] != tok.Attach || envs["CORE_AGENT_GOOGLE_AUTH"] != "injected":
+		t.Errorf("env %v", envs)
+	case strings.Contains(string(b), "MAST_"):
+		t.Errorf("task carries mast settings:\n%s", b)
 	case task.Spec.Workspace.Name != "demo-ws" || task.Spec.Workspace.Path != "/workspace/repo":
 		t.Errorf("workspace %+v", task.Spec.Workspace)
 	case task.Spec.Resources.Limits.CPU == "" || task.Spec.Resources.Limits.Memory == "":
@@ -93,8 +96,13 @@ func TestTask(t *testing.T) {
 		t.Errorf("http.port %d", task.Spec.HTTP.Port)
 	}
 
-	if _, err := Task(root, testEnv(), Tokens{Inject: "x", Attach: tok.Attach}); err == nil {
+	if _, err := Task(root, e, Tokens{Inject: "x", Attach: tok.Attach}); err == nil {
 		t.Error("Task with a bad token succeeded")
+	}
+	noImg := testEnv()
+	noImg.Agent.IncidentImage = ""
+	if _, err := Task(root, noImg, tok); err == nil || !strings.Contains(err.Error(), "agent.incidentImage is required") {
+		t.Errorf("Task without agent.incidentImage = %v, want agent.incidentImage required error", err)
 	}
 }
 
@@ -278,9 +286,9 @@ func TestTemplateErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, body := range map[string]string{
-		"AGENTS.md.tmpl":      "{{ .Clusters",
-		"task.yaml.tmpl":      "{{ .Missing }}",
-		"workspace.yaml.tmpl": "x",
+		"AGENTS.md.tmpl":            "{{ .Clusters",
+		"task-core-agent.yaml.tmpl": "{{ .Missing }}",
+		"workspace.yaml.tmpl":       "x",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, Dir, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
@@ -391,33 +399,22 @@ func TestSwitchboardConfigErrors(t *testing.T) {
 	}
 }
 
-// lookout's mast tasks run the incident bundle (carried in images/agent-mast),
-// while switchboard's chat tasks run native gke-chat on core-agent only (#144),
-// so no template can name a bundle its image lacks.
+// lookout's incident tasks run gke-triage-f and switchboard's chat tasks run
+// native gke-chat on core-agent (images/agent), so no template can name a
+// bundle the image lacks.
 func TestBundles(t *testing.T) {
 	inc, err := Task(root, testEnv(), tok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(inc), "--workload=/opt/mast/workloads/"+IncidentBundle+"\n") {
+	if !strings.Contains(string(inc), "/opt/core-agent/recipes/"+IncidentBundle+"/.agents/config.json\n") {
 		t.Errorf("incident template:\n%s", inc)
 	}
 	if _, err := ChatTask(root, testEnv(), tok); err == nil || !strings.Contains(err.Error(), "agent.chatImage is required") {
 		t.Errorf("ChatTask without agent.chatImage = %v, want agent.chatImage required error", err)
 	}
-	dockerfile, err := os.ReadFile(filepath.Join(root, "images/agent-mast/Dockerfile"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	if _, err := os.Stat(filepath.Join(root, "agents/sre-triage", IncidentBundle, "workload.yaml")); err != nil {
 		t.Errorf("bundle %s: %v", IncidentBundle, err)
-	}
-	if !strings.Contains(string(dockerfile), "COPY agents/sre-triage/"+IncidentBundle+" /opt/mast/workloads/"+IncidentBundle+"\n") {
-		t.Errorf("the mast agent image doesn't carry bundle %s", IncidentBundle)
-	}
-	// gke-chat is a native flat core-agent recipe and has left images/agent-mast (#144).
-	if strings.Contains(string(dockerfile), ChatBundle) {
-		t.Errorf("images/agent-mast/Dockerfile still carries %s", ChatBundle)
 	}
 	for _, f := range []string{"AGENTS.md", "config.json", "mcp.json"} {
 		if _, err := os.Stat(filepath.Join(root, "agents/sre-triage", ChatBundle, ".agents", f)); err != nil {
@@ -426,9 +423,9 @@ func TestBundles(t *testing.T) {
 	}
 }
 
-// With agent.chatImage set, switchboard's threads run core-agent (#48):
-// its image and command, the attach token under core-agent's name, and
-// everything Substrate books or routes on the same as the mast task's.
+// Switchboard's threads run core-agent with agent.chatImage: its image and
+// command, the attach token under core-agent's name, and the same Substrate
+// booking and routing fields as the incident task.
 func TestChatTaskCoreAgent(t *testing.T) {
 	type spec struct {
 		Image     string
@@ -460,19 +457,16 @@ func TestChatTaskCoreAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	atespace, got := parse(b)
-	mastB, err := Task(root, testEnv(), tok)
+	incB, err := Task(root, e, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, mast := parse(mastB)
+	_, inc := parse(incB)
 
 	envs := map[string]string{}
 	for _, v := range got.Env {
 		envs[v.Name] = v.Value
 	}
-	// The whole command line: core-agent's flag forms differ from mast's
-	// (--session-db is a bool, --attach-token names an env var), and a
-	// mast-style flag fails core-agent's parse at task start.
 	wantCmd := []string{
 		"core-agent",
 		"-c", "/opt/core-agent/recipes/" + ChatBundle + "/.agents/config.json",
@@ -542,21 +536,17 @@ func TestChatTaskCoreAgent(t *testing.T) {
 		t.Errorf("chat egress = %#v, want %#v", got.Egress, wantChatEgress)
 	}
 	for name, pair := range map[string][2]any{
-		"http": {got.HTTP, mast.HTTP}, "idle": {got.Idle, mast.Idle},
-		"resources": {got.Resources, mast.Resources}, "workspace": {got.Workspace, mast.Workspace}, "debug": {got.Debug, mast.Debug},
+		"http": {got.HTTP, inc.HTTP}, "idle": {got.Idle, inc.Idle},
+		"resources": {got.Resources, inc.Resources}, "workspace": {got.Workspace, inc.Workspace}, "debug": {got.Debug, inc.Debug},
 	} {
 		if !reflect.DeepEqual(pair[0], pair[1]) {
-			t.Errorf("%s differs from the mast task's: %#v vs %#v", name, pair[0], pair[1])
+			t.Errorf("%s differs from the incident task's: %#v vs %#v", name, pair[0], pair[1])
 		}
 	}
 
-	// lookout's incidents stay on mast.
-	inc, err := Task(root, e, tok)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, s := parse(inc); s.Image != e.Agent.Image {
-		t.Errorf("incident task image %q, want agent.image", s.Image)
+	// Incident tasks keep their own image pin independent of chatImage.
+	if inc.Image != e.Agent.IncidentImage {
+		t.Errorf("incident task image %q, want agent.incidentImage", inc.Image)
 	}
 	if _, err := ChatTask(root, e, Tokens{Inject: tok.Inject, Attach: "x"}); err == nil {
 		t.Error("ChatTask with a bad token succeeded")
@@ -656,8 +646,8 @@ func TestCoreAgentImage(t *testing.T) {
 	if !strings.Contains(d, "ARG ROUTER_HOST="+routerHosts[0]+"\n") || !strings.Contains(d, `-H "Host: $ROUTER_HOST"`) || !strings.Contains(d, `if [ "$code" != 200 ]; then`) {
 		t.Error("images/agent's boot check doesn't ask as the router does")
 	}
-	// Where mast had the MCP tools: each specialist's own content root for
-	// imported gke-triage-f, folded into the main agent before main-tools
+	// MCP tool layout for imported gke-triage-f: each specialist gets its
+	// own content root, folded into the main agent before main-tools
 	// narrows them.
 	for _, step := range []string{`grep -qx "root: roots/$n" "$sa"`, `the importer gave the main agent MCP servers`, `/in/ax/core-agent-$b.main-tools.json`, `rm -f "$mcp"`} {
 		if !strings.Contains(d, step) {
@@ -732,6 +722,16 @@ func TestCoreAgentImage(t *testing.T) {
 	} {
 		if _, err := os.Stat(obsolete); !os.IsNotExist(err) {
 			t.Errorf("obsolete gke-chat mast-import artifact still exists: %s (%v)", obsolete, err)
+		}
+	}
+	// Retired mast image, workflow, and task template must stay deleted (#48).
+	for _, obsolete := range []string{
+		filepath.Join(root, "images/agent-mast"),
+		filepath.Join(root, ".github/workflows/image-agent-mast.yml"),
+		filepath.Join(root, Dir, "task.yaml.tmpl"),
+	} {
+		if _, err := os.Stat(obsolete); !os.IsNotExist(err) {
+			t.Errorf("retired mast artifact still exists: %s (%v)", obsolete, err)
 		}
 	}
 	for _, step := range []string{`fold="/in/ax/core-agent-$b.fold-specialist"`, `/^## Subagent Roster/`, `/^Return your finding by calling ` + "`finish_task`" + `/ { exit }`, `cat "/in/ax/core-agent-$b.report.md"`, `[ -f "$sa" ] || continue`} {
@@ -1025,10 +1025,13 @@ func TestTaskCoreAgent(t *testing.T) {
 	}
 }
 
-// Both task templates take the environment's idle timeout, 10m by default.
+// Both chat and incident task templates take the environment's idle timeout,
+// 10m by default.
 func TestTaskIdleSuspend(t *testing.T) {
-	core := func(e *env.Env) *env.Env {
+	withBoth := func(idle string) *env.Env {
+		e := testEnv()
 		e.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
+		e.Agent.IdleSuspendAfter = idle
 		return e
 	}
 	for _, tc := range []struct {
@@ -1036,21 +1039,11 @@ func TestTaskIdleSuspend(t *testing.T) {
 		e    *env.Env
 		want string
 	}{
-		{"mast, default", testEnv(), "suspendAfter: 10m\n"},
-		{"core-agent, default", core(testEnv()), "suspendAfter: 10m\n"},
-		{"mast, 3m", func() *env.Env { e := testEnv(); e.Agent.IdleSuspendAfter = "3m"; return e }(), "suspendAfter: 3m\n"},
-		{"core-agent, 3m", func() *env.Env { e := core(testEnv()); e.Agent.IdleSuspendAfter = "3m"; return e }(), "suspendAfter: 3m\n"},
+		{"default", withBoth(""), "suspendAfter: 10m\n"},
+		{"3m", withBoth("3m"), "suspendAfter: 3m\n"},
 	} {
-		// The chat task (core-agent only) and the incident task (mast or core-agent).
 		for kind, render := range map[string]func(string, *env.Env, Tokens) ([]byte, error){"chat": ChatTask, "incident": Task} {
-			e := *tc.e
-			if kind == "chat" && e.Agent.ChatImage == "" {
-				continue
-			}
-			if kind == "incident" && e.Agent.ChatImage != "" {
-				e.Agent.IncidentImage, e.Agent.ChatImage = e.Agent.ChatImage, ""
-			}
-			b, err := render(root, &e, tok)
+			b, err := render(root, tc.e, tok)
 			if err != nil {
 				t.Fatalf("%s, %s: %v", tc.name, kind, err)
 			}

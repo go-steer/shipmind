@@ -16,7 +16,6 @@ package scenario
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,7 +29,7 @@ import (
 	"time"
 )
 
-// stream is an event stream shaped like mast's: the incident from
+// stream is a representative event stream: the incident from
 // lookout, the coordinator delegating, a specialist's tool call and its
 // result (role "user", from the specialist), a function response from
 // "user" with no text, the coordinator's answer, then a repeat of the
@@ -129,13 +128,15 @@ func TestRouter(t *testing.T) {
 		gotActor, gotAuth = r.Header.Get("ate-target-actor"), r.Header.Get("Authorization")
 		switch r.URL.Path {
 		case "/sessions":
-			fmt.Fprint(w, `{"sessions":[{"sessionID":"s1","status":"active","app":"mast"}]}`)
+			fmt.Fprint(w, `{"sessions":[{"sessionID":"s1","status":"active","app":"core-agent"}]}`)
 		case "/sessions/s1/status":
 			fmt.Fprint(w, `{"state":"idle"}`)
+		case "/sessions/s1/agents":
+			fmt.Fprint(w, `{"agents":[]}`)
 		case "/sessions/s1/events":
 			fmt.Fprint(w, stream)
 			w.(http.Flusher).Flush()
-			<-r.Context().Done() // stays open, as mast's does
+			<-r.Context().Done() // stays open, as core-agent's does
 		default:
 			http.Error(w, "no such session", http.StatusNotFound)
 		}
@@ -197,7 +198,7 @@ func TestCoreAgentIncident(t *testing.T) {
 
 func TestMessageText(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{`{"kind":"pod.crashloop"}`, `{"kind":"pod.crashloop"}`},                                         // mast: as sent
+		{`{"kind":"pod.crashloop"}`, `{"kind":"pod.crashloop"}`},                                         // plain text: as sent
 		{"[Inbox]\n- from anon: {\"kind\":\"x\"}\n\nHow to handle", "{\"kind\":\"x\"}\n\nHow to handle"}, // core-agent
 		{"[Inbox]\n- from sa:lookout: hello\n- from bob: hi\n", "hello\n- from bob: hi\n"},               // first bullet
 		{"[Inbox]\n- {\"kind\":\"x\",\"a\":\"b: c\"}\n", "{\"kind\":\"x\",\"a\":\"b: c\"}\n"},            // no sender
@@ -226,8 +227,7 @@ func TestAnswerAfterBackgroundReport(t *testing.T) {
 }
 
 // core-agent's /status says idle while a background subagent still
-// works; State reports that as working, and mast's missing /agents
-// route (404) as nothing running.
+// works; State reports that as working, and surfaces errors from /agents.
 func TestStateWithSubagents(t *testing.T) {
 	agents := `{"agents":[{"id":"a1","name":"_fallback","status":"running"}]}`
 	agentsCode := http.StatusOK
@@ -257,8 +257,8 @@ func TestStateWithSubagents(t *testing.T) {
 		t.Error("a failing /agents read reported a state")
 	}
 	agentsCode, agents = http.StatusNotFound, "not found"
-	if s, err := r.State(ctx, "t", "s1"); err != nil || s != "idle" {
-		t.Errorf("no /agents route (mast): State = %q, %v", s, err)
+	if _, err := r.State(ctx, "t", "s1"); err == nil {
+		t.Error("404 from /agents reported a state")
 	}
 }
 
@@ -297,24 +297,6 @@ func TestRouterUsage(t *testing.T) {
 	}
 	if _, err := r.Usage(context.Background(), "t", "nope"); err == nil {
 		t.Error("Usage on a missing session succeeded")
-	}
-}
-
-// mast reports thinking inside its output count (its UsageTotals doc:
-// "ThoughtsTokens is the thinking subset of it, not an addition"), so
-// Normalize takes it out there, and only there.
-func TestUsageNormalizeMast(t *testing.T) {
-	var u AgentUsage
-	if err := json.Unmarshal([]byte(`{"overall":{"input_tokens":5000,"input_tokens_cached":1000,"output_tokens":900,"thoughts_tokens":600,"turns":2,"cost_usd":0.01},
-		"per_turn":[{"turn":41,"model":"gemini-3.8-flash","input_tokens":2000,"output_tokens":300,"thoughts_tokens":200},{"turn":42,"input_tokens":3000,"output_tokens":600,"thoughts_tokens":400}]}`), &u); err != nil {
-		t.Fatal(err)
-	}
-	n := u.Normalize("mast/922e549", time.Unix(0, 0))
-	if n.OutputTokens != 300 || n.ThinkingTokens != 600 || n.Calls[0].OutputTokens != 100 || n.Calls[1].OutputTokens != 200 || n.Calls[0].Call != 41 {
-		t.Errorf("mast normalised: %+v", n)
-	}
-	if c := u.Normalize("core-agent/x", time.Unix(0, 0)); c.OutputTokens != 900 {
-		t.Errorf("core-agent output %d, want it as reported", c.OutputTokens)
 	}
 }
 

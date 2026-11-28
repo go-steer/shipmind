@@ -62,7 +62,7 @@ agent:
   atespace: agents
   project: example-project
   workspace: demo-ws
-  image: registry.example.com/agent@sha256:` + strings.Repeat("0", 64) + `
+  incidentImage: registry.example.com/agent@sha256:` + strings.Repeat("0", 64) + `
   clusters:
     - name: demo
       path: projects/example-project/locations/us-central1/clusters/demo
@@ -86,7 +86,7 @@ func TestScenarioCanaryCommand(t *testing.T) {
 	const root = "../.."
 	image := "registry.example.com/agent@sha256:" + strings.Repeat("c", 64)
 	runner := "registry.example.com/e2e-runner@sha256:" + strings.Repeat("d", 64)
-	envDir, mastDir := canaryEnvDir(t, true), canaryEnvDir(t, false)
+	envDir, noChatDir := canaryEnvDir(t, true), canaryEnvDir(t, false)
 	base := []string{"scenario", "canary", "-root", root, "-image", image}
 
 	for _, tc := range []struct {
@@ -105,7 +105,7 @@ func TestScenarioCanaryCommand(t *testing.T) {
 		{"a scenario path", append(base[:len(base):len(base)], envDir, "../x"), nil, 2, "", "want a scenario's name"},
 		{"an incident scenario", append(base[:len(base):len(base)], envDir, "missing-env"), nil, 2, "", "missing-env is not a chat scenario"},
 		{"no environment", append(base[:len(base):len(base)], t.TempDir(), "posture-audit"), nil, 1, "", "shipmind.yaml"},
-		{"a mast environment", append(base[:len(base):len(base)], mastDir, "posture-audit"), nil, 1, "", "sets no agent.chatImage"},
+		{"no chatImage", append(base[:len(base):len(base)], noChatDir, "posture-audit"), nil, 1, "", "sets no agent.chatImage"},
 		{"no versions.yaml", []string{"scenario", "canary", "-root", t.TempDir(), "-image", image, envDir, "posture-audit"}, nil, 1, "", "scenario.yaml"},
 		{"dry run", append(base[:len(base):len(base)], "-runner-image", runner, "-dry-run", envDir, "posture-audit"), nil, 0,
 			"kind: Job", "dry run: canary-posture-audit-"},

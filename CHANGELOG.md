@@ -435,6 +435,23 @@ release is a tested set of component versions (see "Cutting a release" in
   core-agent refuses a specialist naming tools its server lacks, so this
   is also what lets the bundles import (go-steer/core-agent#1483, #48).
 
+### Removed
+
+- Retired `mast` and `agent-mast` now that every live environment runs
+  `core-agent` (#48): removed `images/agent-mast/`,
+  `.github/workflows/image-agent-mast.yml`, `agents/sre-triage/ax/task.yaml.tmpl`,
+  the `mast` and `agent-mast` component pins in `versions.yaml`, and the
+  `mast` runtime, token-adoption, and scenario normalization branches in
+  `internal/agent`, `internal/deploy`, and `internal/scenario`.
+  **Breaking `shipmind.yaml` change:** `agent.image` is removed
+  (`KnownFields(true)` rejects it), `agent.incidentImage` is now required
+  (pinned by digest), and `agent.chatImage` remains the per-profile chat
+  image setting; environment overlays in `go-steer/shipmind-deploy` must
+  delete `agent.image` when moving past this commit. During staggered
+  rollouts, run `shipmind scenario canary` and `shipmind status -any-ref`
+  against un-bumped overlays from `<= 386c838` until their `agent.image`
+  field is removed.
+
 ### Fixed
 
 - `gke-chat`'s `posture-audit` specialist now explicitly instructs passing

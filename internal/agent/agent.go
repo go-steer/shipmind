@@ -37,9 +37,11 @@ import (
 // Dir holds the templates, relative to a shipmind checkout.
 const Dir = "agents/sre-triage/ax"
 
-// Tokens are the agent's two bearer tokens: inject (POST /inject, how
-// signals arrive) and attach (the session API lookout and switchboard
-// speak).
+// Tokens holds the bearer token pair stored in Secret
+// lookout-ax/agent-tokens. Attach is mounted into task-core-agent.yaml.tmpl
+// as CORE_AGENT_ATTACH_TOKEN (the session API lookout and switchboard
+// speak); Inject is retained in the Secret schema for zero-drift
+// compatibility with existing clusters (docs/console-design.md#CON-3).
 type Tokens struct {
 	Inject string
 	Attach string
@@ -90,46 +92,44 @@ func NewTokens() (Tokens, error) {
 	return Tokens{Inject: inject, Attach: attach}, nil
 }
 
-// The recipes the agent images carry that a task runs: one incident per
-// task for lookout (gke-triage-f, imported from its mast bundle in
-// images/agent and carried directly by images/agent-mast), and a
-// conversation per task for switchboard (gke-chat, a native flat
-// core-agent recipe in images/agent only).
+// The recipes the agent image carries that a task runs: one incident per
+// task for lookout (gke-triage-f, imported into images/agent at build
+// time), and a conversation per task for switchboard (gke-chat, a native
+// flat core-agent recipe in images/agent).
 const (
 	IncidentBundle = "gke-triage-f"
 	ChatBundle     = "gke-chat"
 )
 
-// Task renders the ax task template lookout stamps an incident task
-// from, for e with tokens t. With agent.incidentImage set, it is
-// core-agent's template and image instead of mast's (#48); when
+// Task renders the core-agent ax task template lookout stamps an incident
+// task from, for e with tokens t (using agent.incidentImage). When
 // agent.vcs.incidentAutoPR or slack.alertChannel is set, it points -c at
 // the Workspace's incident-config.json and adds the matching egress rules.
 func Task(root string, e *env.Env, t Tokens) ([]byte, error) {
-	if e.Agent.IncidentImage != "" {
-		autoPR := e.Agent.VCS != nil && e.Agent.VCS.IncidentAutoPR
-		alert := e.Slack != nil && e.Slack.AlertChannel != ""
-		cfgPath, vcsSecret := "", ""
-		if autoPR || alert {
-			cfgPath = "/workspace/repo/incident-config.json"
-		}
-		if autoPR {
-			vcsSecret = e.Agent.VCS.Secret
-		}
-		return coreAgentTask(root, e, t, IncidentBundle, e.Agent.IncidentImage, cfgPath, vcsSecret, alert)
+	if e.Agent.IncidentImage == "" {
+		return nil, fmt.Errorf("incident task: agent.incidentImage is required")
 	}
-	return task(root, e, t, IncidentBundle)
+	autoPR := e.Agent.VCS != nil && e.Agent.VCS.IncidentAutoPR
+	alert := e.Slack != nil && e.Slack.AlertChannel != ""
+	cfgPath, vcsSecret := "", ""
+	if autoPR || alert {
+		cfgPath = "/workspace/repo/incident-config.json"
+	}
+	if autoPR {
+		vcsSecret = e.Agent.VCS.Secret
+	}
+	return coreAgentTask(root, e, t, IncidentBundle, e.Agent.IncidentImage, cfgPath, vcsSecret, alert)
 }
 
 // ChatTask renders the core-agent task template switchboard starts a
 // thread's task from (using the native gke-chat recipe in images/agent).
-// Requires agent.chatImage (gke-chat left images/agent-mast in #144). When
-// agent.vcs is set, it points -c at the Workspace's chat-config.json and
-// adds GitHub egress rules so the single general-purpose chat agent can
-// also delegate GitOps pull requests to propose-change.
+// Requires agent.chatImage. When agent.vcs is set, it points -c at the
+// Workspace's chat-config.json and adds GitHub egress rules so the single
+// general-purpose chat agent can also delegate GitOps pull requests to
+// propose-change.
 func ChatTask(root string, e *env.Env, t Tokens) ([]byte, error) {
 	if e.Agent.ChatImage == "" {
-		return nil, fmt.Errorf("chat task: agent.chatImage is required (gke-chat runs on core-agent only)")
+		return nil, fmt.Errorf("chat task: agent.chatImage is required")
 	}
 	cfgPath, vcsSecret := "", ""
 	if e.Agent.VCS != nil {
@@ -222,22 +222,6 @@ func postureScope(bundle, project string, clusters []env.Cluster) string {
 	}
 	slices.Sort(others)
 	return strings.Join(append([]string{project}, others...), ",")
-}
-
-func task(root string, e *env.Env, t Tokens, bundle string) ([]byte, error) {
-	if err := t.Check(); err != nil {
-		return nil, err
-	}
-	return render(root, "task.yaml.tmpl", map[string]string{
-		"Bundle":      bundle,
-		"Atespace":    e.Agent.Atespace,
-		"Image":       e.Agent.Image,
-		"Project":     e.Agent.Project,
-		"Workspace":   e.Agent.Workspace,
-		"InjectToken": t.Inject,
-		"AttachToken": t.Attach,
-		"IdleSuspend": e.Agent.IdleSuspend(),
-	})
 }
 
 const proposeChangeInstructions = `@include builtin:propose-change
@@ -393,16 +377,15 @@ func ChatConfig(root string, e *env.Env) ([]byte, error) {
 }
 
 // IncidentConfig renders the core-agent config JSON written to the
-// Workspace's incident-config.json when e.Agent.IncidentImage is set
-// alongside agent.vcs.incidentAutoPR or slack.alertChannel:
-// core-agent-gke-triage-f.base.json (checked at Docker build time against
-// imported gke-triage-f) plus optional vcs / propose-change and/or
-// switchboard alert target, with headless permissions allowlisted for
-// those declared actions.
+// Workspace's incident-config.json when agent.vcs.incidentAutoPR or
+// slack.alertChannel is set: core-agent-gke-triage-f.base.json (checked
+// at Docker build time against imported gke-triage-f) plus optional vcs /
+// propose-change and/or switchboard alert target, with headless
+// permissions allowlisted for those declared actions.
 func IncidentConfig(root string, e *env.Env) ([]byte, error) {
 	autoPR := e.Agent.VCS != nil && e.Agent.VCS.IncidentAutoPR
 	alert := e.Slack != nil && e.Slack.AlertChannel != ""
-	if e.Agent.IncidentImage == "" || (!autoPR && !alert) {
+	if !autoPR && !alert {
 		return nil, nil
 	}
 	doc, err := loadBaseConfig(root, IncidentBundle)

@@ -12,7 +12,6 @@ that they do.
 
 | Component | What it does |
 |---|---|
-| [mast](https://github.com/go-steer/mast) | Autonomous agent harness |
 | [core-agent](https://github.com/go-steer/core-agent) | Interactive and autonomous agent harness |
 | [mast-web](https://github.com/go-steer/mast-web) | Web UI for agent sessions and approvals |
 | [switchboard](https://github.com/go-steer/switchboard) | Slack and Google Chat integration |

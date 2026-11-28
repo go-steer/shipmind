@@ -46,7 +46,7 @@ spec:
     # Since v1.0, Substrate books every agent's limits against its
     # worker's limits (less 64Mi the worker keeps), so the limits here
     # decide how many agents run at once: an agent asks for 500m and
-    # 1Gi (agents/sre-triage/ax/task.yaml.tmpl), so three per worker,
+    # 1Gi (agents/sre-triage/ax/task-core-agent.yaml.tmpl), so three per worker,
     # twelve across the pool. Requests are one agent's worth: an idle
     # agent uses far less than its limit, and suspended agents book
     # nothing.

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-# Dependabot version updates, same schedule and grouping as mast's.
+# Dependabot version updates.
 # Minor and patch bumps are grouped into one PR per ecosystem; majors
 # arrive ungrouped, one PR each, for a human.
 #

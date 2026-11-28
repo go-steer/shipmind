@@ -147,9 +147,9 @@ def is_executable_or_sh(p: Path) -> bool:
 
 SKIP_DIRS = {"vendor", "testdata"}
 
-# Agent bundles reproduced byte for byte from mast (they carry mast's
-# own short Apache header). Rewriting their headers would change the
-# agent image's contents, which must match what runs.
+# Legacy gke-triage / gke-triage-f bundles kept verbatim until converted
+# to native core-agent recipes (#144). Rewriting their headers would
+# change the agent image's contents.
 VERBATIM = {Path("agents/sre-triage")}
 
 

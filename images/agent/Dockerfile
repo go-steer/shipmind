@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # The substrate profile's agent image on core-agent (#48): core-agent
-# run as an ax task in serve mode, the harness that replaces mast.
+# run as an ax task in serve mode.
 #
 #   ax-task-runner  ax's runner contract, built from the ax fork at the
 #                   ax-runner pin in versions.yaml
@@ -34,10 +34,9 @@
 #                   holding the GKE read, lookout audit, and leeway report
 #                   MCP servers directly, with propose-change layered at
 #                   deploy time; #144). gke-triage-f is converted from its
-#                   mast bundle at build time by that same core-agent
-#                   (`core-agent config import-workload`) while mast still
-#                   carries it, merged with
-#                   agents/sre-triage/ax/core-agent-gke-triage-f.json, and
+#                   legacy workload bundle at build time by that same
+#                   core-agent (`core-agent config import-workload`), merged
+#                   with agents/sre-triage/ax/core-agent-gke-triage-f.json, and
 #                   folded into the main agent via
 #                   core-agent-gke-triage-f.fold-specialist. Each recipe is
 #                   booted once (no network needed) until its attach
