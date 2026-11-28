@@ -103,9 +103,9 @@ type Agent struct {
 	// reachable. It reaches new tasks only: a task keeps the template it was
 	// created from.
 	IdleSuspendAfter string `yaml:"idleSuspendAfter,omitempty"`
-	// Clusters is the table the agent uses for incidents that name only
-	// a bare cluster.
-	Clusters []Cluster `yaml:"clusters"`
+	// Clusters configures the agent's home cluster context and live cluster
+	// discovery scope (#104).
+	Clusters Clusters `yaml:"clusters"`
 	// VCS, when set, enables core-agent's vcs_* tools and the
 	// propose-change GitOps specialist on the chat agent (when
 	// agent.chatImage is set) and, when incidentAutoPR is true, on
@@ -220,12 +220,6 @@ func (a Agent) IdleSuspend() string {
 	return a.IdleSuspendAfter
 }
 
-// Cluster maps a bare cluster name to its full GKE resource name.
-type Cluster struct {
-	Name string `yaml:"name"`
-	Path string `yaml:"path"`
-}
-
 // Expected is a change `shipmind status` should not count as drift.
 type Expected struct {
 	Object string `yaml:"object"`
@@ -235,7 +229,7 @@ type Expected struct {
 var (
 	dnsLabel    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 	projectRE   = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
-	clusterPath = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/clusters/[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+	clusterPath = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z]+-[a-z]+[0-9]+(-[a-z])?/clusters/[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 	digestRef   = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 	digestOnly  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	kubectlID   = regexp.MustCompile(`^[A-Za-z0-9.-]+\.[A-Za-z0-9]+\.[A-Za-z0-9-.]*\.[a-z0-9.-]+$`)
@@ -244,7 +238,7 @@ var (
 	slackApp    = regexp.MustCompile(`^[^\x00-\x1f]{1,35}$`)
 	slashCmd    = regexp.MustCompile(`^/[a-z0-9][a-z0-9_-]{0,30}$`)
 	slackChanRE = regexp.MustCompile(`^[CG][A-Z0-9]{6,20}$`)
-	agentID     = regexp.MustCompile(`^((secret|workspace|deployment) [a-z0-9-]+/[a-z0-9.-]+|(substrate|rollout) [A-Za-z]+/[a-z0-9-]+/[a-z0-9.-]+)$`)
+	agentID     = regexp.MustCompile(`^((secret|workspace|deployment) [a-z0-9-]+/[a-z0-9.-]+|(substrate|rollout) [A-Za-z]+/[a-z0-9-]+/[a-z0-9.-]+|scope (access|project/[a-z][a-z0-9-]{4,28}[a-z0-9](/[a-z]+-[a-z]+[0-9]+(-[a-z])?)?|fleet/[a-z][a-z0-9-]{4,28}[a-z0-9]))$`)
 	repoSegRE   = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_.-]*$`)
 	branchRE    = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 )
@@ -347,22 +341,7 @@ func (e *Env) check() error {
 			idleSuspend = d
 		}
 	}
-	if len(a.Clusters) == 0 {
-		fail("agent.clusters: want at least one cluster")
-	}
-	seen := map[string]bool{}
-	for i, c := range a.Clusters {
-		if !dnsLabel.MatchString(c.Name) {
-			fail("agent.clusters[%d].name %q: want a GKE cluster name", i, c.Name)
-		}
-		if seen[c.Name] {
-			fail("agent.clusters: %q listed twice", c.Name)
-		}
-		seen[c.Name] = true
-		if !clusterPath.MatchString(c.Path) || !strings.HasSuffix(c.Path, "/clusters/"+c.Name) {
-			fail("agent.clusters[%d].path %q: want projects/<project>/locations/<location>/clusters/%s", i, c.Path, c.Name)
-		}
-	}
+	checkClusters(a.Clusters, fail)
 	e.checkVCS(idleSuspend, fail)
 	e.checkAudits(idleSuspend, fail)
 	if sub := e.Substrate; sub != nil {
@@ -444,7 +423,7 @@ func (e *Env) check() error {
 	objs := map[string]bool{}
 	for i, x := range e.Expect {
 		if !kubectlID.MatchString(x.Object) && !agentID.MatchString(x.Object) {
-			fail("expect[%d].object %q: want a kubectl diff object ID like apps.v1.Deployment.ns.name, or \"secret|workspace|deployment <namespace>/<name>\" or \"substrate|rollout <Kind>/<namespace>/<name>\"", i, x.Object)
+			fail("expect[%d].object %q: want a kubectl diff object ID like apps.v1.Deployment.ns.name, \"secret|workspace|deployment <namespace>/<name>\", \"substrate|rollout <Kind>/<namespace>/<name>\", or \"scope access|project/<project>[/<location>]|fleet/<project>\"", i, x.Object)
 		}
 		if objs[x.Object] {
 			fail("expect: %q listed twice", x.Object)

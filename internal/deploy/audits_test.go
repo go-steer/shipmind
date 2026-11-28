@@ -148,9 +148,37 @@ func TestAuditsReconcileStatusUpDown(t *testing.T) {
 	}
 	if cfg.Schedule != "0 6 * * *" || cfg.RefreshWindow != "72h" || cfg.MinConsecutive != 2 ||
 		cfg.DomainUnavailableKeys != "topology.kubernetes.io/zone" || cfg.AlertChannel != "C0123456789" ||
-		!cfg.AutoPR || cfg.LookoutVersion == "" || len(cfg.Repositories) != 1 {
+		!cfg.AutoPR || cfg.LookoutVersion == "" || len(cfg.Repositories) != 1 ||
+		len(cfg.Scope) != 1 || cfg.Scope[0].Path != "projects/example-project/locations/us-central1/clusters/demo" {
 		t.Errorf("auditRuntimeConfig = %+v", cfg)
 	}
+
+	// audits.scope override narrows the audit runtime config without changing
+	// agent.clusters.scope, and surfaces immediately as drift.
+	p.Env.Audits.Scope = []env.ClusterScope{{Project: "prod-proj", Location: "us-east1"}, {Fleet: "fleet-host"}}
+	repOver, err := Status(ctx, p, fc)
+	if err != nil {
+		t.Fatalf("Status(audits.scope override): %v", err)
+	}
+	if drift := repOver.Drift(); len(drift) != 1 || drift[0].What != "secret shipmind-audits/posture-audit" || !strings.Contains(drift[0].Detail, "config.json") {
+		t.Fatalf("drift after audits.scope override = %+v", drift)
+	}
+	if err := Up(ctx, p, fc, UpOptions{}); err != nil {
+		t.Fatalf("Up(audits.scope override): %v", err)
+	}
+	syncFakeClusterWrites(t, fc)
+	var cfgOver auditRuntimeConfig
+	if err := json.Unmarshal(fc.secrets["shipmind-audits/posture-audit"]["config.json"], &cfgOver); err != nil {
+		t.Fatalf("unmarshal override config.json: %v", err)
+	}
+	if len(cfgOver.Scope) != 2 || cfgOver.Scope[0].Project != "prod-proj" || cfgOver.Scope[0].Location != "us-east1" || cfgOver.Scope[1].Fleet != "fleet-host" {
+		t.Errorf("override auditRuntimeConfig.Scope = %+v", cfgOver.Scope)
+	}
+	p.Env.Audits.Scope = nil
+	if err := Up(ctx, p, fc, UpOptions{}); err != nil {
+		t.Fatalf("Up(restore default audit scope): %v", err)
+	}
+	syncFakeClusterWrites(t, fc)
 
 	// Status right after Up reports zero drift!
 	fc.workloads = map[string][]cluster.Workload{

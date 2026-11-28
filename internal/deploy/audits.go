@@ -37,9 +37,11 @@ const (
 	switchboardURL  = "http://switchboard.switchboard.svc.cluster.local:8080/v1/messages"
 )
 
-type auditClusterConfig struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
+type auditScopeConfig struct {
+	Project  string `json:"project,omitempty"`
+	Location string `json:"location,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Fleet    string `json:"fleet,omitempty"`
 }
 
 type auditRepoConfig struct {
@@ -48,19 +50,19 @@ type auditRepoConfig struct {
 }
 
 type auditRuntimeConfig struct {
-	Atespace              string               `json:"atespace"`
-	Project               string               `json:"project"`
-	Clusters              []auditClusterConfig `json:"clusters"`
-	Schedule              string               `json:"schedule"`
-	RefreshWindow         string               `json:"refresh_window"`
-	MinConsecutive        int                  `json:"min_consecutive"`
-	DomainUnavailableKeys string               `json:"domain_unavailable_keys"`
-	ExemptionsFile        string               `json:"exemptions_file,omitempty"`
-	LookoutVersion        string               `json:"lookout_version,omitempty"`
-	AlertChannel          string               `json:"alert_channel,omitempty"`
-	SwitchboardURL        string               `json:"switchboard_url,omitempty"`
-	AutoPR                bool                 `json:"auto_pr,omitempty"`
-	Repositories          []auditRepoConfig    `json:"repositories,omitempty"`
+	Atespace              string             `json:"atespace"`
+	Project               string             `json:"project"`
+	Scope                 []auditScopeConfig `json:"scope"`
+	Schedule              string             `json:"schedule"`
+	RefreshWindow         string             `json:"refresh_window"`
+	MinConsecutive        int                `json:"min_consecutive"`
+	DomainUnavailableKeys string             `json:"domain_unavailable_keys"`
+	ExemptionsFile        string             `json:"exemptions_file,omitempty"`
+	LookoutVersion        string             `json:"lookout_version,omitempty"`
+	AlertChannel          string             `json:"alert_channel,omitempty"`
+	SwitchboardURL        string             `json:"switchboard_url,omitempty"`
+	AutoPR                bool               `json:"auto_pr,omitempty"`
+	Repositories          []auditRepoConfig  `json:"repositories,omitempty"`
 }
 
 // Prepare renders and configures scheduled posture audit objects on p when
@@ -100,14 +102,20 @@ func auditSecret(ctx context.Context, p *Plan, c cluster.Cluster, t agent.Tokens
 	}
 	e := p.Env
 	aud := e.Audits
-	clusters := make([]auditClusterConfig, 0, len(e.Agent.Clusters))
-	for _, cl := range e.Agent.Clusters {
-		clusters = append(clusters, auditClusterConfig{Name: cl.Name, Path: cl.Path})
+	effScope := e.EffectiveAuditScope()
+	scope := make([]auditScopeConfig, 0, len(effScope))
+	for _, s := range effScope {
+		scope = append(scope, auditScopeConfig{
+			Project:  s.Project,
+			Location: s.Location,
+			Path:     s.Path,
+			Fleet:    s.Fleet,
+		})
 	}
 	cfg := auditRuntimeConfig{
 		Atespace:              e.Agent.Atespace,
 		Project:               e.Agent.Project,
-		Clusters:              clusters,
+		Scope:                 scope,
 		Schedule:              aud.CronSchedule(),
 		RefreshWindow:         aud.RefreshString(),
 		MinConsecutive:        aud.MinConsecutiveRuns(),

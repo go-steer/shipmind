@@ -7,7 +7,6 @@
       "args": [
         "mcp",
         "--tools=k8s_audit_all,k8s_triage_workload,k8s_resource_spec,k8s_triage_logs,k8s_event_timeline,k8s_list_resources,k8s_state_edges,k8s_triage_delta",
-        "--clusters-from=auto",
         "--max-concurrency-per-cluster=8"
       ]
     },

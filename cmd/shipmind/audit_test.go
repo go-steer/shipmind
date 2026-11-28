@@ -197,8 +197,24 @@ func TestAuditCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	errb.Reset()
-	if code := run([]string{"audit", "run", "-config=" + twoCfgPath, "-ledger=" + ledgerPath, "-kubeconfig=" + kcPath, "-context=demo"}, &out, &errb); code != 2 || !strings.Contains(errb.String(), "single cluster") {
+	if code := run([]string{"audit", "run", "-config=" + twoCfgPath, "-ledger=" + ledgerPath, "-kubeconfig=" + kcPath, "-context=demo"}, &out, &errb); code != 2 || !strings.Contains(errb.String(), "single static cluster") {
 		t.Fatalf("multi-cluster -context = %d, stderr=%s", code, errb.String())
+	}
+
+	// Live project/fleet scope config with explicit -context must also be rejected (exit 2).
+	scopeCfgPath := filepath.Join(dir, "scope.json")
+	scopeCfg := audit.Config{
+		Atespace: "agents",
+		Project:  "p1",
+		Scope:    []audit.ScopeTarget{{Project: "p1"}},
+	}
+	sb, _ := json.Marshal(scopeCfg)
+	if err := os.WriteFile(scopeCfgPath, sb, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	errb.Reset()
+	if code := run([]string{"audit", "run", "-config=" + scopeCfgPath, "-ledger=" + ledgerPath, "-kubeconfig=" + kcPath, "-context=demo"}, &out, &errb); code != 2 || !strings.Contains(errb.String(), "single static cluster") {
+		t.Fatalf("live scope -context = %d, stderr=%s", code, errb.String())
 	}
 
 	// Scan error returns exit code 1 while still printing JSON summary.
@@ -217,15 +233,21 @@ func TestAuditCLI(t *testing.T) {
 	if got := gkeContextForCluster("local"); got != "" {
 		t.Errorf("gkeContextForCluster(local) = %q", got)
 	}
-	envTwo := &env.Env{Agent: env.Agent{Clusters: []env.Cluster{
-		{Name: "c1", Path: "projects/p1/locations/us-central1/clusters/c1"},
-		{Name: "c2", Path: "projects/p2/locations/us-east1/clusters/c2"},
+	envTwo := &env.Env{Agent: env.Agent{Clusters: env.Clusters{
+		Home: "projects/proj-one/locations/us-central1/clusters/c1",
+		Scope: []env.ClusterScope{
+			{Path: "projects/proj-one/locations/us-central1/clusters/c1"},
+			{Path: "projects/proj-two/locations/us-east1/clusters/c2"},
+		},
 	}}}
-	if got := selectedClusterPath(envTwo, ""); got != envTwo.Agent.Clusters[0].Path {
+	if got := selectedClusterPath(envTwo, ""); got != envTwo.Agent.Clusters.Home {
 		t.Errorf("selectedClusterPath default = %q", got)
 	}
-	if got := selectedClusterPath(envTwo, "c2"); got != envTwo.Agent.Clusters[1].Path {
+	if got := selectedClusterPath(envTwo, "c2"); got != "projects/proj-two/locations/us-east1/clusters/c2" {
 		t.Errorf("selectedClusterPath c2 = %q", got)
+	}
+	if got := selectedClusterPath(envTwo, "projects/proj-three/locations/us-west1/clusters/c3"); got != "projects/proj-three/locations/us-west1/clusters/c3" {
+		t.Errorf("selectedClusterPath full path = %q", got)
 	}
 	if got := selectedClusterPath(envTwo, "missing"); got != "" {
 		t.Errorf("selectedClusterPath missing = %q", got)

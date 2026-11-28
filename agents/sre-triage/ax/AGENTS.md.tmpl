@@ -1,25 +1,60 @@
 # Clusters
 
-Incidents can come from more than one GKE cluster. Each incident
-names its own: use its `cluster`, `project` and `zone` (else
-`region`) fields to build the full GKE cluster path:
-`projects/<project>/locations/<zone or region>/clusters/<cluster>`,
-and pass it as `cluster` on `lookout_k8s_*` tools (or `clusters` on
-`leeway_report`).
-If `cluster` is already a full `projects/.../clusters/...` path, use
-it as is.
-
-When an incident has only a bare cluster name, look it up here:
-
-| cluster | full name |
-|---|---|
-{{- range .Clusters }}
-| {{ .Name }} | {{ .Path }} |
+- **Home cluster (context only — never a chat default):** `{{ .Home }}`
+  (this is where the agent runs; do **not** assume a chat question is about
+  the home cluster).
+- **Live cluster scope:**
+{{- range .Scope }}
+  - {{ . }}
 {{- end }}
 
-If the cluster is neither fully named in the incident nor listed
-here, say so in your finding rather than guessing a project or
-location.
+## Incidents and watchboard (machine signals)
+
+Each incident or watchboard signal from `k8s-lookout` names its cluster:
+build the full GKE resource path from its `cluster`, `project`, and `zone`
+(else `region`) fields (`projects/<project>/locations/<zone or region>/clusters/<cluster>`),
+or use `cluster` as is when it is already a full `projects/.../clusters/...`
+path. If a machine signal names only a bare cluster name matching the home
+cluster (`{{ .HomeName }}`), use `{{ .Home }}`; otherwise resolve it via
+`lookout_k8s_list_clusters` or say in your finding that the cluster could
+not be identified rather than guessing a project or location.
+
+## Interactive chat (live scope and verification)
+
+Cluster membership is discovered **live**, not from a fixed table:
+
+1. **Discover before assuming:** When a question does not name a cluster (or
+   gives only a bare cluster name), call `lookout_k8s_list_clusters` to list
+   every currently reachable cluster in the live scope above. Never silently
+   default to the home cluster (`{{ .HomeName }}`).
+{{- if .HasExplicitPaths }}
+   Where the scope lists explicit cluster `path` entries, restrict
+   investigation to those clusters unless the person explicitly asks about
+   another in-scope cluster.
+{{- end }}
+{{- if .HasFleet }}
+   For `fleet:` scope entries, `lookout_k8s_list_clusters` discovers all
+   member clusters; pass their full `projects/<project>/locations/<location>/clusters/<cluster>`
+   paths to `leeway_report` (`clusters` argument).
+{{- end }}
+2. **Re-list when unseen or missing:** If a person names a cluster you have
+   not seen yet in this thread, or if an object/workload is not present in
+   the cluster you checked, call `lookout_k8s_list_clusters` again and
+   search the in-scope clusters to find which cluster actually holds the
+   object. If multiple clusters hold a matching object, state clearly which
+   cluster(s) you read.
+3. **Confirm existence before diagnosing:** Never diagnose a named workload,
+   pod, namespace, or task until a tool call confirms that the object exists
+   in the cluster you are reporting on. If it is not found in any in-scope
+   cluster, state which clusters you checked and that the object was not
+   found.
+4. **Never fabricate a cause:** Never state a root cause, policy error, or
+   cluster state that no tool output actually showed. If the evidence is
+   missing or the required system (such as `ax` task state or Cloud Logging)
+   is outside your tools, say so plainly.
+5. **Use full paths on tool calls:** Pass the full GKE resource path
+   (`projects/<project>/locations/<location>/clusters/<cluster>`) as
+   `cluster` on `lookout_k8s_*` tools and as `clusters` on `leeway_report`.
 
 # Repeated and related signals
 

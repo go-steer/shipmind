@@ -349,7 +349,7 @@ All five panes render in a responsive single-page shell (`internal/console/web/`
 **Goal:** Provide a schema-validated editor over `shipmind.yaml` backed by the drift-free Three-Tier Write Path (§5).
 
 - **Dual form + YAML AST editor:** Edits synchronize two-way between structured cards and raw `shipmind.yaml` text, running `internal/env.Parse` on `/api/v1/config/validate` on every change and pinning errors to exact field paths:
-  - **Cluster Scope ([#104](https://github.com/go-steer/shipmind/issues/104)):** Edit `agent.clusters` (`home` cluster + live `scope` entries `{project, label}`, or legacy `{name, path}` entries with 1-click migration helper).
+  - **Cluster Scope ([#104](https://github.com/go-steer/shipmind/issues/104)):** Edit `agent.clusters` (`home` cluster, optional `regions` egress allowlist, and live `scope` entries `{project, location?}`, `{path}`, or `{fleet}`) plus optional `audits.scope` overrides.
   - **Agent Images, Budgets & Lifecycle:** Configure `agent.incidentImage`, `agent.chatImage`, and `agent.idleSuspendAfter` (`1m`–`20m`, automatically enforcing `>= 5m` whenever `agent.vcs.incidentAutoPR` is enabled).
   - **GitOps VCS & Approval Policy ([#118](https://github.com/go-steer/shipmind/issues/118), [#121](https://github.com/go-steer/shipmind/issues/121)):** Manage `agent.vcs.secret`, allowlisted `<owner>/<repo>` + `baseBranch` entries, `incidentAutoPR` toggle, and `chatAutoApprove` toggle, with clear inline posture callouts explaining which tool calls pause for Slack/console approval vs push `agent/*` branches directly.
   - **Chat & Outbound Alerts:** Edit `slack` (`app`, `command`, `description`, `alertChannel`), with an inline **Preview Slack App Manifest** drawer rendered live by `internal/slackapp`!

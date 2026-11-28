@@ -65,6 +65,10 @@ type Audits struct {
 	// RunnerImage, when set, overrides the posture CronJob's e2e-runner
 	// image (pinned by digest).
 	RunnerImage string `yaml:"runnerImage,omitempty"`
+	// Scope optionally overrides agent.clusters.scope for scheduled posture
+	// sweeps, resolved live at CronJob runtime (#104, #127). When omitted,
+	// scheduled sweeps use agent.clusters.scope.
+	Scope []ClusterScope `yaml:"scope,omitempty"`
 }
 
 // CronSchedule returns Schedule, or DefaultAuditSchedule when unset.
@@ -176,6 +180,9 @@ func (e *Env) checkAudits(idleSuspend time.Duration, fail func(string, ...any)) 
 	}
 	if aud.RunnerImage != "" && !digestRef.MatchString(aud.RunnerImage) {
 		fail("audits.runnerImage %q: want an image pinned by digest", aud.RunnerImage)
+	}
+	if len(aud.Scope) > 0 {
+		checkClusterScope("audits.scope", aud.Scope, fail)
 	}
 	if aud.AutoPR {
 		if e.Agent.VCS == nil {

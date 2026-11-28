@@ -40,7 +40,7 @@ var (
 func canaryEnv() *env.Env {
 	e := testEnv()
 	e.Agent.ChatImage = "registry.example.com/agent@sha256:" + strings.Repeat("2", 64)
-	e.Agent.Clusters = append(e.Agent.Clusters, env.Cluster{Name: "prod", Path: "projects/other-project/locations/europe-west1/clusters/prod"})
+	e.Agent.Clusters.Scope = append(e.Agent.Clusters.Scope, env.ClusterScope{Path: "projects/other-project/locations/europe-west1/clusters/prod"})
 	return e
 }
 
@@ -205,8 +205,12 @@ func TestCanary(t *testing.T) {
 	for _, v := range task.Spec.Env {
 		envs[v.Name] = v.Value
 	}
-	if envs["CORE_AGENT_ATTACH_TOKEN"] != tok.Attach || envs["LEEWAY_CLUSTERS_FROM"] != "example-project,other-project" {
+	if envs["CORE_AGENT_ATTACH_TOKEN"] != tok.Attach ||
+		envs["LOOKOUT_CLUSTERS_FROM"] != "example-project/us-central1,other-project/europe-west1" {
 		t.Errorf("task env %v", envs)
+	}
+	if _, hasLeeway := envs["LEEWAY_CLUSTERS_FROM"]; hasLeeway {
+		t.Errorf("path-only canary task must omit LEEWAY_CLUSTERS_FROM, got %q", envs["LEEWAY_CLUSTERS_FROM"])
 	}
 	ws := decode("workspace.yaml")
 	if !strings.Contains(ws, "kind: Workspace") || !strings.Contains(ws, `name: "`+canaryName+`"`) || strings.Contains(ws, "demo-ws") {
@@ -228,6 +232,17 @@ func TestCanaryDryRun(t *testing.T) {
 	if run.Cluster != "projects/other-project/locations/europe-west1/clusters/prod" || !strings.Contains(string(run.Job), "-cluster="+run.Cluster) {
 		t.Errorf("run %+v", run)
 	}
+
+	// A full GKE resource path works directly even when the cluster is
+	// discovered dynamically through a project or fleet scope entry.
+	o.Cluster = "projects/dyn-proj/locations/us-west1-a/clusters/ephemeral"
+	run, err = Canary(context.Background(), root, canaryEnv(), c, o)
+	if err != nil {
+		t.Fatalf("Canary full path: %v", err)
+	}
+	if run.Cluster != o.Cluster || !strings.Contains(string(run.Job), "-cluster="+o.Cluster) {
+		t.Errorf("run full path %+v", run)
+	}
 }
 
 func TestCanaryRefuses(t *testing.T) {
@@ -240,8 +255,8 @@ func TestCanaryRefuses(t *testing.T) {
 		{"image by tag", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.Image = "registry.example.com/agent:latest" }, "want the candidate agent image pinned by digest"},
 		{"runner by tag", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.RunnerImage = "e2e-runner:latest" }, "want an e2e-runner image pinned by digest"},
 		{"scenario path", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.Scenario = "../x" }, "want a scenario's name"},
-		{"no clusters", func(e *env.Env, _ *CanaryOptions, _ *fakeCluster) { e.Agent.Clusters = nil }, "lists no agent.clusters"},
-		{"unknown cluster", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.Cluster = "staging" }, `cluster "staging" is not in the environment's agent.clusters (demo, prod)`},
+		{"no home cluster", func(e *env.Env, _ *CanaryOptions, _ *fakeCluster) { e.Agent.Clusters = env.Clusters{} }, "sets no agent.clusters.home"},
+		{"unknown cluster", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.Cluster = "staging" }, `cluster "staging" is not agent.clusters.home or an explicit path in agent.clusters.scope`},
 		{"bad archive", func(_ *env.Env, o *CanaryOptions, _ *fakeCluster) { o.Archive = "runs/stage" }, "want gs://bucket/prefix"},
 		{"no tokens", func(_ *env.Env, _ *CanaryOptions, c *fakeCluster) { c.secrets = nil }, "the cluster holds no agent tokens"},
 		{"unreadable tokens", func(_ *env.Env, _ *CanaryOptions, c *fakeCluster) { c.failOn = "secret" }, "secret failed"},

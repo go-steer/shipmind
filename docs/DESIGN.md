@@ -79,13 +79,16 @@ k8s-lookout ──(ax sink: one task per incident)──▶ ax-server ──▶ 
                                                                  │ ax runner
                                                                  │ core-agent (agent recipe)
                                                                  ▼
-GKE APIs (*.gke.goog, container.googleapis.com) / Vertex ◀── egress gateway (injected Google token)
+GKE APIs (*.<region>.gke.goog, container.googleapis.com, gkehub.googleapis.com) / Vertex ◀── egress gateway (injected Google token)
 substrate-scope: watches every actor        switchboard (M3): starts tasks per thread
 ```
 
 Pieces this profile owns beyond the components: the ax Workspace (its
-AGENTS.md maps cluster names to GKE paths and carries the "not every
-signal is new work" rule), the task template, per-task egress policies,
+AGENTS.md records the home cluster context, live cluster discovery scope
+rules, and the "not every signal is new work" rule), the task template,
+per-task egress policies (zone-stripped `*.<region>.gke.goog` wildcards
+scoped to `home` for incidents/watchboard and to `agent.clusters.scope` /
+`agent.clusters.regions` for chat and audits),
 the token refresher that keeps a Google access token in the credential
 provider's Secret, the WorkerPool (sized so each worker holds three
 agents at their limits, which Substrate books against it), and the
@@ -258,8 +261,9 @@ component-specific rules such as ax's Postgres keeping its volume.
 SHA and adds its own values, and a `shipmind.yaml` with what kustomize
 can't carry: the kube context (every command passes it explicitly, never
 the current context), the agent's ax settings (atespace, project,
-Workspace, `agent.incidentImage` and optional `agent.chatImage`, the
-cluster table) and the changes `status` should expect.
+Workspace, `agent.incidentImage` and optional `agent.chatImage`, `agent.clusters`
+with `home`, optional `regions`, and live `scope`) and the changes `status`
+should expect.
 
 **The agent's ax objects.** Two pieces of an environment are not
 Kubernetes manifests. The ax task templates lookout stamps tasks from
@@ -277,7 +281,7 @@ live task template, `status` and `up` refuse rather than rotating it.
 ax's Postgres password is the same kind of value: a Secret
 (`ax-system/ax-postgres`) that `up` generates once, when the render runs
 Postgres, and never rotates, because Postgres keeps the password it
-first booted with; `status` reports it if it is missing. The Workspace (`AGENTS.md`: the cluster table, repeat rule and optional
+first booted with; `status` reports it if it is missing. The Workspace (`AGENTS.md`: the home cluster context, live cluster scope rules, repeat rule and optional
 GitOps / Slack alert instructions, plus `chat-config.json`,
 `incident-config.json`, `watchboard-config.json`, and/or `audit-config.json`
 when `agent.vcs`, `slack.alertChannel`, or `audits.autoPR` is set) is
@@ -287,7 +291,9 @@ an ax object, applied with the ax CLI. Both are rendered from templates in
 **status, up, down.** `shipmind status <env-dir>` renders everything and
 compares it with the cluster, read only: `kubectl diff` for the
 Kubernetes objects, a by-value comparison for the task template Secret
-and the Workspace. Each difference is either expected (listed in
+and the Workspace, and live `container.googleapis.com` / `gkehub.googleapis.com`
+access checks using `ate-credentials/google-token` so missing cross-project
+IAM grants for any in-scope project or fleet surface at deploy time. Each difference is either expected (listed in
 `shipmind.yaml` with its reason) or drift; it exits 3 on drift, so "no
 drift" is a script-checkable gate. `shipmind up` applies the render,
 stores the tokens (generated once, never rotated), applies the task template

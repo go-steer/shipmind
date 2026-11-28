@@ -64,8 +64,9 @@ agent:
   workspace: demo-ws
   incidentImage: registry.example.com/agent@sha256:` + strings.Repeat("0", 64) + `
   clusters:
-    - name: demo
-      path: projects/example-project/locations/us-central1/clusters/demo
+    home: projects/example-project/locations/us-central1/clusters/demo
+    scope:
+      - path: projects/example-project/locations/us-central1/clusters/demo
 `
 	if chatImage {
 		body += "  chatImage: registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64) + "\n"
@@ -116,7 +117,9 @@ func TestScenarioCanaryCommand(t *testing.T) {
 		// With no -runner-image, versions.yaml's e2e-runner pin runs it.
 		{"pinned runner", append(base[:len(base):len(base)], "-dry-run", envDir, "posture-audit"), nil, 0,
 			"ghcr.io/go-steer/shipmind/e2e-runner:", "nothing applied"},
-		{"unknown cluster", append(base[:len(base):len(base)], "-runner-image", runner, "-cluster", "prod", envDir, "posture-audit"), nil, 1, "", `cluster "prod" is not in the environment's agent.clusters`},
+		{"unknown cluster", append(base[:len(base):len(base)], "-runner-image", runner, "-cluster", "prod", envDir, "posture-audit"), nil, 1, "", `cluster "prod" is not agent.clusters.home or an explicit path in agent.clusters.scope`},
+		{"full path cluster", append(base[:len(base):len(base)], "-runner-image", runner, "-cluster", "projects/other-proj/locations/us-east1/clusters/prod", "-dry-run", envDir, "posture-audit"), nil, 0,
+			"-cluster=projects/other-proj/locations/us-east1/clusters/prod", "would ask about projects/other-proj/locations/us-east1/clusters/prod"},
 		{"no tokens", append(base[:len(base):len(base)], "-runner-image", runner, envDir, "posture-audit"), func(f *canaryFake) { f.noTokens = true }, 1, "", "the cluster holds no agent tokens"},
 		{"starts", append(base[:len(base):len(base)], "-runner-image", runner, envDir, "posture-audit"), nil, 0,
 			"-a agents delete task canary-posture-audit-", ""},

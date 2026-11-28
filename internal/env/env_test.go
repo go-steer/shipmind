@@ -30,8 +30,9 @@ agent:
   workspace: demo-ws
   incidentImage: registry.example.com/agent@` + digest + `
   clusters:
-    - name: demo
-      path: projects/example-project/locations/us-central1/clusters/demo
+    home: projects/example-project/locations/us-central1/clusters/demo
+    scope:
+      - project: example-project
 expect:
   - object: apps.v1.Deployment.ns.name
     reason: image moves to a digest
@@ -42,13 +43,24 @@ func TestParseGood(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if e.Context != "demo" || e.Agent.Clusters[0].Name != "demo" {
+	if e.Context != "demo" || e.Agent.Clusters.HomeName() != "demo" || e.Agent.Clusters.HomeRegion() != "us-central1" {
 		t.Errorf("env = %+v", e)
 	}
 	if r, ok := e.Expected("apps.v1.Deployment.ns.name"); !ok || r != "image moves to a digest" {
 		t.Errorf("Expected = %q, %v", r, ok)
 	}
-	for _, id := range []string{"secret lookout-ax/lookout-ax-agent", "workspace agents/demo-ws", "substrate DaemonSet/ate-system/atelet", "rollout Deployment/lookout-ax/lookout-ax", "rbac.authorization.k8s.io.v1.ClusterRole..lookout-ax-watch", "v1.Namespace..demo"} {
+	for _, id := range []string{
+		"secret lookout-ax/lookout-ax-agent",
+		"workspace agents/demo-ws",
+		"substrate DaemonSet/ate-system/atelet",
+		"rollout Deployment/lookout-ax/lookout-ax",
+		"scope access",
+		"scope project/example-project",
+		"scope project/example-project/us-central1-b",
+		"scope fleet/fleet-host-proj",
+		"rbac.authorization.k8s.io.v1.ClusterRole..lookout-ax-watch",
+		"v1.Namespace..demo",
+	} {
 		doc := good + "  - object: " + id + "\n    reason: test\n"
 		if _, err := Parse(strings.NewReader(doc)); err != nil {
 			t.Errorf("expect %q rejected: %v", id, err)
@@ -84,12 +96,23 @@ func TestParseErrors(t *testing.T) {
 		{"idle too short", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: 30s\n  clusters:\n", 1), "agent.idleSuspendAfter"},
 		{"idle too long", strings.Replace(good, "  clusters:\n", "  idleSuspendAfter: 30m\n  clusters:\n", 1), "agent.idleSuspendAfter"},
 		{"chat image", strings.Replace(good, "  clusters:\n", "  chatImage: registry.example.com/agent:latest\n  clusters:\n", 1), "agent.chatImage"},
-		{"no clusters", strings.Replace(good, "  clusters:\n    - name: demo\n      path: projects/example-project/locations/us-central1/clusters/demo\n", "  clusters: []\n", 1), "at least one cluster"},
-		{"cluster path", strings.Replace(good, "clusters/demo\n", "clusters/other\n", 1), "agent.clusters[0].path"},
-		{"cluster name", strings.Replace(good, "- name: demo", "- name: Demo", 1), "agent.clusters[0].name"},
-		{"duplicate cluster", strings.Replace(good, "expect:",
-			"    - name: demo\n      path: projects/example-project/locations/us-central1/clusters/demo\nexpect:", 1),
-			`agent.clusters: "demo" listed twice`},
+		{"legacy list clusters", strings.Replace(good, "  clusters:\n    home: projects/example-project/locations/us-central1/clusters/demo\n    scope:\n      - project: example-project\n", "  clusters:\n    - name: demo\n      path: projects/example-project/locations/us-central1/clusters/demo\n", 1), "cannot unmarshal"},
+		{"missing home", strings.Replace(good, "    home: projects/example-project/locations/us-central1/clusters/demo\n", "", 1), "agent.clusters.home"},
+		{"bad home location", strings.Replace(good, "locations/us-central1/clusters/demo", "locations/bad/clusters/demo", 1), "agent.clusters.home"},
+		{"no scope", strings.Replace(good, "    scope:\n      - project: example-project\n", "    scope: []\n", 1), "at least one scope entry"},
+		{"region is zone", strings.Replace(good, "    scope:\n", "    regions: [us-central1-a]\n    scope:\n", 1), "agent.clusters.regions[0]"},
+		{"duplicate region", strings.Replace(good, "    scope:\n", "    regions: [us-central1, us-central1]\n    scope:\n", 1), `agent.clusters.regions: "us-central1" listed twice`},
+		{"scope empty entry", strings.Replace(good, "      - project: example-project\n", "      - {}\n", 1), "set exactly one of project, path, or fleet"},
+		{"scope two kinds", strings.Replace(good, "      - project: example-project\n", "      - project: example-project\n        fleet: fleet-host\n", 1), "set exactly one of project, path, or fleet"},
+		{"scope location without project", strings.Replace(good, "      - project: example-project\n", "      - fleet: fleet-host\n        location: us-central1\n", 1), "agent.clusters.scope[0].location: only valid with project"},
+		{"scope bad project", strings.Replace(good, "      - project: example-project\n", "      - project: Bad\n", 1), "agent.clusters.scope[0].project"},
+		{"scope bad location", strings.Replace(good, "      - project: example-project\n", "      - project: example-project\n        location: \"-\"\n", 1), "agent.clusters.scope[0].location"},
+		{"scope bad path", strings.Replace(good, "      - project: example-project\n", "      - path: projects/x/locations/us-central1/clusters/demo\n", 1), "agent.clusters.scope[0].path"},
+		{"scope bad fleet", strings.Replace(good, "      - project: example-project\n", "      - fleet: Bad\n", 1), "agent.clusters.scope[0].fleet"},
+		{"scope duplicate project", strings.Replace(good, "expect:", "      - project: example-project\nexpect:", 1), "agent.clusters.scope: duplicate entry"},
+		{"scope duplicate path", strings.Replace(good, "      - project: example-project\n", "      - path: projects/example-project/locations/us-central1/clusters/demo\n      - path: projects/example-project/locations/us-central1/clusters/demo\n", 1), "agent.clusters.scope: duplicate entry"},
+		{"scope duplicate fleet", strings.Replace(good, "      - project: example-project\n", "      - fleet: fleet-host\n      - fleet: fleet-host\n", 1), "agent.clusters.scope: duplicate entry"},
+		{"scope unknown label field", strings.Replace(good, "expect:", "        label: env=prod\nexpect:", 1), "field label not found"},
 		{"expect object", strings.Replace(good, "object: apps.v1.Deployment.ns.name", "object: apps/v1 Deployment", 1), "expect[0].object"},
 		{"expect reason", strings.Replace(good, "reason: image moves to a digest", "reason: ''", 1), "say why"},
 		{"expect agent id", strings.Replace(good, "object: apps.v1.Deployment.ns.name", "object: secret lookout-ax", 1), "expect[0].object"},
@@ -365,5 +388,118 @@ func TestLoadAuditExemptionsFile(t *testing.T) {
 	}
 	if _, err := Load(dir); err != nil {
 		t.Fatalf("Load valid exemptions = %v", err)
+	}
+}
+
+func TestClustersScopeAndHelpers(t *testing.T) {
+	doc := `context: demo
+agent:
+  atespace: agents
+  project: example-project
+  workspace: demo-ws
+  incidentImage: registry.example.com/agent@` + digest + `
+  clusters:
+    home: projects/example-project/locations/us-central1-b/clusters/demo
+    regions: [us-central1, europe-west1]
+    scope:
+      - project: example-project
+      - project: team-a-prod
+        location: europe-west1-c
+      - path: projects/team-b-prod/locations/us-east1/clusters/prod
+      - fleet: fleet-host-prod
+audits:
+  scope:
+    - path: projects/example-project/locations/us-central1-b/clusters/demo
+`
+	e, err := Parse(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("Parse rich scope: %v", err)
+	}
+	c := e.Agent.Clusters
+	if c.HomeName() != "demo" || c.HomeRegion() != "us-central1" {
+		t.Errorf("home name/region = %q/%q", c.HomeName(), c.HomeRegion())
+	}
+	if got := LocationRegion("us-central1"); got != "us-central1" {
+		t.Errorf("LocationRegion(us-central1) = %q", got)
+	}
+	if got := LocationRegion("us-central1-b"); got != "us-central1" {
+		t.Errorf("LocationRegion(us-central1-b) = %q", got)
+	}
+	if (Clusters{}).HomeRegion() != "" || (Clusters{}).HomeName() != "" {
+		t.Error("empty Clusters should return empty HomeRegion/HomeName")
+	}
+	if !c.Scope[0].IsBroad() || c.Scope[1].IsBroad() || c.Scope[2].IsBroad() || !c.Scope[3].IsBroad() {
+		t.Errorf("IsBroad flags unexpected for %+v", c.Scope)
+	}
+	for i, want := range []string{
+		"project `example-project` (all locations)",
+		"project `team-a-prod` (location `europe-west1-c`)",
+		"cluster `projects/team-b-prod/locations/us-east1/clusters/prod`",
+		"fleet `fleet-host-prod`",
+	} {
+		if got := c.Scope[i].Display(); got != want {
+			t.Errorf("Scope[%d].Display() = %q, want %q", i, got, want)
+		}
+	}
+	if got := (ClusterScope{}).Display(); got != "" {
+		t.Errorf("empty Display() = %q", got)
+	}
+
+	// EffectiveAuditScope returns audits.scope override when set, else agent.clusters.scope.
+	if got := e.EffectiveAuditScope(); len(got) != 1 || got[0].Path != c.Home {
+		t.Errorf("EffectiveAuditScope override = %+v", got)
+	}
+	e.Audits.Scope = nil
+	if got := e.EffectiveAuditScope(); len(got) != 4 {
+		t.Errorf("EffectiveAuditScope fallback = %+v", got)
+	}
+
+	// Invalid audits.scope fails validation.
+	badAuditScope := strings.Replace(good, "expect:", "audits:\n  scope:\n    - project: Bad\nexpect:", 1)
+	if _, err := Parse(strings.NewReader(badAuditScope)); err == nil || !strings.Contains(err.Error(), "audits.scope[0].project") {
+		t.Errorf("bad audits.scope = %v", err)
+	}
+
+	// ResolveCluster: empty -> home, full path -> direct, bare home/path -> resolved, unknown/ambiguous/no-home -> error.
+	if got, err := c.ResolveCluster(""); err != nil || got != c.Home {
+		t.Errorf("ResolveCluster('') = %q, %v", got, err)
+	}
+	const fullOther = "projects/fleet-member-1/locations/asia-east1/clusters/svc"
+	if got, err := c.ResolveCluster(fullOther); err != nil || got != fullOther {
+		t.Errorf("ResolveCluster(full) = %q, %v", got, err)
+	}
+	if got, err := c.ResolveCluster("demo"); err != nil || got != c.Home {
+		t.Errorf("ResolveCluster(demo) = %q, %v", got, err)
+	}
+	if got, err := c.ResolveCluster("prod"); err != nil || got != "projects/team-b-prod/locations/us-east1/clusters/prod" {
+		t.Errorf("ResolveCluster(prod) = %q, %v", got, err)
+	}
+	if _, err := c.ResolveCluster("missing"); err == nil || !strings.Contains(err.Error(), "pass a full") {
+		t.Errorf("ResolveCluster(missing) = %v", err)
+	}
+	if _, err := (Clusters{}).ResolveCluster(""); err == nil || !strings.Contains(err.Error(), "agent.clusters.home") {
+		t.Errorf("ResolveCluster(empty home) = %v", err)
+	}
+	ambig := Clusters{
+		Home: "projects/example-project/locations/us-central1/clusters/prod",
+		Scope: []ClusterScope{
+			{Path: "projects/other-project/locations/europe-west1/clusters/prod"},
+		},
+	}
+	if _, err := ambig.ResolveCluster("prod"); err == nil || !strings.Contains(err.Error(), "matches multiple paths") {
+		t.Errorf("ResolveCluster(ambiguous) = %v", err)
+	}
+
+	// GCPRegions must be sorted, unique, and valid region names (no zones).
+	if len(GCPRegions) < 40 {
+		t.Fatalf("GCPRegions len = %d, want ~43", len(GCPRegions))
+	}
+	for i, r := range GCPRegions {
+		if !regionRE.MatchString(r) {
+			t.Errorf("GCPRegions[%d] %q does not match regionRE", i, r)
+		}
+		if i > 0 && GCPRegions[i-1] >= r {
+			t.Errorf("GCPRegions not strictly sorted at %d: %q >= %q", i, GCPRegions[i-1], r)
+		}
 	}
 }

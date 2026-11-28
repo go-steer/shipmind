@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/go-steer/shipmind/internal/cluster"
+	"github.com/go-steer/shipmind/internal/deploy"
 	"github.com/go-steer/shipmind/internal/manifests"
 )
 
@@ -163,7 +164,10 @@ func TestVendorAndCheck(t *testing.T) {
 }
 
 // deployFake is a cluster with one drifted object and nothing else.
-type deployFake struct{ failDiff bool }
+type deployFake struct {
+	failDiff    bool
+	googleToken string
+}
 
 func (f deployFake) Diff(context.Context, []byte) ([]string, error) {
 	if f.failDiff {
@@ -174,7 +178,10 @@ func (f deployFake) Diff(context.Context, []byte) ([]string, error) {
 func (deployFake) Apply(context.Context, []byte, bool) (string, error) { return "applied\n", nil }
 func (deployFake) Delete(context.Context, []byte) (string, error)      { return "deleted\n", nil }
 func (deployFake) Namespaces(context.Context) ([]string, error)        { return []string{"demo"}, nil }
-func (deployFake) Secret(context.Context, string, string) (map[string][]byte, bool, error) {
+func (f deployFake) Secret(_ context.Context, ns, name string) (map[string][]byte, bool, error) {
+	if f.googleToken != "" && ns == deploy.CredentialsNamespace && name == deploy.GoogleTokenSecret {
+		return map[string][]byte{"token": []byte(f.googleToken)}, true, nil
+	}
 	return nil, false, nil
 }
 func (deployFake) RolloutStatus(context.Context, string, string) error  { return nil }
@@ -244,8 +251,9 @@ agent:
   workspace: demo-ws
   incidentImage: registry.example.com/agent@sha256:`+strings.Repeat("0", 64)+`
   clusters:
-    - name: demo
-      path: projects/example-project/locations/us-central1/clusters/demo
+    home: projects/example-project/locations/us-central1/clusters/demo
+    scope:
+      - path: projects/example-project/locations/us-central1/clusters/demo
 `)
 	return root, envDir
 }
@@ -254,8 +262,9 @@ func TestDeployCommands(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
-	old := newCluster
-	t.Cleanup(func() { newCluster = old })
+	old, oldScope := newCluster, scopeChecker
+	t.Cleanup(func() { newCluster, scopeChecker = old, oldScope })
+	scopeChecker = nil
 	fake := deployFake{}
 	newCluster = func(string) cluster.Cluster { return fake }
 	root, envDir := deployRoot(t)
@@ -315,7 +324,24 @@ func TestDeployCommands(t *testing.T) {
 	if code := run([]string{"status", "-root", root, "-any-ref", envDir}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "diff failed") {
 		t.Errorf("status with a failing cluster: exit %d, stderr %q", code, errOut.String())
 	}
+
+	// Scope access check wired via scopeChecker reports missing IAM grants as drift.
+	scopeChecker = cliScopeChecker{projectErr: errors.New("cannot list clusters")}
+	newCluster = func(string) cluster.Cluster { return deployFake{googleToken: "tok"} }
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"status", "-root", root, "-any-ref", envDir}, &out, &errOut); code != exitDrift || !strings.Contains(out.String(), "DRIFT     scope project/example-project/us-central1: cannot list clusters") {
+		t.Errorf("scope access drift: exit %d\nstdout %s\nstderr %s", code, out.String(), errOut.String())
+	}
 }
+
+type cliScopeChecker struct{ projectErr, fleetErr error }
+
+func (c cliScopeChecker) CheckProject(context.Context, string, string, string) error {
+	return c.projectErr
+}
+
+func (c cliScopeChecker) CheckFleet(context.Context, string, string) error { return c.fleetErr }
 
 func readFile(t *testing.T, p string) []byte {
 	t.Helper()

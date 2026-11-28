@@ -84,8 +84,8 @@ func runAuditCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "shipmind audit run: %v\n", err)
 		return 1
 	}
-	if !*inCluster && *kubeContext != "" && len(cfg.Clusters) > 1 {
-		fmt.Fprintln(stderr, "shipmind audit run: -context can only be used with a single cluster; omit -context to select per-cluster contexts from -kubeconfig")
+	if !*inCluster && *kubeContext != "" && !cfg.SingleStaticCluster() {
+		fmt.Fprintln(stderr, "shipmind audit run: -context can only be used with a single static cluster; omit -context to select per-cluster contexts from -kubeconfig")
 		return 2
 	}
 

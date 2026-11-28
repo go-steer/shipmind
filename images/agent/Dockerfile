@@ -23,10 +23,12 @@
 #                   elicitation in headless mode (#144)
 #   lookout         built (-tags allproviders) from k8s-lookout at its pin
 #                   in versions.yaml; gke-triage-f and gke-watchboard
-#                   (8-tool trimmed triage surface) and gke-chat (9-tool
-#                   audit + triage surface) run lookout mcp
-#                   --clusters-from=auto as a stdio MCP server
-#                   (#127, #131, #133, #144)
+#                   (8-tool trimmed triage surface) run lookout mcp
+#                   --clusters-from=auto as a stdio MCP server, while
+#                   gke-chat (9-tool audit + triage surface) omits
+#                   --clusters-from so LOOKOUT_CLUSTERS_FROM controls live
+#                   multi-project/fleet discovery (falling back to auto
+#                   under injected Google auth; #104, #127, #131, #133, #144)
 #   leeway          built from leeway at its pin in versions.yaml; gke-chat
 #                   runs leeway mcp --timeout=20s --parallelism=32 as a
 #                   stdio MCP server (#127, #144)
@@ -159,13 +161,14 @@ RUN set -e; \
     grep -q '^8 tools ' /tmp/lookout-triage-tools; \
     if grep -q '^k8s_scan ' /tmp/lookout-triage-tools; then echo "gke-triage-f must not expose k8s_scan"; exit 1; fi; \
     if grep -q '^k8s_audit_all ' /tmp/lookout-triage-tools; then echo "gke-triage-f must not expose k8s_audit_all"; exit 1; fi; \
-    lookout $(jq -r '.servers.lookout.args | join(" ")' /in/gke-chat/.agents/mcp.json) --list-tools > /tmp/lookout-chat-tools; \
+    CORE_AGENT_GOOGLE_AUTH=injected lookout $(jq -r '.servers.lookout.args | join(" ")' /in/gke-chat/.agents/mcp.json) --list-tools > /tmp/lookout-chat-tools; \
     for t in k8s_list_clusters k8s_audit_all k8s_triage_workload k8s_resource_spec k8s_triage_logs k8s_event_timeline k8s_list_resources k8s_state_edges k8s_triage_delta; do \
       grep -q "^${t} " /tmp/lookout-chat-tools; \
     done; \
     grep -q '^9 tools ' /tmp/lookout-chat-tools; \
     if grep -q '^k8s_scan ' /tmp/lookout-chat-tools; then echo "gke-chat must not expose k8s_scan"; exit 1; fi; \
-    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | leeway $(jq -r '.servers.leeway.args | join(" ")' /in/gke-chat/.agents/mcp.json) | grep -q '"name":"report"'; \
+    LOOKOUT_CLUSTERS_FROM="proj-a,proj-b/us-central1,fleet:host-proj" lookout $(jq -r '.servers.lookout.args | join(" ")' /in/gke-chat/.agents/mcp.json) --list-tools | grep -q '^9 tools '; \
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | LEEWAY_CLUSTERS_FROM="proj-a,proj-b/us-central1" leeway $(jq -r '.servers.leeway.args | join(" ")' /in/gke-chat/.agents/mcp.json) | grep -q '"name":"report"'; \
     mkdir -p /out/gke-triage-f/.agents/plans /out/gke-triage-f/.agents/skills; \
     cp -a /in/gke-triage-f/.agents/. /out/gke-triage-f/.agents/; \
     cp -a /lookout-skills/k8s-triage /lookout-skills/playbooks /out/gke-triage-f/.agents/skills/; \
@@ -225,8 +228,8 @@ ARG TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator
 ARG VCS_TASK_FLAGS="--provider=vertex --model=gemini-3.8-flash --checkpoint=operator --disable-tools=bash,read_many_files,view_file_outline,delete_file,stat,list_dir,glob --agentic-tools=false --no-background-agents --no-pricing-refresh"
 RUN set -e; mkdir -p /tmp/content; \
     boot() { \
-      label="$1"; cfg="$2"; extra="$3"; flags="$4"; recipe="$5"; \
-      SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected CORE_AGENT_GITHUB_TOKEN=injected CORE_AGENT_SWITCHBOARD_TOKEN=injected CORE_AGENT_TRUSTED_DIRS="/tmp,/out/${recipe}/.agents" GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \
+      label="$1"; cfg="$2"; extra="$3"; flags="$4"; recipe="$5"; scope="$6"; lscope="$7"; \
+      SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected CORE_AGENT_GITHUB_TOKEN=injected CORE_AGENT_SWITCHBOARD_TOKEN=injected CORE_AGENT_TRUSTED_DIRS="/tmp,/out/${recipe}/.agents" GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global LOOKOUT_CLUSTERS_FROM="$scope" LEEWAY_CLUSTERS_FROM="$lscope" \
         core-agent -c "$cfg" $extra $flags --no-repl \
           --attach-listen=127.0.0.1:8484 --attach-token=SMOKE_TOKEN \
           --session-db --session-db-path="/tmp/smoke-$label.db" --agents-content-dir=/tmp/content \
@@ -270,9 +273,10 @@ RUN set -e; mkdir -p /tmp/content; \
       echo "recipe $label: core-agent starts and answers the router"; \
     }; \
     for b in gke-triage-f gke-chat; do \
-      boot "$b" "/out/$b/.agents/config.json" "" "$TASK_FLAGS" "$b"; \
+      boot "$b" "/out/$b/.agents/config.json" "" "$TASK_FLAGS" "$b" "" ""; \
       jq '.permissions.allow += ["spawn_agent:propose-change","edit_file:/tmp/repos/*","write_file:/tmp/repos/*","vcs_commit:*","alert:slack"] | . + {"vcs":{"workspace_dir":"/tmp/repos","forges":[{"name":"github","provider":"github","token_env":"CORE_AGENT_GITHUB_TOKEN"}],"repositories":[{"forge":"github","repository":"example/repo","role":"gitops","base_branch":"main"}]},"subagents":[{"name":"propose-change","description":"Opens GitOps PRs","instructions":"@include builtin:propose-change\n","mode":"chat","capability":"change_executor","tools":["read_file","edit_file","write_file","grep","vcs_capabilities","vcs_clone","vcs_status","vcs_diff","vcs_log","vcs_commit","vcs_publish","vcs_propose","vcs_proposal_view","vcs_proposal_list"],"mcp":[],"skills":[],"budgets":{"max_turns":15,"max_wallclock_seconds":180}}],"alerts":{"rate_limit_per_target":"5/min","targets":[{"name":"slack","kind":"webhook","template":"switchboard","conversation":"C0123456789","url":"http://switchboard.switchboard.svc.cluster.local:8080/v1/messages","auth":{"bearer_env":"CORE_AGENT_SWITCHBOARD_TOKEN"}}]}}' "/out/$b/.agents/config.json" > "/tmp/aug-$b.json"; \
-      boot "$b-augmented" "/tmp/aug-$b.json" "--agents-dir=/out/$b/.agents" "$VCS_TASK_FLAGS" "$b"; \
+      aug_scope=""; aug_lscope=""; if [ "$b" = "gke-chat" ]; then aug_scope="smoke,smoke-b/us-central1,fleet:smoke-host"; aug_lscope="smoke,smoke-b/us-central1"; fi; \
+      boot "$b-augmented" "/tmp/aug-$b.json" "--agents-dir=/out/$b/.agents" "$VCS_TASK_FLAGS" "$b" "$aug_scope" "$aug_lscope"; \
     done
 # Boot-check gke-watchboard (#133): base and alert-only augmented (never
 # VCS or propose-change), verifying lookout-only 8-tool MCP registration,
