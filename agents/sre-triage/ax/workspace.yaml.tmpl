@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The ax Workspace mounted into every incident and chat task at
+# The ax Workspace mounted into every incident, watchboard, and chat task at
 # /workspace/repo; core-agent loads its AGENTS.md via --agents-content-dir.
-# When agent.vcs or slack.alertChannel is set, chat-config.json and/or
-# incident-config.json carry the augmented core-agent configs layered on
-# top of the baked bundle recipes.
+# When agent.vcs, slack.alertChannel, or audits.autoPR is set,
+# chat-config.json, incident-config.json, watchboard-config.json, and/or
+# audit-config.json carry the augmented core-agent configs layered on top of
+# the baked bundle recipes.
 apiVersion: ax.io/v1alpha1
 kind: Workspace
 metadata:
@@ -33,6 +34,10 @@ spec:
 {{- if .IncidentConfig }}
     - path: incident-config.json
       content: {{ printf "%q" .IncidentConfig }}
+{{- end }}
+{{- if .WatchboardConfig }}
+    - path: watchboard-config.json
+      content: {{ printf "%q" .WatchboardConfig }}
 {{- end }}
 {{- if .AuditConfig }}
     - path: audit-config.json

@@ -13,9 +13,10 @@
 # limitations under the License.
 
 # k8s-lookout with the ax sink: every incident it opens becomes an ax
-# task, a copy of the task template in Secret lookout-ax-agent, which
-# also holds the agent's tokens and so is never rendered from this
-# repository (see kustomization.yaml).
+# task from task.yaml, and each cluster's watchboard runs from
+# watchboard-task.yaml (#133). Both templates live in Secret
+# lookout-ax-agent alongside the agent's attach token and so are never
+# rendered from this repository (see kustomization.yaml).
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -107,6 +108,7 @@ spec:
             - --sink=ax
             - --ax-server=ax-server.ax-system.svc.cluster.local:8080
             - --ax-task-template=/etc/lookout-ax/task.yaml
+            - --ax-watchboard-task-template=/etc/lookout-ax/watchboard-task.yaml
             - --token-env=AGENT_TOKEN
             - --log-level=debug
             # Reactive sources only: topology-drift and compute-class are
@@ -152,6 +154,8 @@ spec:
             items:
               - key: task.yaml
                 path: task.yaml
+              - key: watchboard-task.yaml
+                path: watchboard-task.yaml
         - name: podidentity
           projected:
             sources:

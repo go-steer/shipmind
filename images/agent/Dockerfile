@@ -22,25 +22,28 @@
 #                   drops the unused terminal UI (~5 MB) and declines MCP
 #                   elicitation in headless mode (#144)
 #   lookout         built (-tags allproviders) from k8s-lookout at its pin
-#                   in versions.yaml; both gke-triage-f (8-tool trimmed
-#                   triage surface) and gke-chat (9-tool audit + triage
-#                   surface) run lookout mcp --clusters-from=auto as a
-#                   stdio MCP server (#127, #131, #144)
+#                   in versions.yaml; gke-triage-f and gke-watchboard
+#                   (8-tool trimmed triage surface) and gke-chat (9-tool
+#                   audit + triage surface) run lookout mcp
+#                   --clusters-from=auto as a stdio MCP server
+#                   (#127, #131, #133, #144)
 #   leeway          built from leeway at its pin in versions.yaml; gke-chat
 #                   runs leeway mcp --timeout=20s --parallelism=32 as a
 #                   stdio MCP server (#127, #144)
 #   /opt/core-agent/recipes/<bundle>
-#                   both gke-triage-f and gke-chat are authored natively
-#                   under agents/sre-triage/<bundle>/.agents/ (flat main
-#                   agents holding lookout — and leeway on gke-chat —
-#                   directly, with zero hosted GKE MCP server and
-#                   propose-change layered at deploy time; #131, #144),
-#                   carrying pinned k8s-lookout skills from the lookout
-#                   build stage. Each recipe is booted once (no network
-#                   needed) until its attach listener answers as
-#                   Substrate's router (Host check, core-agent#1358),
-#                   verifying MCP server startup, loaded AGENTS.md,
-#                   bundled skills, and exact tool registration.
+#                   gke-triage-f, gke-chat, and gke-watchboard are authored
+#                   natively under agents/sre-triage/<bundle>/.agents/ (flat
+#                   main agents holding lookout — and leeway on gke-chat —
+#                   directly, with zero hosted GKE MCP server;
+#                   propose-change is layered at deploy time on gke-triage-f
+#                   and gke-chat, while gke-watchboard stays strictly
+#                   read-only / alert-only; #131, #133, #144), carrying
+#                   pinned k8s-lookout skills from the lookout build stage.
+#                   Each recipe is booted once (no network needed) until its
+#                   attach listener answers as Substrate's router (Host
+#                   check, core-agent#1358), verifying MCP server startup,
+#                   loaded AGENTS.md, bundled skills, and exact tool
+#                   registration.
 #
 # The pins arrive as build arguments read from versions.yaml
 # (build-args.sh); this file has no defaults for them, so they can't
@@ -187,6 +190,30 @@ RUN set -e; \
     jq -e '(.servers | keys | sort) == ["leeway", "lookout"] and .servers.leeway.agentic_never == true and (.servers.lookout.agentic_never // false) == false' /out/gke-chat/.agents/mcp.json >/dev/null; \
     test ! -d /out/gke-chat/.agents/subagents; \
     test ! -d /out/gke-chat/.agents/roots
+# Dedicated native gke-watchboard recipe (#133): lookout-only stdio MCP
+# (8 tools including k8s_list_clusters) plus pinned k8s-triage skill and
+# shared playbooks (under k8s-triage/references/playbooks for ADK's
+# load_skill_resource) from the lookout build stage.
+RUN set -e; \
+    lookout $(jq -r '.servers.lookout.args | join(" ")' /in/gke-watchboard/.agents/mcp.json) --list-tools > /tmp/watchboard-lookout-tools; \
+    for t in k8s_list_clusters k8s_triage_workload k8s_resource_spec k8s_triage_logs k8s_event_timeline k8s_list_resources k8s_state_edges k8s_triage_delta; do \
+      grep -q "^${t} " /tmp/watchboard-lookout-tools; \
+    done; \
+    grep -q '^8 tools ' /tmp/watchboard-lookout-tools; \
+    if grep -q '^k8s_scan ' /tmp/watchboard-lookout-tools; then echo "gke-watchboard must not expose k8s_scan"; exit 1; fi; \
+    if grep -q '^k8s_audit_all ' /tmp/watchboard-lookout-tools; then echo "gke-watchboard must not expose k8s_audit_all"; exit 1; fi; \
+    mkdir -p /out/gke-watchboard/.agents/plans /out/gke-watchboard/.agents/skills; \
+    cp -a /in/gke-watchboard/.agents/. /out/gke-watchboard/.agents/; \
+    cp -a /lookout-skills/k8s-triage /lookout-skills/playbooks /out/gke-watchboard/.agents/skills/; \
+    mkdir -p /out/gke-watchboard/.agents/skills/k8s-triage/references/playbooks; \
+    cp -a /lookout-skills/playbooks/. /out/gke-watchboard/.agents/skills/k8s-triage/references/playbooks/; \
+    test -f /out/gke-watchboard/.agents/AGENTS.md; \
+    test -f /out/gke-watchboard/.agents/config.json; \
+    test -f /out/gke-watchboard/.agents/skills/k8s-triage/SKILL.md; \
+    test -f /out/gke-watchboard/.agents/skills/k8s-triage/references/playbooks/hpa-thrash.md; \
+    jq -e '(.servers | keys | sort) == ["lookout"] and (.servers.lookout.agentic_never // false) == false' /out/gke-watchboard/.agents/mcp.json >/dev/null; \
+    test ! -d /out/gke-watchboard/.agents/subagents; \
+    test ! -d /out/gke-watchboard/.agents/roots
 # The Host Substrate's router sends (switchboard's and lookout's
 # default router URL; the nightly's too).
 ARG ROUTER_HOST=atenet-router.ate-system.svc.cluster.local
@@ -247,6 +274,51 @@ RUN set -e; mkdir -p /tmp/content; \
       jq '.permissions.allow += ["spawn_agent:propose-change","edit_file:/tmp/repos/*","write_file:/tmp/repos/*","vcs_commit:*","alert:slack"] | . + {"vcs":{"workspace_dir":"/tmp/repos","forges":[{"name":"github","provider":"github","token_env":"CORE_AGENT_GITHUB_TOKEN"}],"repositories":[{"forge":"github","repository":"example/repo","role":"gitops","base_branch":"main"}]},"subagents":[{"name":"propose-change","description":"Opens GitOps PRs","instructions":"@include builtin:propose-change\n","mode":"chat","capability":"change_executor","tools":["read_file","edit_file","write_file","grep","vcs_capabilities","vcs_clone","vcs_status","vcs_diff","vcs_log","vcs_commit","vcs_publish","vcs_propose","vcs_proposal_view","vcs_proposal_list"],"mcp":[],"skills":[],"budgets":{"max_turns":15,"max_wallclock_seconds":180}}],"alerts":{"rate_limit_per_target":"5/min","targets":[{"name":"slack","kind":"webhook","template":"switchboard","conversation":"C0123456789","url":"http://switchboard.switchboard.svc.cluster.local:8080/v1/messages","auth":{"bearer_env":"CORE_AGENT_SWITCHBOARD_TOKEN"}}]}}' "/out/$b/.agents/config.json" > "/tmp/aug-$b.json"; \
       boot "$b-augmented" "/tmp/aug-$b.json" "--agents-dir=/out/$b/.agents" "$VCS_TASK_FLAGS" "$b"; \
     done
+# Boot-check gke-watchboard (#133): base and alert-only augmented (never
+# VCS or propose-change), verifying lookout-only 8-tool MCP registration,
+# native AGENTS.md, and k8s-triage skill loading (with playbooks beside it).
+RUN set -e; mkdir -p /tmp/content; \
+    boot_wb() { \
+      label="$1"; cfg="$2"; extra="$3"; \
+      SMOKE_TOKEN=smoke CORE_AGENT_GOOGLE_AUTH=injected CORE_AGENT_SWITCHBOARD_TOKEN=injected CORE_AGENT_TRUSTED_DIRS="/tmp,/out/gke-watchboard/.agents" GOOGLE_CLOUD_PROJECT=smoke GOOGLE_CLOUD_LOCATION=global \
+        core-agent -c "$cfg" $extra $TASK_FLAGS --no-repl \
+          --attach-listen=127.0.0.1:8484 --attach-token=SMOKE_TOKEN \
+          --session-db --session-db-path="/tmp/smoke-$label.db" --agents-content-dir=/tmp/content \
+          >"/tmp/smoke-$label.log" 2>&1 & pid=$!; \
+      code=000; for i in $(seq 1 60); do \
+        code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H "Host: $ROUTER_HOST" -H "Authorization: Bearer smoke" http://127.0.0.1:8484/sessions || true); \
+        [ "$code" != 000 ] && break; \
+        kill -0 "$pid" 2>/dev/null || break; sleep 0.5; \
+      done; \
+      if [ "$code" = 200 ]; then \
+        sid=$(curl -sf -m 10 -X POST -H "Host: $ROUTER_HOST" -H "Authorization: Bearer smoke" -H "Content-Type: application/json" -d '{}' http://127.0.0.1:8484/sessions | jq -r '.sessionID // empty' || true); \
+        if [ -z "$sid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; echo "recipe $label: POST /sessions returned no sessionID:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+        if ! curl -sf -m 10 -H "Host: $ROUTER_HOST" -H "Authorization: Bearer smoke" "http://127.0.0.1:8484/sessions/$sid/mcp" > "/tmp/smoke-$label-mcp.json"; then \
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
+          echo "recipe $label: GET /sessions/$sid/mcp failed:"; cat "/tmp/smoke-$label.log"; exit 1; \
+        fi; \
+        if ! jq -e '(.servers | map(.name)) == ["lookout"] and (.servers[] | select(.name=="lookout") | (.tools | map(.name) | sort)) == ["lookout_k8s_event_timeline","lookout_k8s_list_clusters","lookout_k8s_list_resources","lookout_k8s_resource_spec","lookout_k8s_state_edges","lookout_k8s_triage_delta","lookout_k8s_triage_logs","lookout_k8s_triage_workload"]' "/tmp/smoke-$label-mcp.json" >/dev/null; then \
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
+          echo "recipe $label: unexpected watchboard MCP tools:"; cat "/tmp/smoke-$label-mcp.json"; cat "/tmp/smoke-$label.log"; exit 1; \
+        fi; \
+      fi; \
+      kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; \
+      if [ "$code" = 000 ]; then echo "recipe $label: core-agent did not start:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if [ "$code" != 200 ]; then echo "recipe $label: GET /sessions as the router ($ROUTER_HOST) answered $code, not 200"; exit 1; fi; \
+      if grep -q "workspace trust:.*is untrusted" "/tmp/smoke-$label.log"; then echo "recipe $label: workspace trust clamped config:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if grep -q "is not deliverable" "/tmp/smoke-$label.log"; then echo "recipe $label: alert target was dropped:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if grep -Eq "tools allowlist names |has no tool matching " "/tmp/smoke-$label.log"; then echo "recipe $label: unmatched MCP tool allowlist:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if grep -Eq "mcp: [0-9]+ server\(s\), [1-9][0-9]* down" "/tmp/smoke-$label.log"; then echo "recipe $label: subagent MCP server failed to start:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if grep -Eq "mcp: [0-9]+ server\(s\) loaded .*\[[1-9][0-9]* failed" "/tmp/smoke-$label.log"; then echo "recipe $label: main-agent MCP server failed to start:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if grep -q "core-agent: skills:.*NOT loaded" "/tmp/smoke-$label.log"; then echo "recipe $label: skill was withheld:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if ! grep -Eq "instruction: loaded [1-9][0-9]* file\(s\): .*/out/gke-watchboard/\.agents/AGENTS\.md" "/tmp/smoke-$label.log"; then echo "recipe $label: native AGENTS.md was not loaded:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if ! grep -q "skills: 1 loaded — k8s-triage" "/tmp/smoke-$label.log"; then echo "recipe $label: k8s-triage skill was not loaded:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      if ! grep -q "subagents: 0 configured" "/tmp/smoke-$label.log"; then echo "recipe $label: watchboard must configure zero subagents:"; cat "/tmp/smoke-$label.log"; exit 1; fi; \
+      echo "recipe $label: core-agent starts and answers the router"; \
+    }; \
+    boot_wb "gke-watchboard" "/out/gke-watchboard/.agents/config.json" ""; \
+    jq '.permissions.allow += ["alert:slack"] | . + {"alerts":{"rate_limit_per_target":"5/min","targets":[{"name":"slack","kind":"webhook","template":"switchboard","conversation":"C0123456789","url":"http://switchboard.switchboard.svc.cluster.local:8080/v1/messages","auth":{"bearer_env":"CORE_AGENT_SWITCHBOARD_TOKEN"}}]}}' "/out/gke-watchboard/.agents/config.json" > "/tmp/aug-gke-watchboard.json"; \
+    boot_wb "gke-watchboard-alert" "/tmp/aug-gke-watchboard.json" "--agents-dir=/out/gke-watchboard/.agents"
 
 # Distroless nonroot (UID/GID 65532): carries CA certificates, tzdata and
 # /etc/passwd, with no shell, package manager, git or curl. ax-task-runner

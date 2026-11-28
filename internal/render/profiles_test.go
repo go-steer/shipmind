@@ -1052,3 +1052,51 @@ func TestSubstratePostureAuditsAndConfigureCronJob(t *testing.T) {
 		t.Errorf("switchboard NetworkPolicy does not admit shipmind-audits:\n%s", npYAML)
 	}
 }
+
+func TestSubstrateLookoutWatchboardTemplateWiring(t *testing.T) {
+	objs := build(t, filepath.Join(profilesDir, "substrate", "lookout"))
+	d, ok := objs.Find("Deployment", "lookout-ax", "lookout-ax")
+	if !ok {
+		t.Fatal("missing Deployment lookout-ax/lookout-ax")
+	}
+	argsNode, err := d.Pipe(yaml.Lookup("spec", "template", "spec", "containers", "[name=lookout]", "args"))
+	if err != nil || argsNode == nil {
+		t.Fatalf("lookout args: %v", err)
+	}
+	elems, err := argsNode.Elements()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var args []string
+	for _, e := range elems {
+		args = append(args, yaml.GetValue(e))
+	}
+	if len(args) < 4 || args[1] != "--cluster-name=CLUSTER" || args[2] != "--namespace=NAMESPACES" {
+		t.Fatalf("lookout args[1:3] shifted: %v", args)
+	}
+	if !slices.Contains(args, "--ax-task-template=/etc/lookout-ax/task.yaml") {
+		t.Errorf("lookout args missing --ax-task-template: %v", args)
+	}
+	if !slices.Contains(args, "--ax-watchboard-task-template=/etc/lookout-ax/watchboard-task.yaml") {
+		t.Errorf("lookout args missing --ax-watchboard-task-template: %v", args)
+	}
+	if !slices.Contains(args, "--storm=auto") {
+		t.Errorf("lookout args missing --storm=auto: %v", args)
+	}
+	y, err := d.String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"secretName: lookout-ax-agent",
+		"key: task.yaml",
+		"path: task.yaml",
+		"key: watchboard-task.yaml",
+		"path: watchboard-task.yaml",
+		"mountPath: /etc/lookout-ax",
+	} {
+		if !strings.Contains(y, want) {
+			t.Errorf("lookout Deployment lacks %q:\n%s", want, y)
+		}
+	}
+}

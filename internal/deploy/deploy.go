@@ -46,8 +46,8 @@ import (
 const (
 	Namespace    = "lookout-ax"
 	TokensSecret = "agent-tokens"     // keys: inject, attach
-	AgentSecret  = "lookout-ax-agent" // keys: token (attach), task.yaml
-	// Lookout reads the task template once, at startup, so a changed
+	AgentSecret  = "lookout-ax-agent" // keys: token (attach), task.yaml, watchboard-task.yaml
+	// Lookout reads its task templates once, at startup, so a changed
 	// template needs a restart of this Deployment.
 	Lookout = "lookout-ax"
 )
@@ -140,20 +140,50 @@ func tokens(ctx context.Context, c cluster.Cluster) (t agent.Tokens, source stri
 var errNoTemplateTokens = fmt.Errorf("tokens in secret %s/%s: the task template names none", Namespace, AgentSecret)
 
 // templateAttachToken reads CORE_AGENT_ATTACH_TOKEN out of the live task
-// template, if there is one.
+// template(s) in Secret lookout-ax/lookout-ax-agent, if present. Both
+// task.yaml and (when present) watchboard-task.yaml are validated so a
+// malformed or disagreeing watchboard template is refused rather than
+// silently overwritten; an existing cluster predating watchboard-task.yaml
+// upgrades without rotating tokens.
 func templateAttachToken(ctx context.Context, c cluster.Cluster) (attach string, found bool, err error) {
 	data, ok, err := c.Secret(ctx, Namespace, AgentSecret)
 	if err != nil || !ok {
 		return "", false, err
 	}
+	keys := []string{"task.yaml"}
+	if _, hasWB := data["watchboard-task.yaml"]; hasWB {
+		keys = append(keys, "watchboard-task.yaml")
+	}
+	for _, key := range keys {
+		tok, err := extractTaskAttachToken(key, data[key])
+		if errors.Is(err, errNoTemplateTokens) {
+			continue
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if found && tok != attach {
+			return "", false, fmt.Errorf("attach tokens in secret %s/%s (task.yaml and watchboard-task.yaml) disagree; existing tasks carry one token, so resolve it by hand before deploying",
+				Namespace, AgentSecret)
+		}
+		attach, found = tok, true
+	}
+	if !found {
+		return "", false, errNoTemplateTokens
+	}
+	return attach, true, nil
+}
+
+func extractTaskAttachToken(key string, raw []byte) (string, error) {
 	var task struct {
 		Spec struct {
 			Env []struct{ Name, Value string } `yaml:"env"`
 		} `yaml:"spec"`
 	}
-	if err := yaml.Unmarshal(data["task.yaml"], &task); err != nil {
-		return "", false, fmt.Errorf("secret %s/%s task.yaml: %w", Namespace, AgentSecret, err)
+	if err := yaml.Unmarshal(raw, &task); err != nil {
+		return "", fmt.Errorf("secret %s/%s %s: %w", Namespace, AgentSecret, key, err)
 	}
+	var attach string
 	named := false
 	for _, e := range task.Spec.Env {
 		if e.Name == "CORE_AGENT_ATTACH_TOKEN" {
@@ -161,12 +191,12 @@ func templateAttachToken(ctx context.Context, c cluster.Cluster) (attach string,
 		}
 	}
 	if !named {
-		return "", false, errNoTemplateTokens
+		return "", errNoTemplateTokens
 	}
 	if err := (agent.Tokens{Attach: attach}).CheckAttach(); err != nil {
-		return "", false, fmt.Errorf("tokens in secret %s/%s: %w", Namespace, AgentSecret, err)
+		return "", fmt.Errorf("tokens in secret %s/%s %s: %w", Namespace, AgentSecret, key, err)
 	}
-	return attach, true, nil
+	return attach, nil
 }
 
 // Status compares the environment with the cluster, read only.
@@ -213,7 +243,7 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		add(agentWhat, "missing")
 	} else {
 		r.Tokens = source
-		want, err := agent.Task(p.Root, p.Env, t)
+		wantTask, wantWB, err := renderLookoutTemplates(p.Root, p.Env, t)
 		if err != nil {
 			return nil, err
 		}
@@ -221,7 +251,7 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		if err != nil {
 			return nil, err
 		}
-		if d := compareAgentSecret(live, want, t); d != "" {
+		if d := compareAgentSecret(live, wantTask, wantWB, t); d != "" {
 			add(agentWhat, d)
 		}
 	}
@@ -566,12 +596,12 @@ type startupReader struct {
 	What                  string // the object, for messages
 }
 
-// startupReaders are the platform's: lookout reads its task template,
+// startupReaders are the platform's: lookout reads its task templates,
 // and Substrate's Kubernetes Secrets credential provider its namespace
 // policy (an agent's credential fetches are refused until it has
 // restarted on a policy that admits the agent's atespace).
 var startupReaders = []startupReader{
-	{Kind: "secret", Namespace: Namespace, Name: AgentSecret, Deployment: Lookout, What: "its task template"},
+	{Kind: "secret", Namespace: Namespace, Name: AgentSecret, Deployment: Lookout, What: "its task templates"},
 	{Kind: "configmap", Namespace: "ate-system", Name: "k8s-credential-provider-namespace-policy", Deployment: "k8s-credential-provider", What: "its namespace policy"},
 }
 
@@ -594,9 +624,22 @@ func (sr startupReader) stale(ctx context.Context, c cluster.Cluster) (bool, err
 	return false, nil
 }
 
+func renderLookoutTemplates(root string, e *env.Env, t agent.Tokens) (task, watchboard []byte, err error) {
+	task, err = agent.Task(root, e, t)
+	if err != nil {
+		return nil, nil, err
+	}
+	watchboard, err = agent.WatchboardTask(root, e, t)
+	if err != nil {
+		return nil, nil, err
+	}
+	return task, watchboard, nil
+}
+
 // compareAgentSecret describes how the live agent Secret differs from
-// the rendered task template and tokens, or returns "".
-func compareAgentSecret(live map[string][]byte, wantTask []byte, t agent.Tokens) string {
+// the rendered incident and watchboard task templates and tokens, or
+// returns "".
+func compareAgentSecret(live map[string][]byte, wantTask, wantWatchboard []byte, t agent.Tokens) string {
 	if live == nil {
 		return "missing"
 	}
@@ -604,12 +647,25 @@ func compareAgentSecret(live map[string][]byte, wantTask []byte, t agent.Tokens)
 	if string(live["token"]) != t.Attach {
 		diffs = append(diffs, "token is not the attach token")
 	}
-	same, err := sameYAML(live["task.yaml"], wantTask)
-	switch {
-	case err != nil:
-		diffs = append(diffs, "task.yaml: "+err.Error())
-	case !same:
-		diffs = append(diffs, "task.yaml differs from the render")
+	for _, pair := range []struct {
+		key  string
+		want []byte
+	}{
+		{"task.yaml", wantTask},
+		{"watchboard-task.yaml", wantWatchboard},
+	} {
+		raw, ok := live[pair.key]
+		if !ok || len(raw) == 0 {
+			diffs = append(diffs, pair.key+" is missing")
+			continue
+		}
+		same, err := sameYAML(raw, pair.want)
+		switch {
+		case err != nil:
+			diffs = append(diffs, pair.key+": "+err.Error())
+		case !same:
+			diffs = append(diffs, pair.key+" differs from the render")
+		}
 	}
 	return strings.Join(diffs, "; ")
 }
@@ -713,7 +769,7 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 		}
 		source = "generated"
 	}
-	task, err := agent.Task(p.Root, p.Env, t)
+	task, watchboardTask, err := renderLookoutTemplates(p.Root, p.Env, t)
 	if err != nil {
 		return err
 	}
@@ -725,7 +781,7 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 	if err != nil {
 		return err
 	}
-	templateChanged := compareAgentSecret(liveAgent, task, t) != ""
+	templateChanged := compareAgentSecret(liveAgent, task, watchboardTask, t) != ""
 	patches, err := neededPatches(ctx, p, c, log)
 	if err != nil {
 		return err
@@ -801,7 +857,7 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 	}
 	switch {
 	case secretsPending:
-		log("tokens %s and the task template would be stored in namespace %s, which the run creates (not validated; dry run)", source, Namespace)
+		log("tokens %s and the task templates would be stored in namespace %s, which the run creates (not validated; dry run)", source, Namespace)
 	case !strings.HasPrefix(source, "secret "):
 		secret := cluster.SecretManifest(Namespace, TokensSecret, map[string][]byte{
 			"inject": []byte(t.Inject), "attach": []byte(t.Attach),
@@ -813,14 +869,16 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 	}
 	if templateChanged && !secretsPending {
 		secret := cluster.SecretManifest(Namespace, AgentSecret, map[string][]byte{
-			"token": []byte(t.Attach), "task.yaml": task,
+			"token":                []byte(t.Attach),
+			"task.yaml":            task,
+			"watchboard-task.yaml": watchboardTask,
 		})
 		if err := c.ApplySecret(ctx, secret, opts.DryRun); err != nil {
 			return fmt.Errorf("secret %s/%s: %w", Namespace, AgentSecret, err)
 		}
-		log("task template applied to secret %s/%s%s", Namespace, AgentSecret, dry(opts.DryRun))
+		log("task templates applied to secret %s/%s%s", Namespace, AgentSecret, dry(opts.DryRun))
 	} else if !secretsPending {
-		log("task template in secret %s/%s unchanged", Namespace, AgentSecret)
+		log("task templates in secret %s/%s unchanged", Namespace, AgentSecret)
 	}
 	for _, g := range generate {
 		if opts.DryRun && nsPending[g.Namespace] != nil {
@@ -873,7 +931,7 @@ func Up(ctx context.Context, p *Plan, c cluster.Cluster, opts UpOptions) error {
 			if err := c.RolloutRestart(ctx, Namespace, Lookout); err != nil {
 				return err
 			}
-			log("deployment %s/%s restarted to read the new task template", Namespace, Lookout)
+			log("deployment %s/%s restarted to read the new task templates", Namespace, Lookout)
 		}
 	}
 	// Any other startup reader running on an older object restarts. Judged

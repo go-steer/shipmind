@@ -10,6 +10,28 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Added
 
+- Added a dedicated native `core-agent` watchboard recipe (`gke-watchboard`)
+  and task template (`watchboard-task.yaml`) wired into `lookout-ax` via
+  `--ax-watchboard-task-template=/etc/lookout-ax/watchboard-task.yaml`
+  (#133): digest-shaped prompt evaluating each `"kind":"watchboard.digest"`
+  (`sequence`) independently with `shipmind.dev/scenario` probe exemption and
+  `"kind":"watchboard.rotated"` acknowledgements; `lookout`-only stdio MCP
+  (8 triage tools including `k8s_list_clusters`, no hosted GKE MCP) plus
+  pinned `k8s-triage` and `playbooks` skills in `images/agent`; conservative
+  per-turn budgets (`max_steps: 6`, `max_wallclock_seconds: 90`,
+  `approval_timeout: "30s"`) paired with a short `2m` `idleSuspendAfter` to
+  free worker slots quickly between batched flushes; Workspace
+  `watchboard-config.json` for Slack alerts when `slack.alertChannel` is set
+  while strictly excluding VCS, file tools, and `propose-change` even when
+  `agent.vcs.incidentAutoPR: true`; and by-value `shipmind status`/`up`
+  reconciliation of both `task.yaml` and `watchboard-task.yaml` in `Secret
+  lookout-ax/lookout-ax-agent` without rotating `lookout-ax/agent-tokens`.
+  **Rollout note:** when moving an existing environment overlay in
+  `go-steer/shipmind-deploy` past this commit, bump `agent.incidentImage` to
+  an `images/agent` digest carrying `gke-watchboard` in the same change, and
+  after `shipmind up` delete the existing immutable
+  `lookout-wb-<cluster>-<hash8>` ax task so `lookout-ax` stamps a fresh
+  watchboard actor from `watchboard-task.yaml`.
 - Added the `e2e/scenarios/triage-overflow` scenario (#131): a crash-looping
   workload whose enrichment bundle fits `spec`, `delta`, and `radius` under
   `lookout`'s default 4096-byte `--enrich-cap` while overflowing `section=logs`

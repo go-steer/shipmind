@@ -93,12 +93,22 @@ func NewTokens() (Tokens, error) {
 }
 
 // The recipes the agent image carries that a task runs: one incident per
-// task for lookout (gke-triage-f) and a conversation per task for
-// switchboard (gke-chat), both authored as native flat core-agent recipes
-// in images/agent.
+// task for lookout (gke-triage-f), one watchboard task per cluster for
+// lookout's warning digests (gke-watchboard), and a conversation per task
+// for switchboard (gke-chat), all authored as native flat core-agent
+// recipes in images/agent.
 const (
-	IncidentBundle = "gke-triage-f"
-	ChatBundle     = "gke-chat"
+	IncidentBundle   = "gke-triage-f"
+	ChatBundle       = "gke-chat"
+	WatchboardBundle = "gke-watchboard"
+
+	// WatchboardIdleSuspendAfter bounds how long lookout's watchboard task
+	// stays awake between batched digest flushes (lookout flushes every
+	// 60s by default), freeing its Substrate worker slot quickly instead of
+	// holding a slot for agent.idleSuspendAfter (default 10m). Strictly
+	// greater than gke-watchboard's 90s max_wallclock_seconds (30s
+	// headroom) so ax never suspends an unwatched turn mid-flight.
+	WatchboardIdleSuspendAfter = "2m"
 )
 
 // Task renders the core-agent ax task template lookout stamps an incident
@@ -118,7 +128,28 @@ func Task(root string, e *env.Env, t Tokens) ([]byte, error) {
 	if autoPR {
 		vcsSecret = e.Agent.VCS.Secret
 	}
-	return coreAgentTask(root, e, t, IncidentBundle, e.Agent.IncidentImage, cfgPath, vcsSecret, alert)
+	return coreAgentTask(root, e, t, IncidentBundle, e.Agent.IncidentImage, cfgPath, vcsSecret, alert, e.Agent.IdleSuspend())
+}
+
+// WatchboardTask renders the core-agent ax task template lookout stamps
+// its per-cluster watchboard task (lookout-wb-<cluster>-<hash8>) from,
+// running the dedicated read-only gke-watchboard recipe on
+// agent.incidentImage (#133). When slack.alertChannel is set, it points -c
+// at the Workspace's watchboard-config.json and enables switchboard
+// outbound ingress. Watchboard tasks never carry VCS credentials, file
+// tools, or propose-change even when agent.vcs.incidentAutoPR is true, and
+// use WatchboardIdleSuspendAfter (2m) to free their worker slot quickly
+// between batched flushes.
+func WatchboardTask(root string, e *env.Env, t Tokens) ([]byte, error) {
+	if e.Agent.IncidentImage == "" {
+		return nil, fmt.Errorf("watchboard task: agent.incidentImage is required")
+	}
+	alert := e.Slack != nil && e.Slack.AlertChannel != ""
+	cfgPath := ""
+	if alert {
+		cfgPath = "/workspace/repo/watchboard-config.json"
+	}
+	return coreAgentTask(root, e, t, WatchboardBundle, e.Agent.IncidentImage, cfgPath, "", alert, WatchboardIdleSuspendAfter)
 }
 
 // ChatTask renders the core-agent task template switchboard starts a
@@ -136,7 +167,7 @@ func ChatTask(root string, e *env.Env, t Tokens) ([]byte, error) {
 		cfgPath = "/workspace/repo/chat-config.json"
 		vcsSecret = e.Agent.VCS.Secret
 	}
-	return coreAgentTask(root, e, t, ChatBundle, e.Agent.ChatImage, cfgPath, vcsSecret, false)
+	return coreAgentTask(root, e, t, ChatBundle, e.Agent.ChatImage, cfgPath, vcsSecret, false, e.Agent.IdleSuspend())
 }
 
 // AuditTask renders the ax task template the scheduled posture runner
@@ -152,11 +183,11 @@ func AuditTask(root string, e *env.Env, t Tokens) ([]byte, error) {
 	if image == "" {
 		return nil, fmt.Errorf("audits.autoPR: needs agent.chatImage or agent.incidentImage")
 	}
-	return coreAgentTask(root, e, t, ChatBundle, image, "/workspace/repo/audit-config.json", e.Agent.VCS.Secret, false)
+	return coreAgentTask(root, e, t, ChatBundle, image, "/workspace/repo/audit-config.json", e.Agent.VCS.Secret, false, e.Agent.IdleSuspend())
 }
 
 // coreAgentTask renders core-agent's task template for bundle from image.
-func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image, cfgPath, vcsSecret string, switchboardIngress bool) ([]byte, error) {
+func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image, cfgPath, vcsSecret string, switchboardIngress bool, idleSuspend string) ([]byte, error) {
 	if err := t.Check(); err != nil {
 		return nil, err
 	}
@@ -167,7 +198,7 @@ func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image, cfgPath, vc
 		"Project":            e.Agent.Project,
 		"Workspace":          e.Agent.Workspace,
 		"AttachToken":        t.Attach,
-		"IdleSuspend":        e.Agent.IdleSuspend(),
+		"IdleSuspend":        idleSuspend,
 		"ConfigPath":         cfgPath,
 		"GoogleHosts":        googleEgressHosts(e.Agent.Clusters),
 		"PostureScope":       postureScope(bundle, e.Agent.Project, e.Agent.Clusters),
@@ -370,6 +401,23 @@ func ChatConfig(root string, e *env.Env) ([]byte, error) {
 	return json.MarshalIndent(doc, "", "  ")
 }
 
+func switchboardAlertBlock(channel, description string) map[string]any {
+	return map[string]any{
+		"rate_limit_per_target": "5/min",
+		"targets": []map[string]any{{
+			"name":         "slack",
+			"kind":         "webhook",
+			"template":     "switchboard",
+			"conversation": channel,
+			"url":          "http://switchboard.switchboard.svc.cluster.local:8080/v1/messages",
+			"auth": map[string]string{ //nolint:gosec // bearer_env names the environment variable, not a credential
+				"bearer_env": "CORE_AGENT_SWITCHBOARD_TOKEN",
+			},
+			"description": description,
+		}},
+	}
+}
+
 // IncidentConfig renders the core-agent config JSON written to the
 // Workspace's incident-config.json when agent.vcs.incidentAutoPR or
 // slack.alertChannel is set: agents/sre-triage/gke-triage-f/.agents/config.json
@@ -407,22 +455,28 @@ func IncidentConfig(root string, e *env.Env) ([]byte, error) {
 		agentCfg["max_steps"] = 8
 	}
 	if alert {
-		doc["alerts"] = map[string]any{
-			"rate_limit_per_target": "5/min",
-			"targets": []map[string]any{{
-				"name":         "slack",
-				"kind":         "webhook",
-				"template":     "switchboard",
-				"conversation": e.Slack.AlertChannel,
-				"url":          "http://switchboard.switchboard.svc.cluster.local:8080/v1/messages",
-				"auth": map[string]string{ //nolint:gosec // bearer_env names the environment variable, not a credential
-					"bearer_env": "CORE_AGENT_SWITCHBOARD_TOKEN",
-				},
-				"description": "Posts incident diagnoses and pull request links to the on-call Slack channel through switchboard.",
-			}},
-		}
+		doc["alerts"] = switchboardAlertBlock(e.Slack.AlertChannel, "Posts incident diagnoses and pull request links to the on-call Slack channel through switchboard.")
 		appendPermissionsAllow(doc, "alert:slack")
 	}
+	return json.MarshalIndent(doc, "", "  ")
+}
+
+// WatchboardConfig renders the core-agent config JSON written to the
+// Workspace's watchboard-config.json when slack.alertChannel is set:
+// agents/sre-triage/gke-watchboard/.agents/config.json plus the
+// switchboard Slack alert target and alert:slack allowlist. Watchboard
+// tasks never receive vcs, propose-change, or elevated step budgets even
+// when agent.vcs.incidentAutoPR is true (#133).
+func WatchboardConfig(root string, e *env.Env) ([]byte, error) {
+	if e.Slack == nil || e.Slack.AlertChannel == "" {
+		return nil, nil
+	}
+	doc, err := loadBaseConfig(root, WatchboardBundle)
+	if err != nil {
+		return nil, err
+	}
+	doc["alerts"] = switchboardAlertBlock(e.Slack.AlertChannel, "Posts actionable watchboard warning digest summaries to the on-call Slack channel through switchboard.")
+	appendPermissionsAllow(doc, "alert:slack")
 	return json.MarshalIndent(doc, "", "  ")
 }
 
@@ -519,17 +573,22 @@ func Workspace(root string, e *env.Env) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	wbCfg, err := WatchboardConfig(root, e)
+	if err != nil {
+		return nil, err
+	}
 	audCfg, err := AuditConfig(root, e)
 	if err != nil {
 		return nil, err
 	}
 	return render(root, "workspace.yaml.tmpl", map[string]string{
-		"Atespace":       e.Agent.Atespace,
-		"Workspace":      e.Agent.Workspace,
-		"AgentsMD":       string(md),
-		"ChatConfig":     string(chatCfg),
-		"IncidentConfig": string(incCfg),
-		"AuditConfig":    string(audCfg),
+		"Atespace":         e.Agent.Atespace,
+		"Workspace":        e.Agent.Workspace,
+		"AgentsMD":         string(md),
+		"ChatConfig":       string(chatCfg),
+		"IncidentConfig":   string(incCfg),
+		"WatchboardConfig": string(wbCfg),
+		"AuditConfig":      string(audCfg),
 	})
 }
 

@@ -249,6 +249,10 @@ func inSync(t *testing.T) *fakeCluster {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wbTask, err := agent.WatchboardTask(root, testEnv(), tok)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ws, err := agent.Workspace(root, testEnv())
 	if err != nil {
 		t.Fatal(err)
@@ -256,7 +260,7 @@ func inSync(t *testing.T) *fakeCluster {
 	return &fakeCluster{
 		secrets: map[string]map[string][]byte{
 			Namespace + "/" + TokensSecret: {"inject": []byte(tok.Inject), "attach": []byte(tok.Attach)},
-			Namespace + "/" + AgentSecret:  {"token": []byte(tok.Attach), "task.yaml": task},
+			Namespace + "/" + AgentSecret:  {"token": []byte(tok.Attach), "task.yaml": task, "watchboard-task.yaml": wbTask},
 		},
 		// As ax prints it: server metadata added, YAML reformatted.
 		workspace: []byte(strings.Replace(string(ws), "  atespace: agents\n", "  atespace: agents\n  createTime: 2026-10-19T09:43:36Z\n", 1)),
@@ -334,6 +338,12 @@ func TestStatusErrors(t *testing.T) {
 	c = inSync(t)
 	delete(c.secrets, Namespace+"/"+TokensSecret)
 	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = []byte("spec:\n  env: []\n")
+	// Even with task.yaml naming no token, watchboard-task.yaml still carries
+	// the live attach token and blocks rotation when agent-tokens is missing.
+	if _, err := Status(context.Background(), plan(t), c); err == nil || !strings.Contains(err.Error(), "restore it by hand") {
+		t.Errorf("live watchboard template without tokens Secret: err = %v", err)
+	}
+	delete(c.secrets[Namespace+"/"+AgentSecret], "watchboard-task.yaml")
 	if _, err := Status(context.Background(), plan(t), c); err == nil || !strings.Contains(err.Error(), "tokens in secret lookout-ax/lookout-ax-agent") {
 		t.Errorf("unadoptable task: err = %v", err)
 	}
@@ -1413,7 +1423,9 @@ func TestSwitchboardSecret(t *testing.T) {
 	c.secrets[CredentialsNamespace+"/"+SwitchboardIngressSecret] = map[string][]byte{"token": []byte(ingTok)}
 	cfgAlert, _ := agent.SwitchboardConfig(root, p.Env)
 	incAlert, _ := agent.Task(root, p.Env, tok)
+	wbAlert, _ := agent.WatchboardTask(root, p.Env, tok)
 	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = incAlert
+	c.secrets[Namespace+"/"+AgentSecret]["watchboard-task.yaml"] = wbAlert
 	c.secrets[SwitchboardNamespace+"/"+SwitchboardSecret] = map[string][]byte{
 		"config.json": cfgAlert, "triage.yaml": want, "token": []byte(tok.Attach), "ingress-token": []byte(ingTok),
 	}
@@ -1546,7 +1558,7 @@ func TestIncidentImage(t *testing.T) {
 	p.Env.Agent.IncidentImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("3", 64)
 	c := inSync(t)
 	r, err := Status(ctx, p, c)
-	if err != nil || !strings.Contains(fmt.Sprint(r.Changes), "task.yaml differs from the render") {
+	if err != nil || !strings.Contains(fmt.Sprint(r.Changes), "task.yaml differs from the render") || !strings.Contains(fmt.Sprint(r.Changes), "watchboard-task.yaml differs from the render") {
 		t.Fatalf("before: %+v, %v", r, err)
 	}
 	if err := Up(ctx, p, c, UpOptions{}); err != nil {
@@ -1560,7 +1572,12 @@ func TestIncidentImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantWB, err := agent.WatchboardTask(root, p.Env, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = want
+	c.secrets[Namespace+"/"+AgentSecret]["watchboard-task.yaml"] = wantWB
 	if r, err := Status(ctx, p, c); err != nil || len(r.Changes) != 0 {
 		t.Errorf("after: %+v, %v", r, err)
 	}
@@ -1600,5 +1617,135 @@ func TestTemplateTokenChecks(t *testing.T) {
 	p.Env.Agent.IncidentImage = e.Agent.IncidentImage
 	if err := Up(ctx, p, c, UpOptions{}); err == nil || len(writes(c.ops)) != 0 {
 		t.Errorf("malformed attach token: err = %v, writes %v; want a refusal before any write", err, c.ops)
+	}
+}
+
+// Upgrading an existing cluster to the dedicated watchboard task template
+// (#133) writes watchboard-task.yaml alongside task.yaml into Secret
+// lookout-ax/lookout-ax-agent and restarts lookout without rotating
+// agent-tokens; drift or token disagreement in watchboard-task.yaml is
+// caught by Status and Up before any write.
+func TestWatchboardSecretLifecycle(t *testing.T) {
+	ctx := context.Background()
+	p := plan(t)
+	objs, err := render.Build("testdata/lookout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Objects = objs
+
+	// 1. Existing cluster predating watchboard-task.yaml: Status flags it as
+	// missing; dry-run validates server-side with zero writes; real Up
+	// updates lookout-ax-agent with both task templates and restarts lookout
+	// without touching agent-tokens.
+	c := inSync(t)
+	delete(c.secrets[Namespace+"/"+AgentSecret], "watchboard-task.yaml")
+	r, err := Status(ctx, p, c)
+	if err != nil {
+		t.Fatalf("Status(pre-watchboard upgrade): %v", err)
+	}
+	if len(r.Changes) != 1 || r.Changes[0].What != "secret lookout-ax/lookout-ax-agent" ||
+		r.Changes[0].Detail != "watchboard-task.yaml is missing" {
+		t.Errorf("pre-upgrade Status changes = %+v, want watchboard-task.yaml missing", r.Changes)
+	}
+	var dryLog []string
+	if err := Up(ctx, p, c, UpOptions{DryRun: true, Log: func(f string, a ...any) { dryLog = append(dryLog, fmt.Sprintf(f, a...)) }}); err != nil {
+		t.Fatalf("Up(DryRun, pre-watchboard upgrade): %v", err)
+	}
+	if c.dryRuns == 0 || len(c.applied) != 0 || strings.Contains(strings.Join(c.ops, ", "), "secret agent-tokens") ||
+		!strings.Contains(strings.Join(dryLog, "\n"), "deployment lookout-ax/lookout-ax would be restarted (dry run)") {
+		t.Errorf("pre-upgrade dry-run: dryRuns=%d applied=%d ops=%v log=%v", c.dryRuns, len(c.applied), c.ops, dryLog)
+	}
+	c.ops, c.applied, c.dryRuns = nil, nil, 0
+	if err := Up(ctx, p, c, UpOptions{}); err != nil {
+		t.Fatalf("Up(pre-watchboard upgrade): %v", err)
+	}
+	ops := strings.Join(c.ops, ", ")
+	if strings.Contains(ops, "secret agent-tokens") {
+		t.Errorf("upgrade rotated agent-tokens: ops = %v", c.ops)
+	}
+	if !strings.Contains(ops, "secret lookout-ax-agent") || !strings.Contains(ops, "restart lookout-ax/lookout-ax") {
+		t.Errorf("upgrade did not update lookout-ax-agent and restart lookout: ops = %v", c.ops)
+	}
+	var wroteAgentSecret string
+	for _, m := range c.applied {
+		if strings.Contains(m, "name: lookout-ax-agent") {
+			wroteAgentSecret = m
+		}
+	}
+	for _, wantKey := range []string{"token:", "task.yaml:", "watchboard-task.yaml:"} {
+		if !strings.Contains(wroteAgentSecret, wantKey) {
+			t.Errorf("updated lookout-ax-agent lacks %s:\n%s", wantKey, wroteAgentSecret)
+		}
+	}
+
+	// 2. Watchboard-only drift: task.yaml matches, watchboard-task.yaml differs.
+	c = inSync(t)
+	c.secrets[Namespace+"/"+AgentSecret]["watchboard-task.yaml"] = []byte("kind: Task\n")
+	r, err = Status(ctx, p, c)
+	if err != nil {
+		t.Fatalf("Status(watchboard drift): %v", err)
+	}
+	if len(r.Changes) != 1 || r.Changes[0].Detail != "watchboard-task.yaml differs from the render" {
+		t.Errorf("watchboard-only drift = %+v", r.Changes)
+	}
+	if err := Up(ctx, p, c, UpOptions{}); err != nil {
+		t.Fatalf("Up(watchboard drift): %v", err)
+	}
+	ops = strings.Join(c.ops, ", ")
+	if strings.Contains(ops, "secret agent-tokens") || !strings.Contains(ops, "secret lookout-ax-agent") || !strings.Contains(ops, "restart lookout-ax/lookout-ax") {
+		t.Errorf("watchboard drift Up ops = %v", c.ops)
+	}
+
+	// 3. Disagreeing CORE_AGENT_ATTACH_TOKEN in watchboard-task.yaml: refused
+	// before any write (both when task.yaml carries the stored token and when
+	// task.yaml names no token at all).
+	c = inSync(t)
+	other := agent.Tokens{Inject: tok.Inject, Attach: strings.Repeat("d", 32)}
+	wrongWB, err := agent.WatchboardTask(root, testEnv(), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.secrets[Namespace+"/"+AgentSecret]["watchboard-task.yaml"] = wrongWB
+	if _, err := Status(ctx, p, c); err == nil || !strings.Contains(err.Error(), "disagree") {
+		t.Errorf("Status(watchboard token mismatch) = %v, want disagree error", err)
+	}
+	if err := Up(ctx, p, c, UpOptions{}); err == nil || !strings.Contains(err.Error(), "disagree") || len(writes(c.ops)) != 0 {
+		t.Errorf("Up(watchboard token mismatch) = %v, writes = %v", err, writes(c.ops))
+	}
+	c = inSync(t)
+	c.secrets[Namespace+"/"+AgentSecret]["task.yaml"] = []byte("kind: Task\n")
+	c.secrets[Namespace+"/"+AgentSecret]["watchboard-task.yaml"] = wrongWB
+	if _, err := Status(ctx, p, c); err == nil || !strings.Contains(err.Error(), "disagree") {
+		t.Errorf("Status(watchboard token disagrees with agent-tokens while task.yaml has no token) = %v, want disagree error", err)
+	}
+	if err := Up(ctx, p, c, UpOptions{}); err == nil || !strings.Contains(err.Error(), "disagree") || len(writes(c.ops)) != 0 {
+		t.Errorf("Up(watchboard token disagrees with agent-tokens while task.yaml has no token) = %v, writes = %v", err, writes(c.ops))
+	}
+
+	// 4. Malformed YAML or malformed attach token in watchboard-task.yaml: refused.
+	c = inSync(t)
+	c.secrets[Namespace+"/"+AgentSecret]["watchboard-task.yaml"] = []byte("spec: [\n")
+	if _, err := Status(ctx, p, c); err == nil || !strings.Contains(err.Error(), "watchboard-task.yaml") {
+		t.Errorf("Status(malformed watchboard YAML) = %v", err)
+	}
+	if err := Up(ctx, p, c, UpOptions{}); err == nil || len(writes(c.ops)) != 0 {
+		t.Errorf("Up(malformed watchboard YAML) = %v, writes = %v", err, writes(c.ops))
+	}
+	goodWB, err := agent.WatchboardTask(root, testEnv(), tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c = inSync(t)
+	c.secrets[Namespace+"/"+AgentSecret]["watchboard-task.yaml"] = []byte(strings.Replace(string(goodWB), tok.Attach, strings.ToUpper(tok.Attach), 1))
+	if err := Up(ctx, p, c, UpOptions{}); err == nil || len(writes(c.ops)) != 0 {
+		t.Errorf("Up(malformed watchboard attach token) = %v, writes = %v", err, writes(c.ops))
+	}
+	if d := compareAgentSecret(map[string][]byte{
+		"token":                []byte(tok.Attach),
+		"task.yaml":            []byte("spec: [\n"),
+		"watchboard-task.yaml": []byte("spec: [\n"),
+	}, goodWB, goodWB, tok); !strings.Contains(d, "task.yaml:") || !strings.Contains(d, "watchboard-task.yaml:") {
+		t.Errorf("compareAgentSecret malformed YAML detail = %q", d)
 	}
 }
