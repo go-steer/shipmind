@@ -36,12 +36,13 @@ why, and the concrete fix.
   (except `lookout_k8s_list_clusters`):
   `projects/<project>/locations/<zone or region>/clusters/<cluster>`.
 - Build it from the incident payload (`cluster`, `project`, `zone` else
-  `region`) or look up a bare cluster name in the Workspace's cluster table.
-  Never shorten a full cluster path to a bare name: a bare name resolves only
-  inside the agent's home project, while a cluster in another project is
-  reached only by its full path.
-- If the incident neither carries a full cluster path nor names a cluster in
-  the Workspace table, say so in your finding rather than guessing.
+  `region`), match a bare name against the Workspace's home cluster context,
+  or resolve it via `lookout_k8s_list_clusters`. Never shorten a full cluster
+  path to a bare name: a bare name resolves only inside the agent's home
+  project, while a cluster in another project is reached only by its full path.
+- If the incident neither carries a full cluster path nor resolves against the
+  Workspace home cluster or `lookout_k8s_list_clusters`, say so in your
+  finding rather than guessing.
 - Stay in the incident's namespace and name every object you read.
 
 ## Overflow trailers and CLI-to-MCP mapping

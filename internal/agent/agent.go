@@ -128,7 +128,7 @@ func Task(root string, e *env.Env, t Tokens) ([]byte, error) {
 	if autoPR {
 		vcsSecret = e.Agent.VCS.Secret
 	}
-	return coreAgentTask(root, e, t, IncidentBundle, e.Agent.IncidentImage, cfgPath, vcsSecret, alert, e.Agent.IdleSuspend())
+	return coreAgentTask(root, e, t, IncidentBundle, e.Agent.IncidentImage, cfgPath, vcsSecret, alert, e.Agent.IdleSuspend(), nil)
 }
 
 // WatchboardTask renders the core-agent ax task template lookout stamps
@@ -149,7 +149,7 @@ func WatchboardTask(root string, e *env.Env, t Tokens) ([]byte, error) {
 	if alert {
 		cfgPath = "/workspace/repo/watchboard-config.json"
 	}
-	return coreAgentTask(root, e, t, WatchboardBundle, e.Agent.IncidentImage, cfgPath, "", alert, WatchboardIdleSuspendAfter)
+	return coreAgentTask(root, e, t, WatchboardBundle, e.Agent.IncidentImage, cfgPath, "", alert, WatchboardIdleSuspendAfter, nil)
 }
 
 // ChatTask renders the core-agent task template switchboard starts a
@@ -167,7 +167,7 @@ func ChatTask(root string, e *env.Env, t Tokens) ([]byte, error) {
 		cfgPath = "/workspace/repo/chat-config.json"
 		vcsSecret = e.Agent.VCS.Secret
 	}
-	return coreAgentTask(root, e, t, ChatBundle, e.Agent.ChatImage, cfgPath, vcsSecret, false, e.Agent.IdleSuspend())
+	return coreAgentTask(root, e, t, ChatBundle, e.Agent.ChatImage, cfgPath, vcsSecret, false, e.Agent.IdleSuspend(), e.Agent.Clusters.Scope)
 }
 
 // AuditTask renders the ax task template the scheduled posture runner
@@ -183,11 +183,11 @@ func AuditTask(root string, e *env.Env, t Tokens) ([]byte, error) {
 	if image == "" {
 		return nil, fmt.Errorf("audits.autoPR: needs agent.chatImage or agent.incidentImage")
 	}
-	return coreAgentTask(root, e, t, ChatBundle, image, "/workspace/repo/audit-config.json", e.Agent.VCS.Secret, false, e.Agent.IdleSuspend())
+	return coreAgentTask(root, e, t, ChatBundle, image, "/workspace/repo/audit-config.json", e.Agent.VCS.Secret, false, e.Agent.IdleSuspend(), e.EffectiveAuditScope())
 }
 
 // coreAgentTask renders core-agent's task template for bundle from image.
-func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image, cfgPath, vcsSecret string, switchboardIngress bool, idleSuspend string) ([]byte, error) {
+func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image, cfgPath, vcsSecret string, switchboardIngress bool, idleSuspend string, scope []env.ClusterScope) ([]byte, error) {
 	if err := t.Check(); err != nil {
 		return nil, err
 	}
@@ -200,55 +200,105 @@ func coreAgentTask(root string, e *env.Env, t Tokens, bundle, image, cfgPath, vc
 		"AttachToken":        t.Attach,
 		"IdleSuspend":        idleSuspend,
 		"ConfigPath":         cfgPath,
-		"GoogleHosts":        googleEgressHosts(e.Agent.Clusters),
-		"PostureScope":       postureScope(bundle, e.Agent.Project, e.Agent.Clusters),
+		"GoogleHosts":        googleEgressHosts(bundle, e.Agent.Clusters, scope),
+		"LookoutScope":       lookoutScope(bundle, scope),
+		"LeewayScope":        leewayScope(bundle, scope),
 		"EnableFileTools":    vcsSecret != "",
 		"VCSSecret":          vcsSecret,
 		"SwitchboardIngress": switchboardIngress,
 	})
 }
 
-func googleEgressHosts(clusters []env.Cluster) string {
+// googleEgressHosts builds the Google API and GKE control-plane egress host
+// list for a task (#104). GKE DNS endpoints always use the GCP region (zone
+// suffixes are stripped). Incident and watchboard tasks only reach home's
+// region; chat tasks also add gkehub.googleapis.com when a fleet scope is
+// present, and widen *.<region>.gke.goog to exact narrow scope regions or, for
+// broad project/fleet scopes, to agent.clusters.regions (or all GCPRegions).
+func googleEgressHosts(bundle string, clusters env.Clusters, scope []env.ClusterScope) string {
 	hosts := []string{"aiplatform.googleapis.com", "container.googleapis.com"}
-	var wildcards []string
-	for _, c := range clusters {
-		parts := strings.Split(c.Path, "/")
-		if len(parts) == 6 && parts[0] == "projects" && parts[2] == "locations" && parts[3] != "" {
-			w := fmt.Sprintf("%q", "*."+parts[3]+".gke.goog")
-			if !slices.Contains(wildcards, w) {
-				wildcards = append(wildcards, w)
+	regions := map[string]bool{}
+	if r := clusters.HomeRegion(); r != "" {
+		regions[r] = true
+	}
+	if bundle == ChatBundle {
+		hasFleet, hasBroad := false, false
+		for _, s := range scope {
+			switch {
+			case s.Fleet != "":
+				hasFleet, hasBroad = true, true
+			case s.Project != "" && s.Location == "":
+				hasBroad = true
+			case s.Project != "" && s.Location != "":
+				regions[env.LocationRegion(s.Location)] = true
+			case s.Path != "":
+				if _, loc, _, ok := env.ParseClusterPath(s.Path); ok {
+					regions[env.LocationRegion(loc)] = true
+				}
 			}
 		}
+		if hasFleet {
+			hosts = append(hosts, "gkehub.googleapis.com")
+		}
+		if hasBroad {
+			expand := clusters.Regions
+			if len(expand) == 0 {
+				expand = env.GCPRegions
+			}
+			for _, r := range expand {
+				regions[r] = true
+			}
+		}
+	}
+	wildcards := make([]string, 0, len(regions))
+	for r := range regions {
+		wildcards = append(wildcards, fmt.Sprintf("%q", "*."+r+".gke.goog"))
 	}
 	slices.Sort(wildcards)
 	hosts = append(hosts, wildcards...)
 	return strings.Join(hosts, ", ")
 }
 
-// postureScope is the project list leeway mcp sweeps when a report names
-// no cluster, for a chat task whose clusters span more than the agent's
-// own project: that project first, then the others, comma-separated. It
-// defaults to the agent's project alone, so an environment whose clusters
-// all live there gets "" and no setting.
-func postureScope(bundle, project string, clusters []env.Cluster) string {
+func lookoutScope(bundle string, scope []env.ClusterScope) string {
 	if bundle != ChatBundle {
 		return ""
 	}
-	var others []string
-	for _, c := range clusters {
-		parts := strings.Split(c.Path, "/")
-		if len(parts) != 6 || parts[0] != "projects" || parts[1] == "" || parts[1] == project {
-			continue
-		}
-		if !slices.Contains(others, parts[1]) {
-			others = append(others, parts[1])
-		}
-	}
-	if len(others) == 0 {
+	return joinScopeTokens(scope, true, true)
+}
+
+func leewayScope(bundle string, scope []env.ClusterScope) string {
+	if bundle != ChatBundle {
 		return ""
 	}
-	slices.Sort(others)
-	return strings.Join(append([]string{project}, others...), ",")
+	// Omit both fleet: (rejected by leeway v0.1.9) and explicit path: entries
+	// (mapping path -> project/location sets configuredFrom in leeway v0.1.9,
+	// clearing ambientScope and bypassing its unscoped multi-cluster refusal
+	// guard). Explicit full cluster paths work directly in leeway_report.
+	return joinScopeTokens(scope, false, false)
+}
+
+func joinScopeTokens(scope []env.ClusterScope, includePath, includeFleet bool) string {
+	var tokens []string
+	add := func(tok string) {
+		if tok != "" && !slices.Contains(tokens, tok) {
+			tokens = append(tokens, tok)
+		}
+	}
+	for _, s := range scope {
+		switch {
+		case s.Project != "" && s.Location != "":
+			add(s.Project + "/" + s.Location)
+		case s.Project != "":
+			add(s.Project)
+		case s.Path != "" && includePath:
+			if p, l, _, ok := env.ParseClusterPath(s.Path); ok {
+				add(p + "/" + l)
+			}
+		case s.Fleet != "" && includeFleet:
+			add("fleet:" + s.Fleet)
+		}
+	}
+	return strings.Join(tokens, ",")
 }
 
 const proposeChangeInstructions = `@include builtin:propose-change
@@ -551,11 +601,26 @@ func AgentsMD(root string, e *env.Env) ([]byte, error) {
 		repos = e.Agent.VCS.Repositories
 		autoPR = e.Agent.VCS.IncidentAutoPR
 	}
+	scopeLines := make([]string, 0, len(e.Agent.Clusters.Scope))
+	hasPaths, hasFleet := false, false
+	for _, s := range e.Agent.Clusters.Scope {
+		scopeLines = append(scopeLines, s.Display())
+		if s.Path != "" {
+			hasPaths = true
+		}
+		if s.Fleet != "" {
+			hasFleet = true
+		}
+	}
 	return render(root, "AGENTS.md.tmpl", map[string]any{
-		"Clusters":       e.Agent.Clusters,
-		"Repositories":   repos,
-		"IncidentAutoPR": autoPR,
-		"AlertChannel":   alertChannel(e),
+		"Home":             e.Agent.Clusters.Home,
+		"HomeName":         e.Agent.Clusters.HomeName(),
+		"Scope":            scopeLines,
+		"HasExplicitPaths": hasPaths,
+		"HasFleet":         hasFleet,
+		"Repositories":     repos,
+		"IncidentAutoPR":   autoPR,
+		"AlertChannel":     alertChannel(e),
 	})
 }
 

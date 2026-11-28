@@ -61,6 +61,10 @@ var newCluster = func(kubeContext string) cluster.Cluster { return cluster.Kube{
 // replace it.
 var secretSource secrets.Source = secrets.Gcloud{}
 
+// scopeChecker is how `status` verifies the agent's Google identity can list
+// every in-scope project and GKE fleet (#104); tests replace it.
+var scopeChecker deploy.ScopeChecker = deploy.HTTPScopeChecker{}
+
 const usage = `usage: shipmind <command> [-f versions.yaml] [args]
 
 commands:
@@ -225,7 +229,7 @@ func runDeploy(cmd string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "shipmind %s: %v\n", cmd, err)
 		return 1
 	}
-	plan := &deploy.Plan{Env: e, Root: *root, Objects: res.Objects, Ref: res.Ref, Secrets: secretSource}
+	plan := &deploy.Plan{Env: e, Root: *root, Objects: res.Objects, Ref: res.Ref, Secrets: secretSource, ScopeAccess: scopeChecker}
 	if err := deploy.Prepare(plan); err != nil {
 		fmt.Fprintf(stderr, "shipmind %s: %v\n", cmd, err)
 		return 1

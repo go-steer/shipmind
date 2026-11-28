@@ -280,6 +280,46 @@ release is a tested set of component versions (see "Cutting a release" in
 
 ### Changed
 
+- Replaced the static `agent.clusters` table in `shipmind.yaml` with live
+  cluster scope discovery (#104):
+  - **Breaking `shipmind.yaml` change:** `agent.clusters` is now a mapping
+    with required `home` (`projects/<project>/locations/<location>/clusters/<name>`),
+    optional `regions` (GCP region allowlist for broad egress), and
+    required non-empty `scope` entries (`project` with optional `location`,
+    `path`, or `fleet`). Optional `audits.scope` overrides the live scope
+    for scheduled posture audits (#127) while defaulting to
+    `agent.clusters.scope`.
+  - **Egress & MCP wiring:** `*.<region>.gke.goog` egress strips zone
+    suffixes (`us-central1-b` -> `us-central1`), scopes incident and
+    watchboard tasks to `home`'s region only, derives chat and audit task
+    egress from the effective scope and optional `regions` (defaulting to
+    all GCP regions for broad project/fleet scopes), and adds
+    `gkehub.googleapis.com` whenever `fleet:` is configured. `gke-chat`
+    now honors `LOOKOUT_CLUSTERS_FROM` (dropping `--clusters-from=auto`
+    from `gke-chat/.agents/mcp.json`) and sets `LEEWAY_CLUSTERS_FROM` for
+    `project` and `project`+`location` scopes (omitting `fleet:` and
+    explicit `path:` entries so `leeway`'s ambient multi-cluster guard
+    stays active on `path:`-only scopes).
+  - **Live scheduled audits:** `shipmind audit run` resolves `project:`
+    and `fleet:` scopes live at CronJob runtime against Container and GKE
+    Hub APIs before sweeping `lookout audit` and `leeway report`, keeping
+    partial-failure safety so unreachable clusters are never stale-closed.
+  - **Workspace grounding, canary default, and deploy-time IAM checks:**
+    Workspace `AGENTS.md` replaces the static cluster table with live
+    scope discovery and anti-hallucination rules (`home` is context never
+    a chat default); `shipmind scenario canary` defaults `-cluster` to
+    `agent.clusters.home` and accepts `<name-or-path>`; and `shipmind
+    status` checks `ate-credentials/google-token` against each unique
+    in-scope project/location and fleet to flag missing cross-project IAM
+    grants at deploy time (`scope project/...`, `scope fleet/...`,
+    `scope access`).
+  - **Rollout note:** update `agent.clusters` in `go-steer/shipmind-deploy`
+    to `{home, regions?, scope}`, bump `agent.chatImage` to an `images/agent`
+    digest carrying the updated `gke-chat/.agents/mcp.json`, and (on
+    environments with `audits:` enabled) bump `e2e-runner` in `versions.yaml`
+    (or `audits.runnerImage`) to an `images/e2e-runner` digest built from
+    this commit or later so `shipmind audit run` reads scope-only
+    `config.json` before running `shipmind up`.
 - Converted `gke-triage-f` to a native flat `core-agent` recipe under
   `agents/sre-triage/gke-triage-f/.agents/`, removed all remaining legacy
   `mast` bundles and `core-agent config import-workload`/fold machinery from

@@ -74,8 +74,9 @@ type CanaryOptions struct {
 	RunnerImage string
 	// Scenario names a chat scenario in the runner image (/scenarios/<name>).
 	Scenario string
-	// Cluster names one of the environment's agent.clusters to ask
-	// about; empty takes the first.
+	// Cluster is the target cluster to ask about: a full GKE cluster path
+	// or a bare name matching agent.clusters.home or an explicit path in
+	// agent.clusters.scope; empty defaults to agent.clusters.home.
 	Cluster string
 	// Archive, when set, is the gs://bucket/prefix target passed to the
 	// canary runner's -archive flag. Empty inherits the -archive target
@@ -195,25 +196,13 @@ func (o CanaryOptions) check(e *env.Env) (string, error) {
 		return "", fmt.Errorf("runner image %q: want an e2e-runner image pinned by digest", o.RunnerImage)
 	case !canaryScenario.MatchString(o.Scenario) || len(o.Scenario) > 40:
 		return "", fmt.Errorf("scenario %q: want a scenario's name", o.Scenario)
-	case len(e.Agent.Clusters) == 0:
-		return "", errors.New("the environment lists no agent.clusters to ask about")
 	}
 	if o.Archive != "" {
 		if _, err := archive.Parse(o.Archive); err != nil {
 			return "", err
 		}
 	}
-	if o.Cluster == "" {
-		return e.Agent.Clusters[0].Path, nil
-	}
-	var names []string
-	for _, cl := range e.Agent.Clusters {
-		if cl.Name == o.Cluster {
-			return cl.Path, nil
-		}
-		names = append(names, cl.Name)
-	}
-	return "", fmt.Errorf("cluster %q is not in the environment's agent.clusters (%s)", o.Cluster, strings.Join(names, ", "))
+	return e.Agent.Clusters.ResolveCluster(o.Cluster)
 }
 
 // named sets an ax manifest's metadata.name: a task template has none,

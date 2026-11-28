@@ -141,14 +141,21 @@ spec:
     # core-agent requires an explicit Vertex AI location.
     - name: GOOGLE_CLOUD_LOCATION
       value: global
-{{- if .PostureScope }}
-    # The environment's clusters span projects: a leeway report that names
-    # no cluster sweeps all of them, not just GOOGLE_CLOUD_PROJECT (#104,
-    # #127). lookout mcp needs no such list: it runs --clusters-from=auto
-    # (mcp.json), which ignores LOOKOUT_CLUSTERS_FROM, and reaches a cluster
-    # in another project by its full path.
+{{- if .LookoutScope }}
+    # Live cluster discovery scope for lookout mcp (#104): comma-separated
+    # <project>, <project>/<location>, or fleet:<host>. gke-chat omits
+    # --clusters-from on the CLI so lookout reads this variable.
+    - name: LOOKOUT_CLUSTERS_FROM
+      value: {{ printf "%q" .LookoutScope }}
+{{- end }}
+{{- if .LeewayScope }}
+    # Live cluster discovery scope for leeway mcp (#104, #127): comma-separated
+    # <project> or <project>/<location>. Both fleet: (unsupported in leeway
+    # v0.1.9) and explicit path: entries (to preserve leeway's ambient
+    # multi-cluster refusal guard) are omitted; gke-chat passes full cluster
+    # paths discovered via lookout_k8s_list_clusters to leeway_report.
     - name: LEEWAY_CLUSTERS_FROM
-      value: {{ printf "%q" .PostureScope }}
+      value: {{ printf "%q" .LeewayScope }}
 {{- end }}
     - name: CORE_AGENT_ATTACH_TOKEN
       value: {{ printf "%q" .AttachToken }}

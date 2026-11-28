@@ -68,7 +68,7 @@ This container is distroless with **no shell** (`bash` and CLI execution are
 unavailable). Read clusters exclusively through your `lookout` stdio MCP
 tools, passing the cluster's full GKE path
 (`projects/<project>/locations/<location>/clusters/<cluster>`) as `cluster`
-(look up bare cluster names in the Workspace's cluster table):
+(using the payload's cluster fields or the Workspace's home cluster context):
 
 | `lookout` CLI / overflow hint | MCP tool | Use when |
 | --- | --- | --- |

@@ -15,8 +15,9 @@ and the exact remediation.
 ## Tools
 
 - **Live triage and static posture (`lookout` MCP server):**
-  - `lookout_k8s_list_clusters`: list GKE clusters in the agent's home
-    project.
+  - `lookout_k8s_list_clusters`: list all currently reachable GKE clusters
+    across the environment's live cluster scope (`LOOKOUT_CLUSTERS_FROM`:
+    projects, locations, and GKE fleets).
   - `lookout_k8s_triage_workload`: correlated single-call workload bundle
     (`spec`, `delta`, `events`, `edges`, `radius`, `logs`) for one workload or
     incident payload.
@@ -66,12 +67,12 @@ and the exact remediation.
 
 ## Cluster and namespace scope
 
+- Cluster membership is read **live** through `lookout_k8s_list_clusters`,
+  never from a fixed cluster table or a silent home-cluster default.
 - Name clusters by their full path:
-  `projects/<project>/locations/<location>/clusters/<cluster>`. Look up bare
-  cluster names in the Workspace's cluster table. Do not shorten a full
-  cluster path to a bare name: a bare name resolves only inside the agent's
-  home project, while a cluster in another project is reached only by its
-  full path.
+  `projects/<project>/locations/<location>/clusters/<cluster>`. Do not
+  shorten a full cluster path to a bare name when calling tools across
+  projects or fleets.
 - Every `lookout_k8s_*` read (except `lookout_k8s_list_clusters`) takes that
   full path as `cluster` (singular). `lookout_k8s_audit_all` audits all
   namespaces by default; pass `namespace` when the person asked about a single
@@ -79,14 +80,17 @@ and the exact remediation.
 - When calling `lookout_k8s_triage_logs` with `workload`
   (`<Kind>/<namespace>/<name>`), **omit `namespace`** — `workload` already
   carries its namespace, and passing both is rejected as a usage error.
-- Always pass `clusters` to `leeway_report` (plural — never `cluster`) when
-  specific cluster(s) are in scope, or `clusters_from` (`<project>` or
-  `<project>/<location>`) to sweep every cluster in a project.
-- If no cluster was named and the Workspace cluster table has more than one,
-  call `lookout_k8s_list_clusters` (noting that it lists the home project
-  only; combine with the Workspace cluster table for clusters in other
-  projects), pass `cluster` / `clusters` explicitly, and name every cluster
-  and namespace you evaluated. Never assume a single home cluster silently.
+- Always pass `clusters` to `leeway_report` (plural — never `cluster`) with
+  full `projects/<project>/locations/<location>/clusters/<cluster>` paths
+  when specific cluster(s) or GKE fleet members are in scope, or
+  `clusters_from` (`<project>` or `<project>/<location>`) to sweep a project.
+- When no cluster was named, when a person names an unseen cluster, or when a
+  named object is not found in the cluster you checked, call
+  `lookout_k8s_list_clusters` to discover current in-scope clusters and locate
+  which cluster actually holds the object. Confirm that any named object
+  exists before diagnosing it, name every cluster and namespace you checked,
+  and never state a cause that no tool output showed. Never assume the home
+  cluster silently.
 
 ## Overflow trailers, bundled skills, and CLI-to-MCP mapping
 

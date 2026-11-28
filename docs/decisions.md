@@ -4,6 +4,98 @@ Newest first. Each entry: what was decided, why, and what was rejected.
 A decision that changes gets a new entry pointing at the old one; old
 entries are not edited.
 
+## 2026-11-28: Live cluster scope replaces the static agent.clusters table (#104)
+
+Supersedes the static `agent.clusters` list in `shipmind.yaml` and the
+rendered cluster table in Workspace `AGENTS.md`.
+
+Maintaining a hand-edited cluster list in `shipmind.yaml` broke whenever
+clusters were created, moved, or deleted: every new cluster required an
+overlay edit and `shipmind up` before chat or scheduled audits could see
+it, and baking a static list into `AGENTS.md` encouraged the chat agent
+to assume that list was authoritative instead of discovering live
+clusters.
+
+1. **Structured `agent.clusters` schema (`home`, optional `regions`,
+   required `scope`).** `shipmind.yaml` replaces `agent.clusters: []{name,
+   path}` with:
+   - `home`: required full GKE resource path
+     (`projects/<project>/locations/<location>/clusters/<name>`). Used as
+     agent context, incident/watchboard control-plane egress, and the
+     default `-cluster` for `shipmind scenario canary`, never as a silent
+     chat default.
+   - `regions`: optional list of GCP regions (`us-central1`, never zones)
+     that narrows `*.<region>.gke.goog` egress when `scope` contains
+     broad project or fleet entries. Omitting `regions` on a broad scope
+     admits all GCP regions (`env.GCPRegions`); narrow scopes (`path` and
+     `project`+`location` only) emit only `home`'s region plus those
+     exact scope regions.
+   - `scope`: required non-empty list of discovery entries, each setting
+     exactly one of `project` (with optional `location` region or zone),
+     `path` (explicit GKE cluster resource path), or `fleet` (GKE fleet
+     host project). GKE label filtering is deferred until `k8s-lookout`
+     and `leeway` support `--cluster-label` natively.
+2. **Zone-stripped egress and `gkehub.googleapis.com` for fleets.** GKE
+   control-plane DNS endpoints always resolve under `*.<region>.gke.goog`
+   even for zonal clusters, and Substrate egress allows only single-label
+   wildcards. All region derivations strip trailing zone suffixes
+   (`us-central1-b` -> `us-central1`). Incident (`gke-triage-f`) and
+   watchboard (`gke-watchboard`) tasks receive only `home`'s single
+   `*.<home-region>.gke.goog` wildcard alongside `aiplatform.googleapis.com`
+   and `container.googleapis.com`. Chat (`gke-chat`) and audit tasks add
+   `gkehub.googleapis.com` whenever their effective scope includes a
+   `fleet:` entry (`k8s-lookout` `v0.46.0` `pkg/cloud/gke/fleetscope.go`
+   uses only GKE Hub memberships + Container API `clusters.list`).
+3. **Live `LOOKOUT_CLUSTERS_FROM` / `LEEWAY_CLUSTERS_FROM` wiring.**
+   `gke-chat/.agents/mcp.json` drops `--clusters-from=auto` (which in
+   `k8s-lookout` `v0.46.0` overrides `LOOKOUT_CLUSTERS_FROM`), so the
+   task template's `LOOKOUT_CLUSTERS_FROM` drives live multi-cluster
+   discovery (`project`, `project/location`, `fleet:<host>`, and
+   `<project>/<location>` for explicit `path:` entries since `lookout`'s
+   `ParseScopes` does not accept single-cluster paths). `gke-triage-f`
+   and `gke-watchboard` keep `--clusters-from=auto` because `lookout`
+   names the incident cluster on the prompt. `LEEWAY_CLUSTERS_FROM`
+   receives `project` and `project/location` entries only, omitting both
+   `fleet:` (`leeway` `v0.1.9` rejects `fleet:` in `LEEWAY_CLUSTERS_FROM`)
+   and explicit `path:` entries (mapping `path:` to `<project>/<location>`
+   sets `configuredFrom` in `leeway` `v0.1.9` and disables its unscoped
+   multi-cluster refusal guard, letting an accidental unscoped
+   `leeway_report({})` sweep sibling clusters outside the explicit path
+   list; explicit full cluster paths work directly in `leeway_report`).
+4. **Live-resolved scheduled audits (`#127`) with optional `audits.scope`
+   override.** Scheduled posture audits default to `agent.clusters.scope`
+   and accept an optional `audits.scope` override when an environment
+   wants a narrower nightly sweep than interactive chat. `shipmind audit
+   run` resolves `project:` and `fleet:` scopes live against
+   `container.googleapis.com` and `gkehub.googleapis.com` at CronJob
+   runtime (using the same `ate-credentials/google-token` / metadata
+   token provider it uses for cluster auth) into concrete cluster paths
+   before running `lookout audit` and `leeway report --clusters=...`,
+   recording per-scope discovery failures without stale-closing
+   unreachable clusters in the ledger.
+5. **Anti-hallucination Workspace rules & deploy-time IAM checks.**
+   Workspace `AGENTS.md` drops the static cluster table in favor of
+   explicit rules: `home` is context never a chat default; call
+   `lookout_k8s_list_clusters` when the cluster is unspecified or an
+   object is not where expected; confirm named objects exist before
+   diagnosing; never state a cause no tool output showed. `shipmind
+   status` probes each unique in-scope project/location and fleet with
+   `ate-credentials/google-token` (redirects disabled, token never
+   printed) so missing cross-project `roles/container.viewer` (or custom
+   viewer+logs) or `roles/gkehub.viewer` grants surface as drift (`scope
+   project/...`, `scope fleet/...`, or `scope access`) at deploy time.
+
+Rejected:
+- Keeping a fallback `agent.clusters` list syntax alongside the structured
+  map: there is only one private overlay (`go-steer/shipmind-deploy`) and
+  carrying two YAML shapes complicates `internal/env` and Config Studio
+  for zero external compatibility benefit.
+- Resolving `agent.clusters.scope` at `shipmind up` time into static
+  `AGENTS.md` / `audit` cluster lists: reintroduces the exact staleness
+  problem #104 removes.
+- Admitting `*.gke.goog` as a two-label wildcard: Substrate's egress
+  gateway rejects multi-label wildcards by design.
+
 ## 2026-11-28: lookout's watchboard runs its own read-only gke-watchboard recipe and task template (#133)
 
 Extends 2026-11-05 ("Two agent profiles, autonomous and interactive, one

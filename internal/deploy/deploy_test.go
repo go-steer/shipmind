@@ -41,7 +41,10 @@ func testEnv() *env.Env {
 		Agent: env.Agent{
 			Atespace: "agents", Project: "example-project", Workspace: "demo-ws",
 			IncidentImage: "registry.example.com/agent@sha256:" + strings.Repeat("0", 64),
-			Clusters:      []env.Cluster{{Name: "demo", Path: "projects/example-project/locations/us-central1/clusters/demo"}},
+			Clusters: env.Clusters{
+				Home:  "projects/example-project/locations/us-central1/clusters/demo",
+				Scope: []env.ClusterScope{{Path: "projects/example-project/locations/us-central1/clusters/demo"}},
+			},
 		},
 		Expect: []env.Expected{{Object: "apps.v1.Deployment.ns.redis", Reason: "digest pin"}},
 	}

@@ -43,7 +43,8 @@ type ClusterTarget struct {
 type Config struct {
 	Atespace              string          `json:"atespace"`
 	Project               string          `json:"project"`
-	Clusters              []ClusterTarget `json:"clusters"`
+	Clusters              []ClusterTarget `json:"clusters,omitempty"`
+	Scope                 []ScopeTarget   `json:"scope,omitempty"`
 	Schedule              string          `json:"schedule"`
 	RefreshWindow         string          `json:"refresh_window"`
 	MinConsecutive        int             `json:"min_consecutive"`
@@ -66,8 +67,8 @@ func LoadConfig(path string) (*Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
-	if len(c.Clusters) == 0 {
-		return nil, fmt.Errorf("config %s: clusters is empty", path)
+	if len(c.Clusters) == 0 && len(c.Scope) == 0 {
+		return nil, fmt.Errorf("config %s: clusters and scope are both empty", path)
 	}
 	return &c, nil
 }
@@ -102,6 +103,7 @@ type RunOptions struct {
 	Exec            CommandRunner
 	GoogleToken     TokenProvider
 	GCPBaseURL      string
+	HTTPClient      *http.Client
 	SwitchboardHTTP *http.Client
 	ChatTasks       scenario.ChatTasks
 	ChatAgent       scenario.ChatAgent
@@ -133,7 +135,8 @@ type RunSummary struct {
 	Errors             map[string]string `json:"errors,omitempty"`
 }
 
-// Run executes one complete scheduled posture sweep across cfg.Clusters.
+// Run executes one complete scheduled posture sweep across cfg.Scope (or
+// static cfg.Clusters).
 // When all clusters are clean or all active findings sit inside the refresh
 // window (or dwell / exemptions), Run exits with 0 LLM tokens and 0 awoken
 // ax actors.
@@ -171,13 +174,29 @@ func Run(ctx context.Context, cfg *Config, opts RunOptions) (*RunSummary, error)
 		}
 	}
 
-	kcPath, extraEnv, closeBroker, err := prepareSweepAuth(cfg, opts)
+	targets, scopeErrs := resolveAuditClusters(ctx, cfg, opts, logFn)
+	if len(targets) == 0 {
+		now := nowFn().UTC()
+		delta := Evaluate(ledger, nil, nil, EvalConfig{
+			RefreshWindow:  refreshDur,
+			MinConsecutive: cfg.MinConsecutive,
+		}, now)
+		summary := buildInitialSummary(started, nil, nil, delta, scopeErrs)
+		summary.FinishedAt = nowFn().UTC().Format(time.RFC3339)
+		if err := SaveLedger(opts.LedgerPath, ledger); err != nil {
+			return summary, err
+		}
+		return summary, joinScanErrors(scopeErrs)
+	}
+
+	kcPath, extraEnv, closeBroker, err := prepareSweepAuth(targets, opts)
 	if err != nil {
 		return nil, err
 	}
 	defer closeBroker()
 
-	obs, healthy, errs := collectAllEngines(ctx, cfg, lookoutBin, leewayBin, kcPath, opts.KubeContext, extraEnv, execFn, logFn)
+	obs, healthy, errs := collectAllEngines(ctx, cfg, targets, lookoutBin, leewayBin, kcPath, opts.KubeContext, extraEnv, execFn, logFn)
+	maps.Copy(errs, scopeErrs)
 
 	now := nowFn().UTC()
 	delta := Evaluate(ledger, obs, healthy, EvalConfig{
@@ -185,7 +204,7 @@ func Run(ctx context.Context, cfg *Config, opts RunOptions) (*RunSummary, error)
 		MinConsecutive: cfg.MinConsecutive,
 	}, now)
 
-	summary := buildInitialSummary(started, cfg, healthy, delta, errs)
+	summary := buildInitialSummary(started, targets, healthy, delta, errs)
 
 	// Zero-idle-LLM-token fast path: clean or all active findings suppressed.
 	if len(delta.Due) == 0 {
@@ -204,7 +223,7 @@ func Run(ctx context.Context, cfg *Config, opts RunOptions) (*RunSummary, error)
 
 	delivered := true
 	if cfg.AlertChannel != "" && cfg.SwitchboardURL != "" {
-		digestText := FormatDigest(clusterIDs(cfg.Clusters), delta, prNote)
+		digestText := FormatDigest(clusterIDs(targets), delta, prNote)
 		idem := fmt.Sprintf("shipmind-audit-%s", started.Format("20060102T150405Z"))
 		ref, derr := PostSwitchboardDigest(ctx, opts.SwitchboardHTTP, cfg.SwitchboardURL, opts.IngressToken, cfg.AlertChannel, idem, digestText)
 		if derr != nil {
@@ -227,12 +246,12 @@ func Run(ctx context.Context, cfg *Config, opts RunOptions) (*RunSummary, error)
 	return summary, joinScanErrors(errs)
 }
 
-func prepareSweepAuth(cfg *Config, opts RunOptions) (kcPath string, extraEnv []string, closeFn func(), err error) {
+func prepareSweepAuth(targets []ClusterTarget, opts RunOptions) (kcPath string, extraEnv []string, closeFn func(), err error) {
 	if opts.Kubeconfig != "" || opts.GoogleToken == nil {
 		return opts.Kubeconfig, nil, func() {}, nil
 	}
 	var gkePaths []string
-	for _, cl := range cfg.Clusters {
+	for _, cl := range targets {
 		if _, _, _, ok := ParseGKEClusterPath(cl.Path); ok {
 			gkePaths = append(gkePaths, cl.Path)
 		}
@@ -248,6 +267,7 @@ func prepareSweepAuth(cfg *Config, opts RunOptions) (kcPath string, extraEnv []s
 		Dir:          tmpDir,
 		ClusterPaths: gkePaths,
 		GoogleToken:  opts.GoogleToken,
+		HTTPClient:   opts.HTTPClient,
 		GCPBaseURL:   opts.GCPBaseURL,
 	})
 	if err != nil {
@@ -269,6 +289,7 @@ func prepareSweepAuth(cfg *Config, opts RunOptions) (kcPath string, extraEnv []s
 func collectAllEngines(
 	ctx context.Context,
 	cfg *Config,
+	targets []ClusterTarget,
 	lookoutBin, leewayBin, kcPath, kubeContext string,
 	extraEnv []string,
 	execFn CommandRunner,
@@ -283,7 +304,7 @@ func collectAllEngines(
 		subcmds = append(subcmds, "computeclass", "ai")
 	}
 
-	for _, cl := range cfg.Clusters {
+	for _, cl := range targets {
 		cid := CanonicalClusterID(cl.Path)
 		if cid == "" {
 			cid = cl.Name
@@ -298,7 +319,7 @@ func collectAllEngines(
 		allObs = append(allObs, cObs...)
 	}
 
-	lwObs, lwHealthy, lwErrs, err := runLeewaySweep(ctx, leewayBin, cfg, kcPath, kubeContext, extraEnv, execFn)
+	lwObs, lwHealthy, lwErrs, err := runLeewaySweep(ctx, leewayBin, cfg, targets, kcPath, kubeContext, extraEnv, execFn)
 	if err != nil {
 		errs["leeway"] = err.Error()
 		logFn("leeway report failed: %v", err)
@@ -359,6 +380,7 @@ func runLeewaySweep(
 	ctx context.Context,
 	leewayBin string,
 	cfg *Config,
+	targets []ClusterTarget,
 	kcPath, kubeContext string,
 	extraEnv []string,
 	execFn CommandRunner,
@@ -369,7 +391,7 @@ func runLeewaySweep(
 		"--topology-domain-unavailable-keys=" + cfg.DomainUnavailableKeys,
 	}
 	var expected, clusterSpecs []string
-	for _, cl := range cfg.Clusters {
+	for _, cl := range targets {
 		cid := CanonicalClusterID(cl.Path)
 		expected = append(expected, cid)
 		if len(extraEnv) == 0 && kcPath != "" {
@@ -381,7 +403,7 @@ func runLeewaySweep(
 	if kcPath != "" {
 		args = append(args, "--kubeconfig="+kcPath)
 	}
-	if kubeContext != "" && len(cfg.Clusters) == 1 {
+	if kubeContext != "" && len(targets) == 1 {
 		args = append(args, "--context="+kubeContext, "--cluster-name="+expected[0])
 	} else {
 		args = append(args, "--clusters="+strings.Join(clusterSpecs, ","))
@@ -443,9 +465,9 @@ func maybeRunAutoPR(
 	return clampUTF8(strings.TrimSpace(res.Answer), 600), prBySubject, nil
 }
 
-func buildInitialSummary(started time.Time, cfg *Config, healthy map[ClusterEngine]bool, delta Delta, errs map[string]string) *RunSummary {
+func buildInitialSummary(started time.Time, targets []ClusterTarget, healthy map[ClusterEngine]bool, delta Delta, errs map[string]string) *RunSummary {
 	succeeded := 0
-	for _, cl := range cfg.Clusters {
+	for _, cl := range targets {
 		cid := CanonicalClusterID(cl.Path)
 		if healthy[ClusterEngine{Cluster: cid, Engine: EngineLookout}] && healthy[ClusterEngine{Cluster: cid, Engine: EngineLeeway}] {
 			succeeded++
@@ -453,7 +475,7 @@ func buildInitialSummary(started time.Time, cfg *Config, healthy map[ClusterEngi
 	}
 	s := &RunSummary{
 		StartedAt:         started.Format(time.RFC3339),
-		ClustersExpected:  len(cfg.Clusters),
+		ClustersExpected:  len(targets),
 		ClustersSucceeded: succeeded,
 		ActiveFindings:    delta.ActiveTotal,
 		DueFindings:       len(delta.Due),

@@ -64,7 +64,7 @@ func runCanary(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "the shipmind checkout the candidate is built from: its task and Workspace templates, its scenarios")
 	image := fs.String("image", "", "the candidate agent image (images/agent), pinned by digest")
 	runner := fs.String("runner-image", "", "the e2e-runner image to run the scenario with, pinned by digest (default: versions.yaml's e2e-runner pin, which must be built from a commit that has the scenario)")
-	clusterName := fs.String("cluster", "", "which of the environment's agent.clusters to ask about (default: the first)")
+	clusterName := fs.String("cluster", "", "cluster name or full GKE resource path to ask about (default: agent.clusters.home)")
 	archiveTo := fs.String("archive", "", "store the run's record (transcript.sse, usage.json, result.json, meta.json) under gs://bucket/prefix (default: the environment overlay's nightly CronJob -archive target, if set)")
 	dryRun := fs.Bool("dry-run", false, "render the Job and print it; apply nothing")
 	if err := fs.Parse(args); err != nil {
@@ -158,16 +158,9 @@ func gkeContextForCluster(path string) string {
 }
 
 func selectedClusterPath(e *env.Env, name string) string {
-	if len(e.Agent.Clusters) == 0 {
+	path, err := e.Agent.Clusters.ResolveCluster(name)
+	if err != nil {
 		return ""
 	}
-	if name == "" {
-		return e.Agent.Clusters[0].Path
-	}
-	for _, cl := range e.Agent.Clusters {
-		if cl.Name == name {
-			return cl.Path
-		}
-	}
-	return ""
+	return path
 }

@@ -65,6 +65,9 @@ type Plan struct {
 	// Secrets reads the values of shipmind.yaml's `secrets` from Secret
 	// Manager; needed only when the environment lists any.
 	Secrets secrets.Source
+	// ScopeAccess, when set, verifies during Status that the agent's
+	// Google identity can list every in-scope project and GKE fleet (#104).
+	ScopeAccess ScopeChecker
 }
 
 // Change is one difference between the environment and the cluster.
@@ -313,6 +316,9 @@ func Status(ctx context.Context, p *Plan, c cluster.Cluster) (*Report, error) {
 		return nil, err
 	}
 	if err := substratePatchStatus(ctx, p, c, add); err != nil {
+		return nil, err
+	}
+	if err := scopeAccessStatus(ctx, p, c, add); err != nil {
 		return nil, err
 	}
 

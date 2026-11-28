@@ -42,9 +42,12 @@ func testEnv() *env.Env {
 			Project:       "example-project",
 			Workspace:     "demo-ws",
 			IncidentImage: "registry.example.com/agent@sha256:" + strings.Repeat("0", 64),
-			Clusters: []env.Cluster{
-				{Name: "demo", Path: "projects/example-project/locations/us-central1/clusters/demo"},
-				{Name: "prod", Path: "projects/example-project/locations/europe-west1/clusters/prod"},
+			Clusters: env.Clusters{
+				Home: "projects/example-project/locations/us-central1/clusters/demo",
+				Scope: []env.ClusterScope{
+					{Path: "projects/example-project/locations/us-central1/clusters/demo"},
+					{Path: "projects/example-project/locations/europe-west1/clusters/prod"},
+				},
 			},
 		},
 	}
@@ -112,12 +115,36 @@ func TestAgentsMD(t *testing.T) {
 		t.Fatalf("AgentsMD: %v", err)
 	}
 	md := string(b)
-	want := "| cluster | full name |\n|---|---|\n" +
-		"| demo | projects/example-project/locations/us-central1/clusters/demo |\n" +
-		"| prod | projects/example-project/locations/europe-west1/clusters/prod |\n" +
-		"\nIf the cluster is neither"
-	if !strings.Contains(md, want) {
-		t.Errorf("AGENTS.md lacks the cluster table:\n%s", b)
+	for _, want := range []string{
+		"**Home cluster (context only — never a chat default):** `projects/example-project/locations/us-central1/clusters/demo`",
+		"- cluster `projects/example-project/locations/us-central1/clusters/demo`",
+		"- cluster `projects/example-project/locations/europe-west1/clusters/prod`",
+		"call `lookout_k8s_list_clusters`",
+		"Never silently\n   default to the home cluster (`demo`)",
+		"Confirm existence before diagnosing",
+		"Never fabricate a cause",
+		"restrict\n   investigation to those clusters",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("AGENTS.md lacks %q:\n%s", want, b)
+		}
+	}
+	if strings.Contains(md, "| cluster | full name |") {
+		t.Errorf("AGENTS.md must not render a static cluster table:\n%s", b)
+	}
+	if strings.Contains(md, "For `fleet:` scope entries") {
+		t.Errorf("AGENTS.md without fleet scope should omit fleet note:\n%s", b)
+	}
+	fleetEnv := testEnv()
+	fleetEnv.Agent.Clusters.Scope = []env.ClusterScope{{Fleet: "fleet-host-prod"}}
+	fleetMD, err := AgentsMD(root, fleetEnv)
+	if err != nil {
+		t.Fatalf("AgentsMD(fleet): %v", err)
+	}
+	if !strings.Contains(string(fleetMD), "- fleet `fleet-host-prod`") ||
+		!strings.Contains(string(fleetMD), "For `fleet:` scope entries") ||
+		strings.Contains(string(fleetMD), "restrict\n   investigation to those clusters") {
+		t.Errorf("fleet AGENTS.md unexpected:\n%s", fleetMD)
 	}
 	if strings.Contains(md, "GKE MCP") || !strings.Contains(md, "`lookout_k8s_*`") {
 		t.Errorf("AGENTS.md should reference lookout_k8s_* instead of hosted GKE MCP:\n%s", b)
@@ -1012,7 +1039,7 @@ func TestTaskCoreAgent(t *testing.T) {
 		t.Errorf("incident task CORE_AGENT_TRUSTED_DIRS = %q", envs["CORE_AGENT_TRUSTED_DIRS"])
 	}
 	wantIncidentEgress := []any{map[string]any{
-		"hosts": []any{"aiplatform.googleapis.com", "container.googleapis.com", "*.europe-west1.gke.goog", "*.us-central1.gke.goog"},
+		"hosts": []any{"aiplatform.googleapis.com", "container.googleapis.com", "*.us-central1.gke.goog"},
 		"credentials": []any{map[string]any{
 			"header":        "Authorization",
 			"prefix":        "Bearer ",
@@ -1022,24 +1049,11 @@ func TestTaskCoreAgent(t *testing.T) {
 	if !reflect.DeepEqual(task.Spec.Egress, wantIncidentEgress) {
 		t.Errorf("incident egress = %#v, want %#v", task.Spec.Egress, wantIncidentEgress)
 	}
-	// On a single-project environment, the incident and chat tasks differ only
-	// in recipe name (both trust their baked recipe root and carry the same GKE
-	// DNS control-plane egress for lookout mcp; #131).
-	e.Agent.ChatImage = e.Agent.IncidentImage
-	chat, err := ChatTask(root, e, tok)
-	if err != nil {
-		t.Fatal(err)
+	if _, hasL := envs["LOOKOUT_CLUSTERS_FROM"]; hasL {
+		t.Errorf("incident task must not set LOOKOUT_CLUSTERS_FROM: %v", envs)
 	}
-	normChat := strings.ReplaceAll(string(chat), "recipes/"+ChatBundle+"/", "recipes/"+IncidentBundle+"/")
-	var gotDoc, chatDoc any
-	if err := yaml.Unmarshal(b, &gotDoc); err != nil {
-		t.Fatal(err)
-	}
-	if err := yaml.Unmarshal([]byte(normChat), &chatDoc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(gotDoc, chatDoc) {
-		t.Error("the core-agent incident and chat tasks differ beyond recipe bundle")
+	if _, hasW := envs["LEEWAY_CLUSTERS_FROM"]; hasW {
+		t.Errorf("incident task must not set LEEWAY_CLUSTERS_FROM: %v", envs)
 	}
 	// Switchboard's threads don't follow incidentImage (and refuse to render without chatImage).
 	e.Agent.ChatImage = ""
@@ -1190,7 +1204,6 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 	wantChatLookoutArgs := []string{
 		"mcp",
 		"--tools=k8s_audit_all,k8s_triage_workload,k8s_resource_spec,k8s_triage_logs,k8s_event_timeline,k8s_list_resources,k8s_state_edges,k8s_triage_delta",
-		"--clusters-from=auto",
 		"--max-concurrency-per-cluster=8",
 	}
 	if got := chatMCP.Servers["lookout"]; got.Transport != "stdio" || got.Command != "/usr/local/bin/lookout" ||
@@ -1313,49 +1326,167 @@ func TestPostureBundleAndImageChecks(t *testing.T) {
 	}
 }
 
-// A chat task whose clusters span projects tells leeway mcp to sweep all of
-// them; one whose clusters share the agent's project, and every incident
-// task, carries no such setting.
-func TestChatTaskPostureScope(t *testing.T) {
+// Live cluster scope egress, zone stripping, gkehub host, LOOKOUT_CLUSTERS_FROM,
+// and LEEWAY_CLUSTERS_FROM across chat, incident, watchboard, and audit tasks (#104).
+func TestLiveClusterScopeAndEgress(t *testing.T) {
 	core := func() *env.Env {
 		e := testEnv()
 		e.Agent.ChatImage = "registry.example.com/agent-core@sha256:" + strings.Repeat("1", 64)
 		e.Agent.IncidentImage = e.Agent.ChatImage
 		return e
 	}
+	parseEgressAndEnv := func(t *testing.T, raw []byte) (hosts []string, envs map[string]string) {
+		t.Helper()
+		var doc struct {
+			Spec struct {
+				Env    []struct{ Name, Value string } `yaml:"env"`
+				Egress []struct{ Hosts []string }     `yaml:"egress"`
+			} `yaml:"spec"`
+		}
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("unmarshal task: %v\n%s", err, raw)
+		}
+		envs = map[string]string{}
+		for _, ev := range doc.Spec.Env {
+			envs[ev.Name] = ev.Value
+		}
+		if len(doc.Spec.Egress) > 0 {
+			hosts = doc.Spec.Egress[0].Hosts
+		}
+		return hosts, envs
+	}
+
+	// 1. Zonal home + narrow scope (path + project/zone): zone suffixes stripped,
+	//    only home + exact scope regions, no gkehub, incident & watchboard home-only.
 	e := core()
+	e.Agent.Clusters = env.Clusters{
+		Home: "projects/example-project/locations/us-central1-b/clusters/demo",
+		Scope: []env.ClusterScope{
+			{Project: "team-a-prod", Location: "europe-west1-c"},
+			{Path: "projects/team-b-prod/locations/asia-east1-a/clusters/svc"},
+			{Path: "projects/team-b-prod/locations/asia-east1-a/clusters/svc2"},
+		},
+	}
 	chat, err := ChatTask(root, e, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(chat), "_CLUSTERS_FROM") {
-		t.Errorf("single-project chat task sets a cluster scope:\n%s", chat)
+	chatHosts, chatEnvs := parseEgressAndEnv(t, chat)
+	wantNarrow := []string{
+		"aiplatform.googleapis.com",
+		"container.googleapis.com",
+		"*.asia-east1.gke.goog",
+		"*.europe-west1.gke.goog",
+		"*.us-central1.gke.goog",
+	}
+	if !slices.Equal(chatHosts, wantNarrow) {
+		t.Errorf("narrow chat hosts = %q, want %q", chatHosts, wantNarrow)
+	}
+	if got := chatEnvs["LOOKOUT_CLUSTERS_FROM"]; got != "team-a-prod/europe-west1-c,team-b-prod/asia-east1-a" {
+		t.Errorf("LOOKOUT_CLUSTERS_FROM = %q", got)
+	}
+	if got := chatEnvs["LEEWAY_CLUSTERS_FROM"]; got != "team-a-prod/europe-west1-c" {
+		t.Errorf("LEEWAY_CLUSTERS_FROM = %q, want project+location only (not path)", got)
+	}
+	// Incident and watchboard get ONLY home's stripped region and no *_CLUSTERS_FROM.
+	for _, fn := range []struct {
+		name string
+		call func() ([]byte, error)
+	}{
+		{"incident", func() ([]byte, error) { return Task(root, e, tok) }},
+		{"watchboard", func() ([]byte, error) { return WatchboardTask(root, e, tok) }},
+	} {
+		raw, err := fn.call()
+		if err != nil {
+			t.Fatalf("%s: %v", fn.name, err)
+		}
+		hosts, envs := parseEgressAndEnv(t, raw)
+		wantHomeOnly := []string{"aiplatform.googleapis.com", "container.googleapis.com", "*.us-central1.gke.goog"}
+		if !slices.Equal(hosts, wantHomeOnly) {
+			t.Errorf("%s hosts = %q, want %q", fn.name, hosts, wantHomeOnly)
+		}
+		if _, ok := envs["LOOKOUT_CLUSTERS_FROM"]; ok {
+			t.Errorf("%s must not set LOOKOUT_CLUSTERS_FROM", fn.name)
+		}
+		if _, ok := envs["LEEWAY_CLUSTERS_FROM"]; ok {
+			t.Errorf("%s must not set LEEWAY_CLUSTERS_FROM", fn.name)
+		}
 	}
 
+	// 2. Broad project scope with explicit regions allowlist narrows egress to home + regions.
 	e = core()
-	e.Agent.Clusters = append(e.Agent.Clusters,
-		env.Cluster{Name: "zeta", Path: "projects/zeta-project/locations/us-east1/clusters/zeta"},
-		env.Cluster{Name: "alpha", Path: "projects/alpha-project/locations/us-east1/clusters/alpha"},
-		env.Cluster{Name: "alpha2", Path: "projects/alpha-project/locations/us-east4/clusters/alpha2"},
-	)
+	e.Agent.Clusters = env.Clusters{
+		Home:    "projects/example-project/locations/us-central1-a/clusters/demo",
+		Regions: []string{"us-east4", "europe-west1"},
+		Scope: []env.ClusterScope{
+			{Project: "example-project"},
+			{Project: "alpha-project"},
+		},
+	}
 	chat, err = ChatTask(root, e, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "    - name: LEEWAY_CLUSTERS_FROM\n      value: \"example-project,alpha-project,zeta-project\"\n"
-	if !strings.Contains(string(chat), want) {
-		t.Errorf("multi-project chat task lacks %q:\n%s", want, chat)
+	chatHosts, chatEnvs = parseEgressAndEnv(t, chat)
+	wantRegions := []string{
+		"aiplatform.googleapis.com",
+		"container.googleapis.com",
+		"*.europe-west1.gke.goog",
+		"*.us-central1.gke.goog",
+		"*.us-east4.gke.goog",
 	}
-	// lookout runs --clusters-from=auto, which ignores this variable.
-	if strings.Contains(string(chat), "name: LOOKOUT_CLUSTERS_FROM") {
-		t.Error("chat task sets LOOKOUT_CLUSTERS_FROM, which --clusters-from=auto ignores")
+	if !slices.Equal(chatHosts, wantRegions) {
+		t.Errorf("broad+regions chat hosts = %q, want %q", chatHosts, wantRegions)
 	}
-	inc, err := Task(root, e, tok)
+	if chatEnvs["LOOKOUT_CLUSTERS_FROM"] != "example-project,alpha-project" || chatEnvs["LEEWAY_CLUSTERS_FROM"] != "example-project,alpha-project" {
+		t.Errorf("broad project envs = %v", chatEnvs)
+	}
+
+	// 3. Broad fleet-only scope without regions expands to all GCPRegions + gkehub.googleapis.com,
+	//    sets LOOKOUT_CLUSTERS_FROM="fleet:<host>" and omits LEEWAY_CLUSTERS_FROM (unsupported in leeway v0.1.9).
+	e = core()
+	e.Agent.Clusters = env.Clusters{
+		Home:  "projects/example-project/locations/us-central1/clusters/demo",
+		Scope: []env.ClusterScope{{Fleet: "fleet-host-prod"}},
+	}
+	chat, err = ChatTask(root, e, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(inc), "name: LEEWAY_CLUSTERS_FROM") {
-		t.Errorf("incident task sets a posture scope (#131):\n%s", inc)
+	chatHosts, chatEnvs = parseEgressAndEnv(t, chat)
+	if !slices.Contains(chatHosts, "gkehub.googleapis.com") {
+		t.Errorf("fleet chat hosts missing gkehub.googleapis.com: %q", chatHosts)
+	}
+	if len(chatHosts) != 3+len(env.GCPRegions) {
+		t.Errorf("fleet all-regions host count = %d, want %d", len(chatHosts), 3+len(env.GCPRegions))
+	}
+	if chatEnvs["LOOKOUT_CLUSTERS_FROM"] != "fleet:fleet-host-prod" {
+		t.Errorf("fleet LOOKOUT_CLUSTERS_FROM = %q", chatEnvs["LOOKOUT_CLUSTERS_FROM"])
+	}
+	if _, hasLeeway := chatEnvs["LEEWAY_CLUSTERS_FROM"]; hasLeeway {
+		t.Errorf("fleet-only chat task must omit LEEWAY_CLUSTERS_FROM, got %q", chatEnvs["LEEWAY_CLUSTERS_FROM"])
+	}
+
+	// 4. AuditTask honors audits.scope override instead of agent.clusters.scope.
+	e.Agent.VCS = &env.VCS{Secret: "gh-token", Repositories: []env.Repository{{Repository: "org/gitops"}}}
+	e.Audits = &env.Audits{
+		AutoPR: true,
+		Scope:  []env.ClusterScope{{Path: "projects/example-project/locations/us-central1/clusters/demo"}},
+	}
+	audTask, err := AuditTask(root, e, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audHosts, audEnvs := parseEgressAndEnv(t, audTask)
+	wantAud := []string{"aiplatform.googleapis.com", "container.googleapis.com", "*.us-central1.gke.goog"}
+	if !slices.Equal(audHosts, wantAud) {
+		t.Errorf("audit override hosts = %q, want %q", audHosts, wantAud)
+	}
+	if audEnvs["LOOKOUT_CLUSTERS_FROM"] != "example-project/us-central1" {
+		t.Errorf("audit override LOOKOUT_CLUSTERS_FROM = %q", audEnvs["LOOKOUT_CLUSTERS_FROM"])
+	}
+	if _, hasLeeway := audEnvs["LEEWAY_CLUSTERS_FROM"]; hasLeeway {
+		t.Errorf("path-only audit override must omit LEEWAY_CLUSTERS_FROM to keep leeway multi-cluster guard, got %q", audEnvs["LEEWAY_CLUSTERS_FROM"])
 	}
 }
 
@@ -1449,7 +1580,7 @@ func TestWatchboardRecipeAndTask(t *testing.T) {
 		"-c\n    - /opt/core-agent/recipes/" + WatchboardBundle + "/.agents/config.json\n",
 		"--disable-tools=bash,read_file,read_many_files,view_file_outline,write_file,edit_file,delete_file,stat,list_dir,glob,grep",
 		`value: "/workspace/repo,/opt/core-agent/recipes/` + WatchboardBundle + `/.agents"`,
-		`[aiplatform.googleapis.com, container.googleapis.com, "*.europe-west1.gke.goog", "*.us-central1.gke.goog"]`,
+		`[aiplatform.googleapis.com, container.googleapis.com, "*.us-central1.gke.goog"]`,
 		"suspendAfter: " + WatchboardIdleSuspendAfter + "\n",
 	} {
 		if !strings.Contains(baseStr, want) {
